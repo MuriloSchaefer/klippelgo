@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Build and test
+        working-directory: contracts
+        run: |
+          forge fmt --check
+          forge test -vv
+      - name: Deploy and run a ride on a local chain
+        run: |
+          testnet/anvil.sh > anvil.log 2>&1 &
+          for i in $(seq 1 30); do cast chain-id 2>/dev/null && break; sleep 1; done
+          testnet/deploy.sh
+          testnet/demo-ride.sh
+
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - working-directory: core
+        run: |
+          cargo fmt --check
+          cargo clippy -- -D warnings
+          cargo test

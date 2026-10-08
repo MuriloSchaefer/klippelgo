@@ -1,0 +1,15 @@
+# Alternative to testnet/anvil.sh for people without Foundry installed: `docker compose -f testnet/docker-compose.yml up`
+services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:stable
+    entrypoint: ["anvil"]
+    command:
+      - --host=0.0.0.0
+      - --chain-id=31337
+      - --hardfork=osaka
+      - --block-time=2
+      - --state=/state/anvil.json
+    ports:
+      - "8545:8545"
+    volumes:
+      - ./.state:/state

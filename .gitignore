@@ -1,0 +1,13 @@
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/*/31337/
+# Local testnet state
+testnet/.state/
+deployments/local.json
+# Rust
+core/target/
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

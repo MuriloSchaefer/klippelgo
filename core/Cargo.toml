@@ -1,0 +1,11 @@
+[package]
+name = "klippelgo-core"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Shared Rust core for the KlippelGo iOS and Android apps: money, P2P discovery cells and chain settings."
+
+[lib]
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
