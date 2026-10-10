@@ -37,3 +37,41 @@ jobs:
           cargo fmt --check
           cargo clippy -- -D warnings
           cargo test
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: foundry-rs/foundry-toolchain@v1
+      # The Rust core holds the gossip network. core/rust-toolchain.toml picks the compiler and Android targets.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - name: Install cargo-ndk
+        working-directory: core
+        run: cargo install cargo-ndk --locked
+      - name: Start the local testnet and deploy
+        run: |
+          testnet/anvil.sh > anvil.log 2>&1 &
+          for i in $(seq 1 30); do cast chain-id 2>/dev/null && break; sleep 1; done
+          testnet/deploy.sh
+      - name: Rider and driver clients ride together on chain
+        working-directory: apps/android/chain
+        env:
+          KLIPPELGO_RPC: http://127.0.0.1:8545
+          KLIPPELGO_DEPLOYMENT: ${{ github.workspace }}/deployments/local.json
+        run: ../gradlew test
+      - name: Build the debug APK
+        working-directory: apps/android
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" ./gradlew :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: klippelgo-debug-apk
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk

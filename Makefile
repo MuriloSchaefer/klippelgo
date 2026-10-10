@@ -1,4 +1,4 @@
-.PHONY: test test-contracts test-core testnet deploy demo testnet-reset
+.PHONY: test test-contracts test-core testnet deploy demo testnet-reset reset-ratings gossip-node android-two-phones android-apk android-test-chain
 
 test: test-contracts test-core
 
@@ -20,3 +20,21 @@ demo:
 
 testnet-reset:
 	rm -rf testnet/.state deployments/local.json
+
+## Clear the ratings one account received, keeping everything else: make reset-ratings WHO=driver
+reset-ratings:
+	testnet/reset-ratings.sh $(or $(WHO),driver)
+
+## Bootstrap node of the gossip network phones match through (foreground), on port 4001. Runs in Docker.
+gossip-node:
+	docker compose -f testnet/docker-compose.yml up --build gossip
+
+## Android: rider and driver on two emulators against the local testnet (see apps/android/README.md).
+android-two-phones:
+	apps/android/scripts/two-phones.sh
+
+android-apk:
+	cd apps/android && ./gradlew :app:assembleDebug
+
+android-test-chain:
+	cd apps/android/chain && KLIPPELGO_RPC=http://127.0.0.1:8545 KLIPPELGO_DEPLOYMENT=$(CURDIR)/deployments/local.json ../gradlew test

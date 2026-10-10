@@ -1,7 +1,7 @@
 # KlippelGo
 
-A ride-hailing protocol with no central server. Riders and drivers find each other phone to phone, lock the
-fare in an on-chain escrow paid in a BRL stablecoin, and every rule is a policy the community governs on-chain.
+A ride-hailing protocol with no central server. Riders and drivers find each other phone to phone, agree a
+fare, lock it in an on-chain escrow paid in a BRL stablecoin, and every rule is a policy the community governs on-chain.
 Personal data stays encrypted on the phone. Each completed ride pays a flat R$ 1,00 to Instituto Klippel,
 deducted from the fare.
 
@@ -14,8 +14,9 @@ The design is in the [KlippelGo Architecture Plan](https://claude.ai/code/artifa
 | `contracts/` | Solidity contracts (Foundry): `PBACGovernor`, `IdentityRegistry`, `RideEscrow`, `FeeVault`, `Reputation`, `DisputeCourt`, plus mock BRLA and BRZ for local use |
 | `testnet/` | Scripts to run a local chain, deploy, and run a demo ride |
 | `deployments/` | Contract addresses per network (`local.json` is written by the deploy script) |
-| `core/` | Shared Rust core for the apps (money and fee maths, geohash discovery cells, network settings) |
-| `apps/android`, `apps/ios` | Native app shells (Kotlin/Compose, Swift/SwiftUI), not created yet |
+| `core/` | Shared Rust core for the apps: the libp2p gossip network phones match through and its bootstrap node, money and fee maths, geohash discovery cells, network settings |
+| `apps/android` | Android app (Kotlin/Compose): rider and driver modes against the local testnet. See [its README](apps/android/README.md) |
+| `apps/ios` | iOS app shell (Swift/SwiftUI), not created yet |
 
 ## Local testnet
 
@@ -28,7 +29,12 @@ make deploy       # terminal 2: deploy contracts, mock BRLA/BRZ, seed accounts
 make demo         # run one R$ 23,40 ride: driver gets R$ 22,40, Instituto Klippel R$ 1,00
 ```
 
-No Foundry? `docker compose -f testnet/docker-compose.yml up` starts the same chain; deploy still needs `forge`.
+To play the ride on two Android emulators (rider and driver at once), see [apps/android](apps/android/README.md).
+There the rider asks for a ride over gossip, the driver names a price, and the rider locks the offer it takes.
+`make gossip-node` runs the bootstrap node the phones dial (port 4001) with Docker Compose.
+
+No Foundry? `docker compose -f testnet/docker-compose.yml up` starts the same chain, along with the gossip
+bootstrap node; deploy still needs `forge`.
 
 The chain runs Osaka rules, which include the P-256 signature precompile at `0x100`. Polygon PoS has the same
 precompile (RIP-7212), and the apps rely on it so Secure Enclave and StrongBox keys can sign for the user's
@@ -72,6 +78,7 @@ make test         # forge test + cargo test
 
 ## Not built yet
 
-ERC-4337 smart accounts and the paymaster, the libp2p discovery layer, the native apps, and a Polygon Amoy
-deployment. The pickup proof is recorded as a hash the driver submits; checking both phones' signatures comes
+ERC-4337 smart accounts and the paymaster, the iOS app, and a Polygon Amoy deployment. The gossip layer carries
+signed requests and offers, but not yet session certificates, encrypted offers, presence, real location cells,
+relays or the encrypted ride channel (see [apps/android](apps/android/README.md)). The pickup proof is recorded as a hash the driver submits; checking both phones' signatures comes
 with the smart accounts.

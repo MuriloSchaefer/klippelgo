@@ -9,3 +9,18 @@ description = "Shared Rust core for the KlippelGo iOS and Android apps: money, P
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
+futures = "0.3"
+libp2p = { version = "0.57", features = ["gossipsub", "macros", "noise", "ping", "tcp", "tokio", "yamux"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+uniffi = { version = "0.32", features = ["cli"] }
+
+# Generates the Kotlin and Swift bindings from the built library (see apps/android/chain/build.gradle.kts).
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+# Bootstrap node that phones dial to find each other (`make gossip-node`).
+[[bin]]
+name = "klippelgo-node"
+path = "src/bin/node.rs"

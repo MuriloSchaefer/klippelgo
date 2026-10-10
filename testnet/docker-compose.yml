@@ -1,4 +1,7 @@
-# Alternative to testnet/anvil.sh for people without Foundry installed: `docker compose -f testnet/docker-compose.yml up`
+# The local network's services: `docker compose -f testnet/docker-compose.yml up`
+#
+#   anvil   the chain, an alternative to testnet/anvil.sh for people without Foundry installed
+#   gossip  bootstrap node of the gossip network phones match through (`make gossip-node` runs only this one)
 services:
   anvil:
     image: ghcr.io/foundry-rs/foundry:stable
@@ -13,3 +16,9 @@ services:
       - "8545:8545"
     volumes:
       - ./.state:/state
+
+  gossip:
+    build: ../core
+    ports:
+      - "4001:4001"
+    restart: unless-stopped

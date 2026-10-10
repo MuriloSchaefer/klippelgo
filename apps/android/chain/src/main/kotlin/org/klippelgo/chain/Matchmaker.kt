@@ -1,0 +1,282 @@
+package org.klippelgo.chain
+
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.ObjectMapper
+import org.klippelgo.core.GossipNode
+import org.web3j.abi.datatypes.Address
+import org.web3j.abi.datatypes.generated.Bytes32
+import org.web3j.abi.datatypes.generated.Uint256
+import org.web3j.abi.datatypes.generated.Uint64
+import org.web3j.crypto.Hash
+import org.web3j.utils.Numeric
+import java.math.BigInteger
+import java.security.SecureRandom
+
+/**
+ * Matches riders and drivers over gossip, as in the architecture plan: the rider gossips a request with a max
+ * fare, drivers answer with signed quotes, and the rider locks the quote it picks in the escrow. Nothing here
+ * touches the chain until that lock.
+ *
+ * Gossip is open: anyone can join a topic, publish to it and replay what they heard. So every message is signed
+ * by the account it speaks for and checked here before it is believed. Gossip also keeps no history, so the
+ * rider announces its request again every few seconds. A request nobody has announced for a while is gone, which
+ * also covers a rider whose app closed without saying so.
+ *
+ * Call [tick] every second or two, off the main thread.
+ *
+ * Not built yet, from the plan and its security review: session certificates so the wallet key does not sign
+ * every message, quotes encrypted to the rider instead of visible to the cell, presence, real location cells
+ * (everyone uses [DEV_CELL]) and a cost for posting requests.
+ */
+class Matchmaker(
+    private val client: KlippelGoClient,
+    private val node: GossipNode,
+    cell: String = DEV_CELL,
+) {
+    private val topic = topicFor(cell)
+    private val json = ObjectMapper()
+
+    private class Seen(val request: RideRequest, val message: ByteArray, var at: Long)
+    private class Quote(val offer: Offer, val seq: Long, val message: ByteArray)
+
+    private val requests = LinkedHashMap<BigInteger, Seen>()
+    private val quotes = HashMap<BigInteger, LinkedHashMap<String, Quote>>()
+    private val closed = HashMap<BigInteger, ByteArray?>()
+    private val riders = HashMap<String, Boolean>()
+    private var announcedAt = 0L
+
+    init {
+        node.subscribe(topic)
+    }
+
+    /** Peers this phone is connected to. Zero means nothing sent or received is reaching anyone. */
+    fun peers(): Int = node.connectedPeers().toInt()
+
+    /** Takes in what peers gossiped since the last call and announces this account's own messages again. */
+    @Synchronized
+    fun tick() {
+        for (message in node.drain()) {
+            if (message.topic == topic) runCatching { receive(message.data) }
+        }
+        val now = now()
+        requests.values.removeIf { it.request.expiresAt <= now }
+        quotes.keys.retainAll(requests.keys)
+        closed.keys.retainAll(requests.keys)
+
+        if (System.currentTimeMillis() - announcedAt < ANNOUNCE_EVERY_MS) return
+        announcedAt = System.currentTimeMillis()
+        for ((id, seen) in requests) {
+            val mine = seen.request.rider == client.address
+            val close = closed[id]
+            if (mine) {
+                seen.at = announcedAt
+                node.publish(topic, close ?: seen.message)
+            }
+            if (close == null) quotes[id]?.get(client.address)?.let { node.publish(topic, it.message) }
+        }
+    }
+
+    // ---------------------------------------------------------------- reads
+
+    /** Requests that are still being announced, newest first. */
+    @Synchronized
+    fun openRequests(): List<RideRequest> {
+        val now = System.currentTimeMillis()
+        return requests.values
+            .filter { it.request.id !in closed && it.request.expiresAt > now / 1000 && now - it.at < LIVE_FOR_MS }
+            .map { it.request }
+            .reversed()
+    }
+
+    /** Each driver's latest quote for a request, cheapest first. */
+    @Synchronized
+    fun offers(request: RideRequest, driver: String? = null): List<Offer> {
+        val now = now()
+        return quotes[request.id].orEmpty().values
+            .map { it.offer }
+            .filter { it.expiresAt > now && (driver == null || it.driver == driver) }
+            .sortedBy { it.fare }
+    }
+
+    // ---------------------------------------------------------------- rider
+
+    /** Asks the drivers in the cell for quotes up to `maxFare`. */
+    @Synchronized
+    fun requestRide(coin: Coin, maxFare: BigInteger, ttlSeconds: Long = REQUEST_TTL): RideRequest {
+        val expiresAt = now() + ttlSeconds
+        val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val id = requestId(client.address, coin.address, maxFare, expiresAt, nonce)
+        val message = encode(
+            "t" to "request",
+            "rider" to client.address,
+            "token" to coin.address.lowercase(),
+            "maxFare" to maxFare.toString(),
+            "expiresAt" to expiresAt,
+            "nonce" to Numeric.toHexString(nonce),
+            "sig" to Numeric.toHexString(client.sign(id)),
+        )
+        val request = RideRequest(BigInteger(1, id), client.address, coin.address.lowercase(), maxFare, expiresAt)
+        requests[request.id] = Seen(request, message, System.currentTimeMillis())
+        node.publish(topic, message)
+        return request
+    }
+
+    /** Withdraws this account's request. */
+    @Synchronized
+    fun closeRequest(request: RideRequest) {
+        if (request.rider != client.address) throw ChainException("NotRider")
+        val message = encode(
+            "t" to "close",
+            "request" to hex(request.id),
+            "sig" to Numeric.toHexString(client.sign(closeHash(request.id))),
+        )
+        closed[request.id] = message
+        node.publish(topic, message)
+    }
+
+    /** Takes a quote: locks its fare and hash in the escrow, then withdraws the request. Returns the ride id. */
+    fun acceptOffer(request: RideRequest, offer: Offer): BigInteger {
+        val id = client.openRide(offer.driver, client.coinFor(request.token), offer.fare, Numeric.hexStringToByteArray(offer.quoteHash))
+        closeRequest(request)
+        return id
+    }
+
+    // ---------------------------------------------------------------- driver
+
+    /** Signs a quote for a request and gossips it. A newer quote replaces this driver's earlier one. */
+    @Synchronized
+    fun sendOffer(request: RideRequest, fare: BigInteger, ttlSeconds: Long = OFFER_TTL): Offer {
+        val fee = client.tokenConfig(client.coinFor(request.token)).first
+        if (fare > request.maxFare) throw ChainException("The quote is above the rider's max fare")
+        if (fare <= fee) throw ChainException("FareTooLow")
+        val expiresAt = minOf(now() + ttlSeconds, request.expiresAt)
+        val seq = maxOf(System.currentTimeMillis(), (quotes[request.id]?.get(client.address)?.seq ?: 0) + 1)
+        val quoteHash = client.quoteHash(request, client.address, fare, expiresAt)
+        val sig = Numeric.toHexString(client.sign(offerHash(quoteHash, seq)))
+        val message = encode(
+            "t" to "offer",
+            "request" to hex(request.id),
+            "driver" to client.address,
+            "fare" to fare.toString(),
+            "expiresAt" to expiresAt,
+            "seq" to seq,
+            "sig" to sig,
+        )
+        val offer = Offer(request.id, client.address, fare, expiresAt, Numeric.toHexString(quoteHash), sig)
+        quotes.getOrPut(request.id) { LinkedHashMap() }[client.address] = Quote(offer, seq, message)
+        node.publish(topic, message)
+        return offer
+    }
+
+    // ---------------------------------------------------------------- incoming
+
+    private fun receive(data: ByteArray) {
+        val m = json.readTree(data)
+        when (m.text("t")) {
+            "request" -> receiveRequest(m, data)
+            "offer" -> receiveOffer(m, data)
+            "close" -> receiveClose(m, data)
+        }
+    }
+
+    private fun receiveRequest(m: JsonNode, data: ByteArray) {
+        val rider = m.address("rider")
+        val token = m.address("token")
+        val maxFare = BigInteger(m.text("maxFare"))
+        val expiresAt = m.get("expiresAt").asLong()
+        val id = requestId(rider, token, maxFare, expiresAt, m.bytes("nonce", 32))
+        val key = BigInteger(1, id)
+        requests[key]?.let {
+            it.at = System.currentTimeMillis()
+            return
+        }
+        val now = now()
+        if (requests.size >= MAX_REQUESTS || expiresAt <= now || expiresAt > now + MAX_TTL) return
+        if (maxFare.signum() <= 0 || client.coins.none { it.address.equals(token, ignoreCase = true) }) return
+        if (KlippelGoClient.signerOf(id, m.bytes("sig", 65)) != rider) return
+        if (!riders.getOrPut(rider) { client.rolesOf(rider) and KlippelGoClient.ROLE_RIDER != 0 }) return
+        requests[key] = Seen(RideRequest(key, rider, token, maxFare, expiresAt), data, System.currentTimeMillis())
+    }
+
+    private fun receiveOffer(m: JsonNode, data: ByteArray) {
+        val request = requests[BigInteger(1, m.bytes("request", 32))]?.request ?: return
+        val driver = m.address("driver")
+        val fare = BigInteger(m.text("fare"))
+        val expiresAt = m.get("expiresAt").asLong()
+        val seq = m.get("seq").asLong()
+        val forRequest = quotes.getOrPut(request.id) { LinkedHashMap() }
+        val known = forRequest[driver]
+        if (known != null && known.seq >= seq) return
+        if (known == null && forRequest.size >= MAX_OFFERS_PER_REQUEST) return
+        if (expiresAt <= now() || expiresAt > request.expiresAt || fare > request.maxFare) return
+        if (fare <= client.tokenConfig(client.coinFor(request.token)).first) return
+        val quoteHash = client.quoteHash(request, driver, fare, expiresAt)
+        if (KlippelGoClient.signerOf(offerHash(quoteHash, seq), m.bytes("sig", 65)) != driver) return
+        val offer = Offer(request.id, driver, fare, expiresAt, Numeric.toHexString(quoteHash), m.text("sig"))
+        forRequest[driver] = Quote(offer, seq, data)
+    }
+
+    private fun receiveClose(m: JsonNode, data: ByteArray) {
+        val request = requests[BigInteger(1, m.bytes("request", 32))]?.request ?: return
+        if (request.id in closed) return
+        if (KlippelGoClient.signerOf(closeHash(request.id), m.bytes("sig", 65)) != request.rider) return
+        closed[request.id] = if (request.rider == client.address) data else null
+    }
+
+    // ---------------------------------------------------------------- encoding
+
+    private fun requestId(rider: String, token: String, maxFare: BigInteger, expiresAt: Long, nonce: ByteArray) =
+        KlippelGoClient.abiHash(
+            Bytes32(REQUEST_DOMAIN),
+            Uint256(client.deployment.chainId),
+            Address(client.deployment.escrow),
+            Address(rider),
+            Address(token),
+            Uint256(maxFare),
+            Uint64(expiresAt),
+            Bytes32(nonce),
+        )
+
+    private fun offerHash(quoteHash: ByteArray, seq: Long) =
+        KlippelGoClient.abiHash(Bytes32(OFFER_DOMAIN), Bytes32(quoteHash), Uint64(seq))
+
+    private fun closeHash(requestId: BigInteger) = KlippelGoClient.abiHash(Bytes32(CLOSE_DOMAIN), Uint256(requestId))
+
+    private fun encode(vararg fields: Pair<String, Any>): ByteArray = json.writeValueAsBytes(mapOf(*fields))
+
+    private fun JsonNode.text(key: String): String = get(key)?.takeIf { it.isTextual }?.asText() ?: error("missing $key")
+
+    private fun JsonNode.bytes(key: String, size: Int): ByteArray =
+        Numeric.hexStringToByteArray(text(key)).also { require(it.size == size) }
+
+    private fun JsonNode.address(key: String): String = Numeric.toHexString(bytes(key, 20))
+
+    companion object {
+        /** Praça da Sé, São Paulo. Every phone uses this cell until the app reads its location. */
+        const val DEV_CELL = "6gyf4"
+
+        /** Port the bootstrap node listens on (`make gossip-node`). */
+        const val DEFAULT_PORT = 4001
+
+        /** How long a request and a quote stay valid, in seconds. */
+        const val REQUEST_TTL = 600L
+        const val OFFER_TTL = 300L
+        private const val MAX_TTL = 3600L
+
+        private const val ANNOUNCE_EVERY_MS = 2_500L
+        private const val LIVE_FOR_MS = 10_000L
+        private const val MAX_REQUESTS = 200
+        private const val MAX_OFFERS_PER_REQUEST = 50
+
+        private val REQUEST_DOMAIN: ByteArray = Hash.sha3("KlippelGo request v1".toByteArray())
+        private val OFFER_DOMAIN: ByteArray = Hash.sha3("KlippelGo offer v1".toByteArray())
+        private val CLOSE_DOMAIN: ByteArray = Hash.sha3("KlippelGo close v1".toByteArray())
+
+        /** Gossip topic for matching in one geohash-5 cell. */
+        fun topicFor(cell: String) = "/klippelgo/match/1/$cell"
+
+        private fun hex(id: BigInteger) = Numeric.toHexStringWithPrefixZeroPadded(id, 64)
+
+        private fun now(): Long = System.currentTimeMillis() / 1000
+    }
+}
