@@ -6,6 +6,7 @@ Personal data stays encrypted on the phone. Each completed ride pays a flat R$ 1
 deducted from the fare.
 
 The design is in the [KlippelGo Architecture Plan](https://claude.ai/code/artifact/9a1aa829-3b30-4485-9395-42fa77304dc8).
+How maps, routes and trip proofs are computed on the phone is in [docs/maps-and-routing.md](docs/maps-and-routing.md).
 
 ## Layout
 
