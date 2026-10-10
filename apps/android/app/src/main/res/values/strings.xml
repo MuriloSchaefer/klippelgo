@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">KlippelGo</string>
+    <string name="local_testnet">Rede de teste local</string>
+    <string name="choose_role">Como você vai usar o app neste aparelho?</string>
+    <string name="role_rider">Sou passageiro</string>
+    <string name="role_driver">Sou motorista</string>
+    <string name="role_rider_short">Passageiro</string>
+    <string name="role_driver_short">Motorista</string>
+    <string name="rpc_label">Endereço do nó (RPC)</string>
+    <string name="rpc_hint">No emulador, a rede local fica em http://10.0.2.2:8545</string>
+    <string name="language">Idioma</string>
+    <string name="switch_role">Trocar papel</string>
+    <string name="connected">Conectado à rede %1$s</string>
+    <string name="not_connected">Sem conexão com %1$s. A rede de teste está rodando?</string>
+    <string name="balances">Saldo</string>
+    <string name="request_ride">Pedir corrida</string>
+    <string name="fare_label">Valor da corrida (R$)</string>
+    <string name="coin_label">Moeda</string>
+    <string name="drivers_title">Motoristas</string>
+    <string name="no_drivers">Nenhum motorista registrado ainda.</string>
+    <string name="driver_new">Novo</string>
+    <string name="driver_rides">%1$d corridas</string>
+    <string name="driver_blocked">Não pode aceitar corridas</string>
+    <string name="fee_note">R$ 1,00 de cada corrida vai para o Instituto Klippel. O motorista recebe %1$s.</string>
+    <string name="invalid_fare">Digite um valor maior que R$ 1,00</string>
+    <string name="choose_driver">Escolha um motorista</string>
+    <string name="status_open">Aguardando o motorista aceitar</string>
+    <string name="status_accepted">Motorista a caminho</string>
+    <string name="status_started">Em viagem</string>
+    <string name="status_completed">Corrida concluída</string>
+    <string name="status_cancelled">Corrida cancelada</string>
+    <string name="status_disputed">Em disputa</string>
+    <string name="status_resolved">Disputa resolvida</string>
+    <string name="action_accept">Aceitar corrida</string>
+    <string name="action_start">Passageiro embarcou: iniciar</string>
+    <string name="action_complete">Cheguei ao destino</string>
+    <string name="action_cancel">Cancelar</string>
+    <string name="rate_driver">Avalie o motorista</string>
+    <string name="rate_rider">Avalie o passageiro</string>
+    <string name="rated">Avaliação enviada</string>
+    <string name="ride_number">Corrida #%1$s</string>
+    <string name="fare">Valor: %1$s</string>
+    <string name="driver_receives">Motorista recebe: %1$s</string>
+    <string name="institute_receives">Instituto Klippel: %1$s</string>
+    <string name="counterparty">Com: %1$s</string>
+    <string name="history">Corridas anteriores</string>
+    <string name="no_rides">Nenhuma corrida ainda.</string>
+    <string name="incoming_title">Corridas para você</string>
+    <string name="waiting_rides">Aguardando pedidos de corrida…</string>
+    <string name="can_accept">Liberado para aceitar corridas</string>
+    <string name="cannot_accept">Bloqueado pela política: precisa de stake, CNH válida e nota mínima</string>
+    <string name="sending">Enviando para a rede…</string>
+    <string name="dismiss">Fechar</string>
+    <string name="dev_warning">Contas de teste públicas. Nunca envie dinheiro real.</string>
+    <string name="continue_label">Continuar</string>
+</resources>

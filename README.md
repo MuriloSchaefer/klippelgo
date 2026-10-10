@@ -15,7 +15,8 @@ The design is in the [KlippelGo Architecture Plan](https://claude.ai/code/artifa
 | `testnet/` | Scripts to run a local chain, deploy, and run a demo ride |
 | `deployments/` | Contract addresses per network (`local.json` is written by the deploy script) |
 | `core/` | Shared Rust core for the apps (money and fee maths, geohash discovery cells, network settings) |
-| `apps/android`, `apps/ios` | Native app shells (Kotlin/Compose, Swift/SwiftUI), not created yet |
+| `apps/android` | Android app (Kotlin/Compose): rider and driver modes against the local testnet. See [its README](apps/android/README.md) |
+| `apps/ios` | iOS app shell (Swift/SwiftUI), not created yet |
 
 ## Local testnet
 
@@ -27,6 +28,8 @@ make testnet      # terminal 1: anvil on http://127.0.0.1:8545, chain id 31337
 make deploy       # terminal 2: deploy contracts, mock BRLA/BRZ, seed accounts
 make demo         # run one R$ 23,40 ride: driver gets R$ 22,40, Instituto Klippel R$ 1,00
 ```
+
+To play the ride on two Android emulators (rider and driver at once), see [apps/android](apps/android/README.md).
 
 No Foundry? `docker compose -f testnet/docker-compose.yml up` starts the same chain; deploy still needs `forge`.
 
@@ -72,6 +75,6 @@ make test         # forge test + cargo test
 
 ## Not built yet
 
-ERC-4337 smart accounts and the paymaster, the libp2p discovery layer, the native apps, and a Polygon Amoy
+ERC-4337 smart accounts and the paymaster, the libp2p discovery layer, the iOS app, and a Polygon Amoy
 deployment. The pickup proof is recorded as a hash the driver submits; checking both phones' signatures comes
 with the smart accounts.
