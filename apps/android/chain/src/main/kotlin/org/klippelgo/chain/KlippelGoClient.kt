@@ -9,7 +9,9 @@ import org.web3j.abi.datatypes.Function
 import org.web3j.abi.datatypes.Type
 import org.web3j.abi.datatypes.generated.Bytes32
 import org.web3j.abi.datatypes.generated.Bytes4
+import org.web3j.abi.datatypes.generated.Uint16
 import org.web3j.abi.datatypes.generated.Uint256
+import org.web3j.abi.datatypes.generated.Uint32
 import org.web3j.abi.datatypes.generated.Uint64
 import org.web3j.abi.datatypes.generated.Uint8
 import org.web3j.crypto.Credentials
@@ -116,12 +118,61 @@ class KlippelGoClient(
         val registered = logs(deployment.registry, REGISTERED_TOPIC)
             .map { Numeric.toHexStringWithPrefixZeroPadded(Numeric.toBigInt(it.topics[1]), 40) }
             .distinct()
-        return registered.filter { rolesOf(it) and ROLE_DRIVER != 0 }.map { d ->
-            val score = uint(call(deployment.reputation, fn("scoreOf", listOf(Address(d)), listOf(uint256Ref)))[0])
-            val count = uint(call(deployment.reputation, fn("ratingCount", listOf(Address(d)), listOf(uint256Ref)))[0])
-            val rides = uint(call(deployment.reputation, fn("completedRides", listOf(Address(d)), listOf(uint256Ref)))[0])
-            DriverInfo(d, score.toInt(), count.toInt(), rides.toInt(), canAcceptRides(d))
+        return registered.filter { rolesOf(it) and ROLE_DRIVER != 0 }.map(::driverInfo)
+    }
+
+    /** One driver's reputation and whether the policy lets them accept rides. */
+    fun driverInfo(d: String = address): DriverInfo {
+        val score = uint(call(deployment.reputation, fn("scoreOf", listOf(Address(d)), listOf(uint256Ref)))[0])
+        val count = uint(call(deployment.reputation, fn("ratingCount", listOf(Address(d)), listOf(uint256Ref)))[0])
+        val rides = uint(call(deployment.reputation, fn("completedRides", listOf(Address(d)), listOf(uint256Ref)))[0])
+        return DriverInfo(d, score.toInt(), count.toInt(), rides.toInt(), canAcceptRides(d))
+    }
+
+    /**
+     * Which requirements of the accept policy `driver` fails, read the same way `PBACGovernor.hasPermission`
+     * checks them. Empty when the driver may accept rides.
+     */
+    fun acceptBlockers(driver: String = address): List<Blocker> {
+        val p = call(
+            deployment.governor,
+            fn(
+                "policy",
+                listOf(Address(deployment.escrow), Bytes4(selector("accept(uint256)"))),
+                listOf(boolRef, uint8Ref, uint16Ref, uint32Ref, uint256Ref, bytes32Ref),
+            ),
+        )
+        if (!(p[0] as Bool).value) return listOf(Blocker.Disabled)
+        val roles = uint(p[1]).toInt()
+        val minScore = uint(p[2]).toInt()
+        val minAge = uint(p[3]).toLong()
+        val minStake = uint(p[4])
+        val credential = (p[5] as Bytes32).value
+
+        val id = call(
+            deployment.registry,
+            fn("identity", listOf(Address(driver)), listOf(uint8Ref, uint64Ref, uint64Ref, uint256Ref, uint256Ref)),
+        )
+        val registeredAt = uint(id[1]).toLong()
+        val stake = uint(id[3])
+        val blockers = mutableListOf<Blocker>()
+        if (registeredAt == 0L || (roles != 0 && uint(id[0]).toInt() and roles == 0)) blockers += Blocker.Role
+        if (stake < minStake) {
+            val token = (call(deployment.registry, fn("stakeToken", emptyList(), listOf(addressRef)))[0] as Address).value
+            val coin = coinFor(token)
+            blockers += Blocker.Stake(coin.toReais(stake), coin.toReais(minStake))
         }
+        if (registeredAt != 0L && System.currentTimeMillis() / 1000 - registeredAt < minAge) blockers += Blocker.AccountAge
+        val info = driverInfo(driver)
+        if (minScore != 0 && info.ratings > 0 && info.score < minScore) blockers += Blocker.Score(info.score, minScore)
+        if (credential.any { it != 0.toByte() }) {
+            val has = call(
+                deployment.registry,
+                fn("hasCredential", listOf(Address(driver), Bytes32(credential)), listOf(boolRef)),
+            )[0] as Bool
+            if (!has.value) blockers += Blocker.Credential(cnh = credential.contentEquals(CREDENTIAL_CNH))
+        }
+        return blockers
     }
 
     /** Whether this account already rated the other party of a completed ride. */
@@ -212,6 +263,10 @@ class KlippelGoClient(
     fun rate(rideId: BigInteger, stars: Int) =
         send(deployment.reputation, fn("rate", listOf(Uint256(rideId), Uint8(stars.toLong())), emptyList()))
 
+    /** Mints test reais to this account. Only the local testnet's mock coins allow it: they stand in for PIX. */
+    fun mint(coin: Coin, amount: BigInteger) =
+        send(coin.address, fn("mint", listOf(Address(address), Uint256(amount)), emptyList()))
+
     fun coinFor(token: String): Coin =
         coins.firstOrNull { it.address.equals(token, ignoreCase = true) } ?: throw ChainException("Unknown coin $token")
 
@@ -279,8 +334,11 @@ class KlippelGoClient(
 
         private val QUOTE_DOMAIN: ByteArray = Hash.sha3("KlippelGo quote v1".toByteArray())
 
+        private val CREDENTIAL_CNH = Numeric.hexStringToByteArray(Hash.sha3String("klippelgo.credential.CNH"))
         private val uint256Ref = object : TypeReference<Uint256>() {}
         private val uint64Ref = object : TypeReference<Uint64>() {}
+        private val uint32Ref = object : TypeReference<Uint32>() {}
+        private val uint16Ref = object : TypeReference<Uint16>() {}
         private val uint8Ref = object : TypeReference<Uint8>() {}
         private val addressRef = object : TypeReference<Address>() {}
         private val bytes32Ref = object : TypeReference<Bytes32>() {}

@@ -120,4 +120,4 @@ done
 
 echo
 echo "Rider is on emulator-5554 (KlippelGo_Rider), driver on emulator-5556 (KlippelGo_Driver)."
-echo "On the rider: tap 'Pedir corrida'. On the driver: set your price and tap 'Enviar oferta'."
+echo "On the rider: tap 'Para onde?', then 'Pedir ofertas'. On the driver: tap 'Ficar online', set your price and tap 'Enviar oferta'."

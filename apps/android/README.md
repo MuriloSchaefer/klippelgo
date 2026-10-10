@@ -9,7 +9,8 @@ Request and offers travel over the gossip network (libp2p GossipSub, in the Rust
 node on your computer. Nothing reaches the chain until the rider takes an offer. From then on each step is a
 transaction on `RideEscrow`, and each phone polls the chain every two seconds to see what the other did.
 
-Portuguese is the default language. English and Spanish can be picked on the first screen.
+Portuguese is the default language. English and Spanish can be picked on the first screen. The type is IBM Plex
+(SIL Open Font License), bundled in `app/src/main/res/font`.
 
 | Path | What it is |
 | --- | --- |
@@ -54,17 +55,31 @@ shows its log); run `make gossip-node` yourself to keep it in a terminal instead
 
 Then play a ride:
 
-1. **Rider** (emulator-5554): keep R$ 23,40 in BRZ as the most you will pay and tap **Pedir corrida**. The
-   request goes out over gossip. Nothing is locked yet.
-2. **Driver** (emulator-5556): the request appears under **Pedidos de corrida** within a few seconds. Set your
-   price, at or below the rider's max, and tap **Enviar oferta**. You can change it and send again.
-3. **Rider**: the offer appears under **Ofertas dos motoristas**, cheapest first. Tap **Aceitar**. The offered
-   fare and a R$ 2,00 bond are locked in the escrow, with the hash of the quote the driver signed.
-4. **Driver**: the ride appears under **Corridas para você**. Tap **Aceitar corrida** (posts a R$ 5,00 bond),
-   then **Passageiro embarcou: iniciar**.
-5. **Rider**: the status changes to **Em viagem**. Tap **Cheguei ao destino**.
-6. Both: the ride moves to history. The driver received the fare minus R$ 1,00, which went to Instituto
-   Klippel. Rate each other with the stars.
+1. **Rider** (emulator-5554): tap **Para onde?**, leave R$ 30,00 in BRZ as the most you will pay and tap
+   **Pedir ofertas**. The request goes out over gossip. Nothing is locked yet.
+2. **Driver** (emulator-5556): tap **Ficar online**. The request appears as **Nova solicitação** within a few
+   seconds. Set your price with − and +, at or below the rider's max, and tap **Enviar oferta**. You can change
+   it and send again.
+3. **Rider**: the offer appears under **Escolha um motorista**, cheapest first. Tap it, check the breakdown and
+   tap **Bloquear**. The offered fare and a R$ 2,00 bond are locked in the escrow, with the hash of the quote
+   the driver signed.
+4. **Driver**: the screen changes to **O passageiro escolheu você**. Tap **Aceitar corrida** (posts a R$ 5,00
+   bond), then **Passageiro embarcou: iniciar**.
+5. **Rider**: the status changes to **Em viagem**. Tap **Cheguei ao destino**, pick the stars and tap
+   **Confirmar e pagar**.
+6. **Driver**: the screen shows what you received, the fare minus R$ 1,00 that went to Instituto Klippel. Rate
+   the rider with the stars. Keep it at 5: the launch policy blocks a driver whose average falls below 4,50.
+
+A phone started by hand opens on the welcome screen, where you pick rider or driver and the node address. The
+rider's **Carteira** tab adds test reais (the mock coins mint to anyone, standing in for PIX) and lists past
+rides; **Perfil** switches to driver mode.
+
+### What the screens leave out
+
+The screens follow the [KlippelGo Wireframes](https://claude.ai/artifact/1W2kMTkP6EYG93XmUXHQ93). Parts the
+protocol cannot back yet are left out instead of faked: the map (a grey grid stands in), destination and saved
+places, names, car and plate, arrival times, chat, call, share and SOS, the pickup QR code and Bluetooth check,
+PIX, and Face ID.
 
 ### What the gossip layer does and does not do yet
 
@@ -83,7 +98,7 @@ NAT, and the encrypted ride channel.
 1. Open `apps/android` in Android Studio and let Gradle sync.
 2. In Device Manager, create two virtual devices (any Pixel, API 35) and start both.
 3. Pick the first emulator in the device dropdown and press Run, then pick the second and press Run again.
-4. On one emulator tap **Sou passageiro**, on the other **Sou motorista**. The node address is already
+4. On each emulator tap **Começar**, then pick **Sou passageiro** on one and **Sou motorista** on the other. The node address is already
    `http://10.0.2.2:8545`, which is how an emulator reaches your computer.
 
 The Gradle build runs `cargo ndk`, so the NDK and `cargo-ndk` must be installed, and `make gossip-node` must be
@@ -110,6 +125,9 @@ not built yet.
 - **Contracts not found after a restart.** If you deployed twice on the same chain the addresses moved. Run
   `make testnet-reset`, restart `make testnet`, `make deploy`, and rebuild the app (it bundles
   `deployments/local.json`).
+- **Bloqueado: sua nota é menor que o mínimo.** A test rating below 5 stars can push the driver under the
+  policy's 4,50. `make reset-ratings WHO=driver` clears the ratings that account received and keeps rides,
+  balances, stake and CNH. `WHO` also takes `rider` or any address.
 - **Start over.** `make testnet-reset` wipes all rides and balances.
 
 ## Tests

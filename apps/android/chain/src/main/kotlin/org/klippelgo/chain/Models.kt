@@ -64,6 +64,26 @@ data class DriverInfo(
     val canAccept: Boolean,
 )
 
+/** A requirement of the accept policy that a driver does not meet. */
+sealed interface Blocker {
+    /** Not registered with a role the policy asks for. */
+    data object Role : Blocker
+
+    data class Stake(val have: BigDecimal, val need: BigDecimal) : Blocker
+
+    /** Average stars x100. */
+    data class Score(val have: Int, val need: Int) : Blocker
+
+    /** A missing or expired credential. `cnh` tells the driving licence from any other kind. */
+    data class Credential(val cnh: Boolean) : Blocker
+
+    /** The account registered too recently. */
+    data object AccountAge : Blocker
+
+    /** The policy itself is switched off, so nobody may accept. */
+    data object Disabled : Blocker
+}
+
 data class Coin(val symbol: String, val address: String, val decimals: Int) {
     fun toBaseUnits(reais: BigDecimal): BigInteger = reais.movePointRight(decimals).toBigIntegerExact()
     fun toReais(units: BigInteger): BigDecimal = BigDecimal(units, decimals)

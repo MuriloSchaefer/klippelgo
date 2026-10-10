@@ -1,9 +1,11 @@
 package org.klippelgo.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,33 +15,30 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.klippelgo.app.AppViewModel
 import org.klippelgo.app.DEFAULT_RPC
@@ -48,9 +47,8 @@ import org.klippelgo.app.Role
 import org.klippelgo.app.UiState
 import org.klippelgo.app.setAppLanguage
 import org.klippelgo.chain.Coin
-import org.klippelgo.chain.Offer
+import org.klippelgo.chain.DriverInfo
 import org.klippelgo.chain.Ride
-import org.klippelgo.chain.RideRequest
 import org.klippelgo.chain.RideStatus
 import java.math.BigDecimal
 import java.math.BigInteger
@@ -62,11 +60,11 @@ import java.util.Locale
 fun KlippelGoApp(vm: AppViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.safeDrawingPadding().imePadding()) {
+        Box(Modifier.safeDrawingPadding().imePadding()) {
             when (state.role) {
-                null -> RolePicker(state.rpcUrl, onPick = vm::connect)
-                Role.RIDER -> RiderHome(state, vm)
-                Role.DRIVER -> DriverHome(state, vm)
+                null -> Onboarding(state, vm)
+                Role.RIDER -> RiderApp(state, vm)
+                Role.DRIVER -> DriverApp(state, vm)
             }
         }
         state.error?.let { msg ->
@@ -79,98 +77,172 @@ fun KlippelGoApp(vm: AppViewModel) {
     }
 }
 
-// ------------------------------------------------------------------- role picker
+// ------------------------------------------------------------------- onboarding
 
 @Composable
-private fun RolePicker(initialRpc: String, onPick: (Role, String) -> Unit) {
-    var rpc by rememberSaveable { mutableStateOf(initialRpc.ifBlank { DEFAULT_RPC }) }
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text("KlippelGo", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-        Text(stringResource(R.string.local_testnet), color = MaterialTheme.colorScheme.primary)
-        LanguagePicker()
-        Spacer(Modifier.height(8.dp))
-        Text(stringResource(R.string.choose_role), style = MaterialTheme.typography.titleMedium)
-        Button(onClick = { onPick(Role.RIDER, rpc) }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.role_rider)) }
-        OutlinedButton(onClick = { onPick(Role.DRIVER, rpc) }, Modifier.fillMaxWidth()) {
-            Text(stringResource(R.string.role_driver))
-        }
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = rpc,
-            onValueChange = { rpc = it },
-            label = { Text(stringResource(R.string.rpc_label)) },
-            supportingText = { Text(stringResource(R.string.rpc_hint)) },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Text(stringResource(R.string.dev_warning), style = MaterialTheme.typography.bodySmall)
+private fun Onboarding(state: UiState, vm: AppViewModel) {
+    var step by rememberSaveable { mutableIntStateOf(0) }
+    if (step == 0) {
+        Welcome(onStart = { step = 1 })
+    } else {
+        BackHandler { step = 0 }
+        CreateAccount(state, onBack = { step = 0 }, onContinue = vm::createAccount)
     }
 }
 
 @Composable
-private fun LanguagePicker() {
-    val current = AppCompatDelegate.getApplicationLocales()[0]?.language ?: "pt"
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(stringResource(R.string.language))
-        listOf("pt-BR" to "PT", "en" to "EN", "es" to "ES").forEach { (tag, label) ->
-            FilterChip(
-                selected = current == tag.substringBefore('-'),
-                onClick = { setAppLanguage(tag) },
-                label = { Text(label) },
-            )
+private fun Welcome(onStart: () -> Unit) {
+    ScrollScreen {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 20.dp, top = 28.dp, end = 20.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box(Modifier.size(32.dp).background(MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp)))
+            Text("KlippelGo", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            LanguagePills(currentLanguage(), ::setAppLanguage)
+        }
+        MapSurface(
+            Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp).fillMaxWidth().height(200.dp).clip(RoundedCornerShape(16.dp)),
+        ) {
+            RouteArt(Modifier.fillMaxSize())
+        }
+        Column(Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Title(stringResource(R.string.welcome_title))
+            Muted(stringResource(R.string.welcome_body))
+        }
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Promise(KIcons.Lock, stringResource(R.string.promise_escrow), stringResource(R.string.promise_escrow_body))
+            Promise(KIcons.Phone, stringResource(R.string.promise_data), stringResource(R.string.promise_data_body))
+            Promise(KIcons.Rules, stringResource(R.string.promise_rules), stringResource(R.string.promise_rules_body))
+        }
+        Spacer(Modifier.weight(1f))
+        Column(
+            Modifier.padding(start = 20.dp, end = 20.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            PrimaryButton(stringResource(R.string.start), onStart)
+            Muted(stringResource(R.string.institute_infra), size = 12.sp)
         }
     }
+}
+
+@Composable
+private fun Promise(icon: ImageVector, title: String, body: String) {
+    KCard {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            IconTile(icon)
+            Column {
+                Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Muted(body)
+            }
+        }
+    }
+}
+
+@Composable
+fun IconTile(icon: ImageVector) {
+    Box(
+        Modifier.size(40.dp).background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(10.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer)
+    }
+}
+
+/**
+ * The wireframe asks for a phone number and creates a key behind Face ID. Until smart accounts exist the app
+ * signs with the seeded test accounts, so this screen picks which one to be and where the test network is.
+ */
+@Composable
+private fun CreateAccount(state: UiState, onBack: () -> Unit, onContinue: (String, Role, String) -> Unit) {
+    var name by rememberSaveable { mutableStateOf(state.name) }
+    var role by rememberSaveable { mutableStateOf(Role.RIDER) }
+    var rpc by rememberSaveable { mutableStateOf(state.rpcUrl.ifBlank { DEFAULT_RPC }) }
+    ScrollScreen {
+        BackButton(onBack, Modifier.padding(start = 12.dp, top = 20.dp))
+        Column(Modifier.padding(start = 20.dp, top = 8.dp, end = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Title(stringResource(R.string.create_title))
+            Muted(stringResource(R.string.create_body))
+        }
+        Column(Modifier.padding(start = 20.dp, top = 28.dp, end = 20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                FieldLabel(stringResource(R.string.first_name))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    placeholder = { Muted(stringResource(R.string.first_name_hint), size = 16.sp) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Tag(stringResource(R.string.only_you_this_phone), Modifier.padding(top = 2.dp))
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                FieldLabel(stringResource(R.string.choose_role))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Choice(stringResource(R.string.role_rider), role == Role.RIDER, { role = Role.RIDER }, Modifier.weight(1f))
+                    Choice(stringResource(R.string.role_driver), role == Role.DRIVER, { role = Role.DRIVER }, Modifier.weight(1f))
+                }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                FieldLabel(stringResource(R.string.rpc_label))
+                OutlinedTextField(
+                    value = rpc,
+                    onValueChange = { rpc = it },
+                    supportingText = { Text(stringResource(R.string.rpc_hint)) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        KCard(Modifier.padding(start = 20.dp, top = 20.dp, end = 20.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                IconTile(KIcons.Lock)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(stringResource(R.string.local_testnet), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Muted(stringResource(R.string.dev_warning))
+                }
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        PrimaryButton(
+            stringResource(R.string.continue_label),
+            onClick = { onContinue(name, role, rpc) },
+            enabled = rpc.isNotBlank(),
+            modifier = Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 32.dp),
+        )
+    }
+}
+
+@Composable
+fun FieldLabel(text: String) {
+    Text(text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
 }
 
 // ------------------------------------------------------------------- shared pieces
 
 @Composable
-private fun Header(state: UiState, vm: AppViewModel) {
-    val roleLabel = stringResource(if (state.role == Role.RIDER) R.string.role_rider_short else R.string.role_driver_short)
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("KlippelGo · $roleLabel", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.weight(1f))
-            if (state.busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-            TextButton(onClick = vm::switchRole) { Text(stringResource(R.string.switch_role)) }
-        }
-        Text(shortAddress(state.address), style = MaterialTheme.typography.bodySmall)
-        val net = when (state.connected) {
-            true -> stringResource(R.string.connected, state.rpcUrl)
-            false -> stringResource(R.string.not_connected, state.rpcUrl)
-            null -> ""
-        }
-        Text(
-            net,
-            style = MaterialTheme.typography.bodySmall,
-            color = if (state.connected == false) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary,
-        )
-        if (state.gossipConnected != null) {
-            Text(
-                stringResource(if (state.gossipConnected) R.string.gossip_connected else R.string.gossip_not_connected),
-                style = MaterialTheme.typography.bodySmall,
-                color = if (state.gossipConnected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error,
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(top = 4.dp)) {
-            Text(stringResource(R.string.balances) + ":", fontWeight = FontWeight.SemiBold)
-            state.balances.forEach { (coin, units) -> Text("${brl(coin, units)} ${coin.symbol}") }
-        }
-        if (state.busy) Text(stringResource(R.string.sending), style = MaterialTheme.typography.bodySmall)
+fun currentLanguage(): String = AppCompatDelegate.getApplicationLocales()[0]?.language ?: "pt"
+
+/** Says so when the chain node or the gossip network is out of reach. Nothing when both are fine. */
+@Composable
+fun NetworkNotice(state: UiState, modifier: Modifier = Modifier) {
+    val text = when {
+        state.connected == false -> stringResource(R.string.not_connected, state.rpcUrl)
+        state.gossipConnected == false -> stringResource(R.string.gossip_not_connected)
+        else -> return
     }
-    HorizontalDivider()
+    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.error, modifier = modifier) {
+        Text(text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 13.sp, lineHeight = 18.sp)
+    }
 }
 
 @Composable
-private fun SectionTitle(text: String) {
-    Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))
-}
-
-@Composable
-private fun statusLabel(status: RideStatus): String = stringResource(
+fun statusLabel(status: RideStatus): String = stringResource(
     when (status) {
         RideStatus.Open -> R.string.status_open
         RideStatus.Accepted -> R.string.status_accepted
@@ -183,284 +255,82 @@ private fun statusLabel(status: RideStatus): String = stringResource(
 )
 
 @Composable
-private fun RideCard(
+fun scoreLabel(d: DriverInfo?): String = when {
+    d == null || d.ratings == 0 -> stringResource(R.string.driver_new)
+    else -> "★ " + String.format(Locale.forLanguageTag("pt-BR"), "%.1f", d.score / 100.0)
+}
+
+/**
+ * The end of a ride, for both sides. The rider lands here on arrival and pays by confirming; after that, and for
+ * the driver, it only asks for the rating.
+ */
+@Composable
+fun RideEndScreen(
+    state: UiState,
     ride: Ride,
-    coin: Coin,
-    counterparty: String,
-    highlighted: Boolean,
-    actions: @Composable () -> Unit,
+    onBack: (() -> Unit)?,
+    onConfirm: (Int) -> Unit,
+    onSkip: () -> Unit,
 ) {
-    Card(
-        Modifier.fillMaxWidth(),
-        colors = if (highlighted) {
-            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
-        } else {
-            CardDefaults.cardColors()
-        },
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row {
-                Text(stringResource(R.string.ride_number, ride.id.toString()), fontWeight = FontWeight.Bold)
-                Spacer(Modifier.weight(1f))
-                Text(statusLabel(ride.status), color = MaterialTheme.colorScheme.primary)
-            }
-            Text(stringResource(R.string.fare, "${brl(coin, ride.fare)} ${coin.symbol}"))
-            Text(stringResource(R.string.driver_receives, brl(coin, ride.driverPayout)))
-            Text(stringResource(R.string.institute_receives, brl(coin, ride.fee)), style = MaterialTheme.typography.bodySmall)
-            Text(stringResource(R.string.counterparty, shortAddress(counterparty)), style = MaterialTheme.typography.bodySmall)
-            actions()
-        }
-    }
-}
-
-@Composable
-private fun Stars(label: String, onRate: (Int) -> Unit) {
-    Column {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        Row {
-            (1..5).forEach { n -> TextButton(onClick = { onRate(n) }) { Text("★".repeat(n)) } }
-        }
-    }
-}
-
-// ------------------------------------------------------------------- rider
-
-@Composable
-private fun RiderHome(state: UiState, vm: AppViewModel) {
-    Header(state, vm)
-    val active = state.rides.firstOrNull { it.status.isActive }
-    LazyColumn(
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        if (active != null) {
-            item {
-                val coin = coinOf(state, active.token)
-                RideCard(active, coin, active.driver, highlighted = true) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (active.status == RideStatus.Started) {
-                            Button(onClick = { vm.complete(active.id) }, enabled = !state.busy) {
-                                Text(stringResource(R.string.action_complete))
-                            }
-                        }
-                        if (active.status == RideStatus.Open || active.status == RideStatus.Accepted) {
-                            OutlinedButton(onClick = { vm.cancel(active.id) }, enabled = !state.busy) {
-                                Text(stringResource(R.string.action_cancel))
-                            }
-                        }
-                    }
-                }
-            }
-        } else if (state.request != null) {
-            item { RiderRequest(state, vm, state.request) }
-        } else {
-            item { RequestRideForm(state, vm) }
-        }
-
-        item { SectionTitle(stringResource(R.string.history)) }
-        val past = state.rides.filter { !it.status.isActive }
-        if (past.isEmpty()) item { Text(stringResource(R.string.no_rides)) }
-        items(past, key = { it.id.toString() }) { ride ->
-            RideCard(ride, coinOf(state, ride.token), ride.driver, highlighted = false) {
-                if (ride.status == RideStatus.Completed) {
-                    if (ride.id in state.rated) {
-                        Text(stringResource(R.string.rated), style = MaterialTheme.typography.bodySmall)
-                    } else {
-                        Stars(stringResource(R.string.rate_driver)) { vm.rate(ride.id, it) }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RequestRideForm(state: UiState, vm: AppViewModel) {
-    var fareText by rememberSaveable { mutableStateOf("23,40") }
-    var coinSymbol by rememberSaveable { mutableStateOf("BRZ") }
-    val coins = state.balances.keys.toList()
-    val coin = coins.firstOrNull { it.symbol == coinSymbol } ?: coins.firstOrNull()
-    val fare = parseFare(fareText)
-    val fee = coin?.let { state.fees[it] }
-    val fareUnits = if (coin != null && fare != null) runCatching { coin.toBaseUnits(fare) }.getOrNull() else null
-    val valid = fareUnits != null && fee != null && fareUnits > fee
-
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionTitle(stringResource(R.string.request_ride))
-        OutlinedTextField(
-            value = fareText,
-            onValueChange = { fareText = it },
-            label = { Text(stringResource(R.string.max_fare_label)) },
-            isError = fareText.isNotBlank() && !valid,
-            supportingText = { Text(stringResource(if (valid) R.string.max_fare_hint else R.string.invalid_fare)) },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(stringResource(R.string.coin_label))
-            coins.forEach { c ->
-                FilterChip(selected = c == coin, onClick = { coinSymbol = c.symbol }, label = { Text(c.symbol) })
-            }
-        }
-        Button(
-            onClick = { if (coin != null && fare != null) vm.requestRide(coin, fare) },
-            enabled = valid && !state.busy,
-            modifier = Modifier.fillMaxWidth(),
+    val coin = coinOf(state, ride.token)
+    val rider = state.role == Role.RIDER
+    val paid = ride.status == RideStatus.Completed
+    var stars by rememberSaveable(ride.id.toString()) { mutableIntStateOf(0) }
+    ScrollScreen {
+        if (onBack != null) BackButton(onBack, Modifier.padding(start = 12.dp, top = 20.dp)) else Spacer(Modifier.height(48.dp))
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(stringResource(R.string.request_ride))
-        }
-    }
-}
-
-/** The rider's open request and the drivers' quotes for it, cheapest first, then best rated. */
-@Composable
-private fun RiderRequest(state: UiState, vm: AppViewModel, request: RideRequest) {
-    val coin = coinOf(state, request.token)
-    val drivers = state.drivers.filter { it.canAccept }.associateBy { it.address }
-    val offers = state.offers.filter { it.driver in drivers }
-        .sortedWith(compareBy<Offer> { it.fare }.thenByDescending { drivers.getValue(it.driver).score })
-
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Card(
-            Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)),
-        ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(stringResource(R.string.request_sent), fontWeight = FontWeight.Bold)
-                Text(stringResource(R.string.up_to, "${brl(coin, request.maxFare)} ${coin.symbol}"))
-                OutlinedButton(onClick = { vm.cancelRequest(request) }, enabled = !state.busy) {
-                    Text(stringResource(R.string.action_cancel_request))
-                }
+            Box(Modifier.size(64.dp).background(MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) {
+                Icon(KIcons.Check, contentDescription = null, Modifier.size(30.dp), tint = MaterialTheme.colorScheme.onPrimary)
             }
+            Title(stringResource(if (rider && !paid) R.string.arrived_title else R.string.status_completed), size = 26.sp)
+            Muted(stringResource(R.string.ride_number, ride.id.toString()))
         }
-
-        SectionTitle(stringResource(R.string.offers_title))
-        if (offers.isEmpty()) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                Text(stringResource(R.string.waiting_offers))
-            }
-        }
-        offers.forEach { offer ->
-            val d = drivers.getValue(offer.driver)
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(brl(coin, offer.fare), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    val score = if (d.ratings == 0) stringResource(R.string.driver_new) else "★ %.2f".format(d.score / 100.0)
+        KCard(Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "${shortAddress(d.address)} · $score · " + stringResource(R.string.driver_rides, d.completedRides),
-                        style = MaterialTheme.typography.bodySmall,
+                        stringResource(if (rider) R.string.amount else R.string.you_received),
+                        Modifier.weight(1f),
+                        fontWeight = FontWeight.SemiBold,
                     )
+                    Text(brl(coin, if (rider) ride.fare else ride.driverPayout), fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 }
-                Button(onClick = { vm.acceptOffer(request, offer) }, enabled = !state.busy) {
-                    Text(stringResource(R.string.action_take_offer))
-                }
+                Muted(
+                    when {
+                        !rider -> stringResource(R.string.institute_got, brl(coin, ride.fee))
+                        paid -> stringResource(R.string.paid_to, shortAddress(ride.driver))
+                        else -> stringResource(R.string.paid_on_confirm, shortAddress(ride.driver))
+                    },
+                    size = 13.sp,
+                )
             }
         }
-    }
-}
-
-// ------------------------------------------------------------------- driver
-
-@Composable
-private fun DriverHome(state: UiState, vm: AppViewModel) {
-    Header(state, vm)
-    val active = state.rides.filter { it.status.isActive }
-    val past = state.rides.filter { !it.status.isActive }
-    LazyColumn(
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            Text(
-                stringResource(if (state.canAccept) R.string.can_accept else R.string.cannot_accept),
-                color = if (state.canAccept) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-            )
+        Column(
+            Modifier.fillMaxWidth().padding(start = 20.dp, top = 24.dp, end = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(stringResource(if (rider) R.string.rate_driver else R.string.rate_rider), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            StarPicker(stars, onPick = { stars = it })
+            Tag(stringResource(R.string.rating_public))
         }
-        item { SectionTitle(stringResource(R.string.requests_title)) }
-        if (state.requests.isEmpty()) {
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    Text(stringResource(R.string.waiting_rides))
+        Spacer(Modifier.weight(1f))
+        Column(
+            Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (paid) {
+                PrimaryButton(stringResource(R.string.send_rating), { onConfirm(stars) }, enabled = stars > 0, busy = state.busy)
+                TextButton(onClick = onSkip, enabled = !state.busy) {
+                    Muted(stringResource(R.string.not_now), align = TextAlign.Center)
                 }
-            }
-        }
-        items(state.requests, key = { "request-${it.id}" }) { request -> DriverQuote(state, vm, request) }
-        if (active.isNotEmpty()) item { SectionTitle(stringResource(R.string.incoming_title)) }
-        items(active, key = { it.id.toString() }) { ride ->
-            RideCard(ride, coinOf(state, ride.token), ride.rider, highlighted = true) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    when (ride.status) {
-                        RideStatus.Open -> Button(onClick = { vm.accept(ride.id) }, enabled = !state.busy && state.canAccept) {
-                            Text(stringResource(R.string.action_accept))
-                        }
-                        RideStatus.Accepted -> {
-                            Button(onClick = { vm.start(ride.id) }, enabled = !state.busy) { Text(stringResource(R.string.action_start)) }
-                            OutlinedButton(onClick = { vm.cancel(ride.id) }, enabled = !state.busy) {
-                                Text(stringResource(R.string.action_cancel))
-                            }
-                        }
-                        else -> {}
-                    }
-                }
-            }
-        }
-        item { SectionTitle(stringResource(R.string.history)) }
-        if (past.isEmpty()) item { Text(stringResource(R.string.no_rides)) }
-        items(past, key = { it.id.toString() }) { ride ->
-            RideCard(ride, coinOf(state, ride.token), ride.rider, highlighted = false) {
-                if (ride.status == RideStatus.Completed) {
-                    if (ride.id in state.rated) {
-                        Text(stringResource(R.string.rated), style = MaterialTheme.typography.bodySmall)
-                    } else {
-                        Stars(stringResource(R.string.rate_rider)) { vm.rate(ride.id, it) }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** A rider's request, with the price field the driver quotes from. It starts at the rider's max fare. */
-@Composable
-private fun DriverQuote(state: UiState, vm: AppViewModel, request: RideRequest) {
-    val coin = coinOf(state, request.token)
-    val mine = state.myOffers[request.id]
-    var priceText by rememberSaveable { mutableStateOf(fareInput(coin, mine?.fare ?: request.maxFare)) }
-    val fee = state.fees[coin]
-    val price = parseFare(priceText)?.let { runCatching { coin.toBaseUnits(it) }.getOrNull() }
-    val valid = price != null && fee != null && price > fee && price <= request.maxFare
-
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(stringResource(R.string.up_to, "${brl(coin, request.maxFare)} ${coin.symbol}"), fontWeight = FontWeight.Bold)
-            Text(stringResource(R.string.rider_label, shortAddress(request.rider)), style = MaterialTheme.typography.bodySmall)
-            if (mine != null) {
-                Text(stringResource(R.string.your_offer, brl(coin, mine.fare)), color = MaterialTheme.colorScheme.primary)
-            }
-            OutlinedTextField(
-                value = priceText,
-                onValueChange = { priceText = it },
-                label = { Text(stringResource(R.string.your_price_label)) },
-                isError = priceText.isNotBlank() && !valid,
-                supportingText = {
-                    if (valid) {
-                        Text(stringResource(R.string.you_receive, brl(coin, price!! - fee!!)))
-                    } else {
-                        Text(stringResource(R.string.invalid_offer))
-                    }
-                },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Button(
-                onClick = { parseFare(priceText)?.let { vm.sendOffer(request, it) } },
-                enabled = valid && price != mine?.fare && state.canAccept && !state.busy,
-            ) {
-                Text(stringResource(if (mine == null) R.string.action_send_offer else R.string.action_update_offer))
+            } else {
+                PrimaryButton(stringResource(R.string.confirm_and_pay), { onConfirm(stars) }, busy = state.busy)
             }
         }
     }
@@ -468,7 +338,7 @@ private fun DriverQuote(state: UiState, vm: AppViewModel, request: RideRequest) 
 
 // ------------------------------------------------------------------- formatting
 
-private fun coinOf(state: UiState, token: String): Coin =
+fun coinOf(state: UiState, token: String): Coin =
     state.balances.keys.firstOrNull { it.address.equals(token, ignoreCase = true) } ?: Coin("?", token, 18)
 
 private val brlFormat: NumberFormat = NumberFormat.getCurrencyInstance(Locale.forLanguageTag("pt-BR"))
@@ -477,15 +347,6 @@ private val brlFormat: NumberFormat = NumberFormat.getCurrencyInstance(Locale.fo
 fun brl(coin: Coin, units: BigInteger): String =
     brlFormat.format(coin.toReais(units).setScale(2, RoundingMode.DOWN))
 
-/** An amount as text for a price field: "23,40". */
-fun fareInput(coin: Coin, units: BigInteger): String =
-    coin.toReais(units).setScale(2, RoundingMode.DOWN).toPlainString().replace('.', ',')
-
-/** Accepts "23,40" or "23.40". */
-fun parseFare(text: String): BigDecimal? {
-    val t = text.replace("R$", "").trim()
-    val normalized = if (t.contains(',')) t.replace(".", "").replace(',', '.') else t
-    return normalized.toBigDecimalOrNull()?.takeIf { it.signum() > 0 && it.scale() <= 2 }
-}
+fun brl(reais: BigDecimal): String = brlFormat.format(reais.setScale(2, RoundingMode.DOWN))
 
 fun shortAddress(a: String): String = if (a.length > 12) a.take(6) + "…" + a.takeLast(4) else a

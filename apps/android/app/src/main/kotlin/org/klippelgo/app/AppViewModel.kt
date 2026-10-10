@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.klippelgo.chain.Blocker
 import org.klippelgo.chain.Coin
 import org.klippelgo.chain.Deployment
 import org.klippelgo.chain.DevAccount
@@ -45,7 +46,17 @@ data class UiState(
     val rides: List<Ride> = emptyList(),
     val rated: Set<BigInteger> = emptySet(),
     val canAccept: Boolean = false,
+    /** Driver: what the accept policy still asks of this account. Empty while `canAccept`. */
+    val blockers: List<Blocker> = emptyList(),
     val fees: Map<Coin, BigInteger> = emptyMap(),
+    /** What each side locks on top of the fare, per coin: the rider's bond, then the driver's. */
+    val bonds: Map<Coin, Pair<BigInteger, BigInteger>> = emptyMap(),
+    /** First name typed when the account was created. It never leaves this phone. */
+    val name: String = "",
+    /** Rider, right after creating the account: offer to add balance before the first ride. */
+    val showFunding: Boolean = false,
+    /** Driver: this account's own reputation. */
+    val me: DriverInfo? = null,
     /** Rider: the request waiting for quotes, and the quotes received so far, cheapest first. */
     val request: RideRequest? = null,
     val offers: List<Offer> = emptyList(),
@@ -71,6 +82,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         UiState(
             role = prefs.getString("role", null)?.let { runCatching { Role.valueOf(it) }.getOrNull() },
             rpcUrl = prefs.getString("rpc", DEFAULT_RPC) ?: DEFAULT_RPC,
+            name = prefs.getString("name", "") ?: "",
         ),
     )
     val state: StateFlow<UiState> = _state
@@ -91,7 +103,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val key = if (role == Role.RIDER) DevAccount.RIDER else DevAccount.DRIVER
         val c = KlippelGoClient(rpcUrl.trim(), key.privateKey, deployment)
         client = c
-        _state.value = UiState(role = role, rpcUrl = rpcUrl, address = c.address)
+        _state.value = UiState(role = role, rpcUrl = rpcUrl, address = c.address, name = _state.value.name)
         leaveGossip()
         val mySession = session
         poller = viewModelScope.launch(Dispatchers.IO) {
@@ -128,11 +140,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun switchRole() {
+    /** Finishes the create-account screen: keeps the name on this phone and connects in the picked role. */
+    fun createAccount(name: String, role: Role, rpcUrl: String) {
+        prefs.edit().putString("name", name.trim()).apply()
+        _state.update { it.copy(name = name.trim()) }
+        connect(role, rpcUrl)
+        _state.update { it.copy(showFunding = role == Role.RIDER) }
+    }
+
+    fun fundingDone() = _state.update { it.copy(showFunding = false) }
+
+    /** Back to the welcome screen. */
+    fun signOut() {
         leaveGossip()
         client = null
         prefs.edit().remove("role").apply()
-        _state.update { UiState(rpcUrl = it.rpcUrl) }
+        _state.update { UiState(rpcUrl = it.rpcUrl, name = it.name) }
     }
 
     fun dismissError() = _state.update { it.copy(error = null) }
@@ -147,7 +170,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Take a driver's quote: its fare is what gets locked in the escrow. */
     fun acceptOffer(request: RideRequest, offer: Offer) = act { match?.acceptOffer(request, offer) }
 
-    fun complete(id: BigInteger) = act { it.complete(id) }
+    /** Confirms arrival, which pays the driver, and rates them when `stars` is 1 to 5. */
+    fun complete(id: BigInteger, stars: Int = 0) = act {
+        it.complete(id)
+        if (stars in 1..5) it.rate(id, stars)
+    }
+
+    /** Adds test reais, the local testnet's stand-in for paying a PIX. */
+    fun addMoney(coin: Coin, reais: BigDecimal) = act { it.mint(coin, coin.toBaseUnits(reais)) }
 
     // ---------------------------------------------------------------- driver actions
 
@@ -194,17 +224,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val result = runCatching {
             c.chainId()
             val balances = c.coins.associateWith { c.balanceOf(it) }
-            val fees = c.coins.associateWith { c.tokenConfig(it).first }
+            val configs = c.coins.associateWith { c.tokenConfig(it) }
+            val fees = configs.mapValues { it.value.first }
+            val bonds = configs.mapValues { it.value.second to it.value.third }
             val ids = (if (role == Role.RIDER) c.ridesAsRider() else c.ridesAsDriver()).take(MAX_RIDES)
             val rides = ids.map { c.ride(it) }
             val rated = rides.filter { it.status == org.klippelgo.chain.RideStatus.Completed && c.hasRated(it.id) }
                 .map { it.id }.toSet()
             val drivers = if (role == Role.RIDER) c.drivers() else emptyList()
-            val canAccept = role == Role.DRIVER && c.canAcceptRides()
+            val me = if (role == Role.DRIVER) c.driverInfo() else null
+            val canAccept = me?.canAccept == true
+            val blockers = if (me != null && !canAccept) c.acceptBlockers() else emptyList()
             _state.update {
                 if (it.role != role) it else it.copy(
-                    connected = true, balances = balances, fees = fees, rides = rides, rated = rated,
-                    drivers = drivers, canAccept = canAccept,
+                    connected = true, balances = balances, fees = fees, bonds = bonds, rides = rides, rated = rated,
+                    drivers = drivers, canAccept = canAccept, blockers = blockers, me = me,
                 )
             }
         }

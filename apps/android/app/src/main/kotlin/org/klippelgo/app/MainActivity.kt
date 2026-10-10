@@ -2,6 +2,7 @@ package org.klippelgo.app
 
 import android.os.Bundle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
@@ -13,6 +14,7 @@ class MainActivity : AppCompatActivity() {
     private val vm: AppViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         // Portuguese is the default whatever the phone's language; English and Spanish are picked in the app.
         if (AppCompatDelegate.getApplicationLocales().isEmpty) setAppLanguage("pt-BR")

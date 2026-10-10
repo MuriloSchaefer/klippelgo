@@ -1,4 +1,4 @@
-.PHONY: test test-contracts test-core testnet deploy demo testnet-reset gossip-node android-two-phones android-apk android-test-chain
+.PHONY: test test-contracts test-core testnet deploy demo testnet-reset reset-ratings gossip-node android-two-phones android-apk android-test-chain
 
 test: test-contracts test-core
 
@@ -20,6 +20,10 @@ demo:
 
 testnet-reset:
 	rm -rf testnet/.state deployments/local.json
+
+## Clear the ratings one account received, keeping everything else: make reset-ratings WHO=driver
+reset-ratings:
+	testnet/reset-ratings.sh $(or $(WHO),driver)
 
 ## Bootstrap node of the gossip network phones match through (foreground), on port 4001. Runs in Docker.
 gossip-node:
