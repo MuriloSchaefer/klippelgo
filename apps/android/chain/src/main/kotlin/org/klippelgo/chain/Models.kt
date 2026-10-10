@@ -31,6 +31,29 @@ data class Ride(
     val driverPayout: BigInteger get() = fare - fee
 }
 
+/** A rider's request for a ride, as gossiped to nearby drivers. */
+data class RideRequest(
+    /** Hash of the request's contents, so nobody else can reuse the id. */
+    val id: BigInteger,
+    val rider: String,
+    val token: String,
+    /** The most the rider will pay. Drivers quote at or below it. */
+    val maxFare: BigInteger,
+    /** Unix seconds, by the phones' clocks. */
+    val expiresAt: Long,
+)
+
+/** A driver's signed quote for a request. The rider locks `quoteHash` in the escrow when taking it. */
+data class Offer(
+    val requestId: BigInteger,
+    val driver: String,
+    val fare: BigInteger,
+    val expiresAt: Long,
+    val quoteHash: String,
+    /** The driver's signature over the quote, kept as proof of what was offered. */
+    val signature: String,
+)
+
 data class DriverInfo(
     val address: String,
     /** Average stars x100, 0 when unrated. */

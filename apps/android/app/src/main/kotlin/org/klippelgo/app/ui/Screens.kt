@@ -1,7 +1,6 @@
 package org.klippelgo.app.ui
 
 import androidx.appcompat.app.AppCompatDelegate
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -27,7 +26,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,7 +48,9 @@ import org.klippelgo.app.Role
 import org.klippelgo.app.UiState
 import org.klippelgo.app.setAppLanguage
 import org.klippelgo.chain.Coin
+import org.klippelgo.chain.Offer
 import org.klippelgo.chain.Ride
+import org.klippelgo.chain.RideRequest
 import org.klippelgo.chain.RideStatus
 import java.math.BigDecimal
 import java.math.BigInteger
@@ -148,6 +148,13 @@ private fun Header(state: UiState, vm: AppViewModel) {
             style = MaterialTheme.typography.bodySmall,
             color = if (state.connected == false) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary,
         )
+        if (state.gossipConnected != null) {
+            Text(
+                stringResource(if (state.gossipConnected) R.string.gossip_connected else R.string.gossip_not_connected),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (state.gossipConnected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error,
+            )
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(top = 4.dp)) {
             Text(stringResource(R.string.balances) + ":", fontWeight = FontWeight.SemiBold)
             state.balances.forEach { (coin, units) -> Text("${brl(coin, units)} ${coin.symbol}") }
@@ -244,6 +251,8 @@ private fun RiderHome(state: UiState, vm: AppViewModel) {
                     }
                 }
             }
+        } else if (state.request != null) {
+            item { RiderRequest(state, vm, state.request) }
         } else {
             item { RequestRideForm(state, vm) }
         }
@@ -269,30 +278,21 @@ private fun RiderHome(state: UiState, vm: AppViewModel) {
 private fun RequestRideForm(state: UiState, vm: AppViewModel) {
     var fareText by rememberSaveable { mutableStateOf("23,40") }
     var coinSymbol by rememberSaveable { mutableStateOf("BRZ") }
-    var driver by rememberSaveable { mutableStateOf<String?>(null) }
     val coins = state.balances.keys.toList()
     val coin = coins.firstOrNull { it.symbol == coinSymbol } ?: coins.firstOrNull()
     val fare = parseFare(fareText)
     val fee = coin?.let { state.fees[it] }
     val fareUnits = if (coin != null && fare != null) runCatching { coin.toBaseUnits(fare) }.getOrNull() else null
     val valid = fareUnits != null && fee != null && fareUnits > fee
-    val selectable = state.drivers.filter { it.canAccept }
-    val chosen = driver?.takeIf { d -> selectable.any { it.address == d } } ?: selectable.singleOrNull()?.address
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SectionTitle(stringResource(R.string.request_ride))
         OutlinedTextField(
             value = fareText,
             onValueChange = { fareText = it },
-            label = { Text(stringResource(R.string.fare_label)) },
+            label = { Text(stringResource(R.string.max_fare_label)) },
             isError = fareText.isNotBlank() && !valid,
-            supportingText = {
-                if (valid && coin != null) {
-                    Text(stringResource(R.string.fee_note, brl(coin, fareUnits!! - fee!!)))
-                } else {
-                    Text(stringResource(R.string.invalid_fare))
-                }
-            },
+            supportingText = { Text(stringResource(if (valid) R.string.max_fare_hint else R.string.invalid_fare)) },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
@@ -303,32 +303,60 @@ private fun RequestRideForm(state: UiState, vm: AppViewModel) {
                 FilterChip(selected = c == coin, onClick = { coinSymbol = c.symbol }, label = { Text(c.symbol) })
             }
         }
+        Button(
+            onClick = { if (coin != null && fare != null) vm.requestRide(coin, fare) },
+            enabled = valid && !state.busy,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(stringResource(R.string.request_ride))
+        }
+    }
+}
 
-        SectionTitle(stringResource(R.string.drivers_title))
-        if (state.drivers.isEmpty()) Text(stringResource(R.string.no_drivers))
-        state.drivers.forEach { d ->
-            Row(
-                Modifier.fillMaxWidth().clickable(enabled = d.canAccept) { driver = d.address },
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(selected = chosen == d.address, onClick = { driver = d.address }, enabled = d.canAccept)
-                Column {
-                    Text(shortAddress(d.address), fontWeight = FontWeight.SemiBold)
-                    val score = if (d.ratings == 0) stringResource(R.string.driver_new) else "★ %.2f".format(d.score / 100.0)
-                    Text("$score · " + stringResource(R.string.driver_rides, d.completedRides), style = MaterialTheme.typography.bodySmall)
-                    if (!d.canAccept) {
-                        Text(stringResource(R.string.driver_blocked), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                    }
+/** The rider's open request and the drivers' quotes for it, cheapest first, then best rated. */
+@Composable
+private fun RiderRequest(state: UiState, vm: AppViewModel, request: RideRequest) {
+    val coin = coinOf(state, request.token)
+    val drivers = state.drivers.filter { it.canAccept }.associateBy { it.address }
+    val offers = state.offers.filter { it.driver in drivers }
+        .sortedWith(compareBy<Offer> { it.fare }.thenByDescending { drivers.getValue(it.driver).score })
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Card(
+            Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)),
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(stringResource(R.string.request_sent), fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.up_to, "${brl(coin, request.maxFare)} ${coin.symbol}"))
+                OutlinedButton(onClick = { vm.cancelRequest(request) }, enabled = !state.busy) {
+                    Text(stringResource(R.string.action_cancel_request))
                 }
             }
         }
 
-        Button(
-            onClick = { if (coin != null && fare != null && chosen != null) vm.requestRide(chosen, coin, fare) },
-            enabled = valid && chosen != null && !state.busy,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(if (chosen == null && state.drivers.isNotEmpty()) stringResource(R.string.choose_driver) else stringResource(R.string.request_ride))
+        SectionTitle(stringResource(R.string.offers_title))
+        if (offers.isEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text(stringResource(R.string.waiting_offers))
+            }
+        }
+        offers.forEach { offer ->
+            val d = drivers.getValue(offer.driver)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(brl(coin, offer.fare), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    val score = if (d.ratings == 0) stringResource(R.string.driver_new) else "★ %.2f".format(d.score / 100.0)
+                    Text(
+                        "${shortAddress(d.address)} · $score · " + stringResource(R.string.driver_rides, d.completedRides),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Button(onClick = { vm.acceptOffer(request, offer) }, enabled = !state.busy) {
+                    Text(stringResource(R.string.action_take_offer))
+                }
+            }
         }
     }
 }
@@ -350,8 +378,8 @@ private fun DriverHome(state: UiState, vm: AppViewModel) {
                 color = if (state.canAccept) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
             )
         }
-        item { SectionTitle(stringResource(R.string.incoming_title)) }
-        if (active.isEmpty()) {
+        item { SectionTitle(stringResource(R.string.requests_title)) }
+        if (state.requests.isEmpty()) {
             item {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -359,6 +387,8 @@ private fun DriverHome(state: UiState, vm: AppViewModel) {
                 }
             }
         }
+        items(state.requests, key = { "request-${it.id}" }) { request -> DriverQuote(state, vm, request) }
+        if (active.isNotEmpty()) item { SectionTitle(stringResource(R.string.incoming_title)) }
         items(active, key = { it.id.toString() }) { ride ->
             RideCard(ride, coinOf(state, ride.token), ride.rider, highlighted = true) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -393,6 +423,49 @@ private fun DriverHome(state: UiState, vm: AppViewModel) {
     }
 }
 
+/** A rider's request, with the price field the driver quotes from. It starts at the rider's max fare. */
+@Composable
+private fun DriverQuote(state: UiState, vm: AppViewModel, request: RideRequest) {
+    val coin = coinOf(state, request.token)
+    val mine = state.myOffers[request.id]
+    var priceText by rememberSaveable { mutableStateOf(fareInput(coin, mine?.fare ?: request.maxFare)) }
+    val fee = state.fees[coin]
+    val price = parseFare(priceText)?.let { runCatching { coin.toBaseUnits(it) }.getOrNull() }
+    val valid = price != null && fee != null && price > fee && price <= request.maxFare
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(stringResource(R.string.up_to, "${brl(coin, request.maxFare)} ${coin.symbol}"), fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.rider_label, shortAddress(request.rider)), style = MaterialTheme.typography.bodySmall)
+            if (mine != null) {
+                Text(stringResource(R.string.your_offer, brl(coin, mine.fare)), color = MaterialTheme.colorScheme.primary)
+            }
+            OutlinedTextField(
+                value = priceText,
+                onValueChange = { priceText = it },
+                label = { Text(stringResource(R.string.your_price_label)) },
+                isError = priceText.isNotBlank() && !valid,
+                supportingText = {
+                    if (valid) {
+                        Text(stringResource(R.string.you_receive, brl(coin, price!! - fee!!)))
+                    } else {
+                        Text(stringResource(R.string.invalid_offer))
+                    }
+                },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = { parseFare(priceText)?.let { vm.sendOffer(request, it) } },
+                enabled = valid && price != mine?.fare && state.canAccept && !state.busy,
+            ) {
+                Text(stringResource(if (mine == null) R.string.action_send_offer else R.string.action_update_offer))
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------- formatting
 
 private fun coinOf(state: UiState, token: String): Coin =
@@ -403,6 +476,10 @@ private val brlFormat: NumberFormat = NumberFormat.getCurrencyInstance(Locale.fo
 /** Always formats as Brazilian reais (R$ 23,40), whatever the app language. */
 fun brl(coin: Coin, units: BigInteger): String =
     brlFormat.format(coin.toReais(units).setScale(2, RoundingMode.DOWN))
+
+/** An amount as text for a price field: "23,40". */
+fun fareInput(coin: Coin, units: BigInteger): String =
+    coin.toReais(units).setScale(2, RoundingMode.DOWN).toPlainString().replace('.', ',')
 
 /** Accepts "23,40" or "23.40". */
 fun parseFare(text: String): BigDecimal? {

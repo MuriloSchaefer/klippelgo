@@ -18,10 +18,18 @@ import org.klippelgo.chain.Deployment
 import org.klippelgo.chain.DevAccount
 import org.klippelgo.chain.DriverInfo
 import org.klippelgo.chain.KlippelGoClient
+import org.klippelgo.chain.Matchmaker
+import org.klippelgo.chain.Offer
 import org.klippelgo.chain.Ride
+import org.klippelgo.chain.RideRequest
+import org.klippelgo.core.GossipConfig
+import org.klippelgo.core.GossipNode
 import org.web3j.crypto.Hash
 import java.math.BigDecimal
 import java.math.BigInteger
+import java.net.Inet6Address
+import java.net.InetAddress
+import java.net.URI
 
 enum class Role { RIDER, DRIVER }
 
@@ -38,13 +46,22 @@ data class UiState(
     val rated: Set<BigInteger> = emptySet(),
     val canAccept: Boolean = false,
     val fees: Map<Coin, BigInteger> = emptyMap(),
+    /** Rider: the request waiting for quotes, and the quotes received so far, cheapest first. */
+    val request: RideRequest? = null,
+    val offers: List<Offer> = emptyList(),
+    /** Driver: riders' open requests, and this driver's current quote for each. */
+    val requests: List<RideRequest> = emptyList(),
+    val myOffers: Map<BigInteger, Offer> = emptyMap(),
+    /** Whether this phone has any gossip peer. Without one, requests and offers reach nobody. */
+    val gossipConnected: Boolean? = null,
 )
 
 const val DEFAULT_RPC = "http://10.0.2.2:8545"
 
 /**
- * Holds one account's view of the chain and refreshes it every two seconds. Rider and driver run this same code
- * on different emulators; everything one does reaches the other only through the contracts.
+ * Holds one account's view of the chain and of the gossip network, and refreshes it every two seconds. Rider and
+ * driver run this same code on different emulators. They agree a fare over gossip, and everything after that
+ * reaches the other only through the contracts.
  */
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("klippelgo", Context.MODE_PRIVATE)
@@ -59,6 +76,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<UiState> = _state
 
     private var client: KlippelGoClient? = null
+    @Volatile private var match: Matchmaker? = null
+    private val matchLock = Any()
+    private var session = 0
     private var poller: Job? = null
 
     init {
@@ -72,18 +92,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val c = KlippelGoClient(rpcUrl.trim(), key.privateKey, deployment)
         client = c
         _state.value = UiState(role = role, rpcUrl = rpcUrl, address = c.address)
-        poller?.cancel()
+        leaveGossip()
+        val mySession = session
         poller = viewModelScope.launch(Dispatchers.IO) {
             runCatching { c.ensureRegistered(if (role == Role.RIDER) KlippelGoClient.ROLE_RIDER else KlippelGoClient.ROLE_DRIVER) }
-            while (isActive) {
-                refresh(c, role)
-                delay(2_000)
+            // This loop owns its gossip node and stops it when the role or node address changes.
+            val node = joinGossip(rpcUrl)
+            val m = node?.let { Matchmaker(c, it) }
+            try {
+                // A newer connect may have replaced this loop while its node was starting.
+                synchronized(matchLock) { if (session == mySession) match = m }
+                while (isActive) {
+                    refresh(c, m, role)
+                    delay(2_000)
+                }
+            } finally {
+                synchronized(matchLock) { if (match === m) match = null }
+                node?.stop()
             }
         }
     }
 
-    fun switchRole() {
+    /** The bootstrap node runs next to the chain node, so its address comes from the node address. */
+    private fun joinGossip(rpcUrl: String): GossipNode? = runCatching {
+        val host = InetAddress.getByName(URI(rpcUrl.trim()).host)
+        val address = "/${if (host is Inet6Address) "ip6" else "ip4"}/${host.hostAddress}/tcp/${Matchmaker.DEFAULT_PORT}"
+        GossipNode.start(GossipConfig(listen = null, bootstrap = listOf(address), router = false))
+    }.onFailure { e -> _state.update { it.copy(error = message(e)) } }.getOrNull()
+
+    private fun leaveGossip() {
         poller?.cancel()
+        synchronized(matchLock) {
+            session++
+            match = null
+        }
+    }
+
+    fun switchRole() {
+        leaveGossip()
         client = null
         prefs.edit().remove("role").apply()
         _state.update { UiState(rpcUrl = it.rpcUrl) }
@@ -93,13 +139,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------------------------------------------------------- rider actions
 
-    fun requestRide(driver: String, coin: Coin, fareReais: BigDecimal) = act {
-        it.openRide(driver, coin, coin.toBaseUnits(fareReais), Hash.sha3("quote:$driver:$fareReais:${System.nanoTime()}".toByteArray()))
-    }
+    /** Ask nearby drivers for quotes up to `maxFareReais`. */
+    fun requestRide(coin: Coin, maxFareReais: BigDecimal) = act { match?.requestRide(coin, coin.toBaseUnits(maxFareReais)) }
+
+    fun cancelRequest(request: RideRequest) = act { match?.closeRequest(request) }
+
+    /** Take a driver's quote: its fare is what gets locked in the escrow. */
+    fun acceptOffer(request: RideRequest, offer: Offer) = act { match?.acceptOffer(request, offer) }
 
     fun complete(id: BigInteger) = act { it.complete(id) }
 
     // ---------------------------------------------------------------- driver actions
+
+    /** Quote a price for a rider's request. Sending again replaces the earlier quote. */
+    fun sendOffer(request: RideRequest, fareReais: BigDecimal) = act {
+        match?.sendOffer(request, it.coinFor(request.token).toBaseUnits(fareReais))
+    }
 
     fun accept(id: BigInteger) = act { it.accept(id) }
 
@@ -118,11 +173,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(busy = true, error = null) }
             val result = withContext(Dispatchers.IO) { runCatching { block(c) } }
             _state.update { it.copy(busy = false, error = result.exceptionOrNull()?.let(::message)) }
-            withContext(Dispatchers.IO) { refresh(c, role) }
+            withContext(Dispatchers.IO) { refresh(c, match, role) }
         }
     }
 
-    private fun refresh(c: KlippelGoClient, role: Role) {
+    private fun refresh(c: KlippelGoClient, m: Matchmaker?, role: Role) {
+        // Gossip first and on its own: matching must keep running while the chain node is unreachable.
+        runCatching { m?.tick() }
+        val open = m?.openRequests().orEmpty()
+        val request = if (role == Role.RIDER) open.firstOrNull { it.rider == c.address } else null
+        val offers = request?.let { m?.offers(it) }.orEmpty()
+        val requests = if (role == Role.DRIVER) open else emptyList()
+        val myOffers = requests.mapNotNull { r -> m?.offers(r, c.address)?.firstOrNull()?.let { r.id to it } }.toMap()
+        _state.update {
+            if (it.role != role) it else it.copy(
+                request = request, offers = offers, requests = requests, myOffers = myOffers,
+                gossipConnected = m?.let { g -> g.peers() > 0 },
+            )
+        }
         val result = runCatching {
             c.chainId()
             val balances = c.coins.associateWith { c.balanceOf(it) }
@@ -146,7 +214,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun message(t: Throwable): String = t.message ?: t.javaClass.simpleName
 
     override fun onCleared() {
-        poller?.cancel()
+        leaveGossip()
     }
 
     companion object {

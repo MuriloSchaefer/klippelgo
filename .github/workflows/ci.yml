@@ -49,6 +49,14 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: foundry-rs/foundry-toolchain@v1
+      # The Rust core holds the gossip network. core/rust-toolchain.toml picks the compiler and Android targets.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - name: Install cargo-ndk
+        working-directory: core
+        run: cargo install cargo-ndk --locked
       - name: Start the local testnet and deploy
         run: |
           testnet/anvil.sh > anvil.log 2>&1 &
@@ -62,7 +70,7 @@ jobs:
         run: ../gradlew test
       - name: Build the debug APK
         working-directory: apps/android
-        run: ./gradlew :app:assembleDebug
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" ./gradlew :app:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: klippelgo-debug-apk

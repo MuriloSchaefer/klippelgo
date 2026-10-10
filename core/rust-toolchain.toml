@@ -1,0 +1,6 @@
+# The libp2p and UniFFI releases the core uses need a recent compiler. rustup installs this one on first use and
+# leaves your default toolchain alone.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+targets = ["aarch64-linux-android", "x86_64-linux-android"]

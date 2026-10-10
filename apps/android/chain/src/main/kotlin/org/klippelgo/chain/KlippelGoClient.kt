@@ -14,6 +14,8 @@ import org.web3j.abi.datatypes.generated.Uint64
 import org.web3j.abi.datatypes.generated.Uint8
 import org.web3j.crypto.Credentials
 import org.web3j.crypto.Hash
+import org.web3j.crypto.Keys
+import org.web3j.crypto.Sign
 import org.web3j.protocol.Web3j
 import org.web3j.protocol.core.DefaultBlockParameterName
 import org.web3j.protocol.core.methods.request.EthFilter
@@ -30,8 +32,9 @@ import java.math.BigInteger
  * Talks to the KlippelGo contracts as one account. Every call is blocking, so run it off the main thread.
  *
  * Rider and driver never talk to each other here: they both read and write the same RideEscrow, so a ride the
- * rider opens shows up for the driver on chain, and each step the driver takes shows up for the rider. The P2P
- * quote handshake from the architecture plan comes later; for now the rider names the fare.
+ * rider opens shows up for the driver on chain, and each step the driver takes shows up for the rider.
+ *
+ * Finding each other and agreeing a fare happens off chain, over gossip: see [Matchmaker].
  */
 class KlippelGoClient(
     rpcUrl: String,
@@ -146,6 +149,30 @@ class KlippelGoClient(
         return getLogs(filter).map { Numeric.toBigInt(it.topics[1]) }.sortedDescending()
     }
 
+    // ---------------------------------------------------------------- quotes
+
+    /**
+     * The hash a driver signs when quoting and the rider locks in the escrow. It names the request, both parties,
+     * the token, the fare, the chain, the escrow and an expiry, so a quote cannot be replayed anywhere else.
+     */
+    fun quoteHash(request: RideRequest, driver: String, fare: BigInteger, expiresAt: Long): ByteArray = abiHash(
+        Bytes32(QUOTE_DOMAIN),
+        Uint256(deployment.chainId),
+        Address(deployment.escrow),
+        Uint256(request.id),
+        Address(request.rider),
+        Address(driver),
+        Address(request.token),
+        Uint256(fare),
+        Uint64(expiresAt),
+    )
+
+    /** Signs a 32-byte hash with this account's key, as an Ethereum signed message. Returns r, s, v (65 bytes). */
+    fun sign(hash: ByteArray): ByteArray {
+        val sig = Sign.signPrefixedMessage(hash, credentials.ecKeyPair)
+        return sig.r + sig.s + sig.v
+    }
+
     // ---------------------------------------------------------------- writes
 
     /** Claims roles (1 rider, 2 driver, 4 validator) if this account does not hold them yet. */
@@ -249,6 +276,9 @@ class KlippelGoClient(
         val RIDE_OPENED_TOPIC: String = Hash.sha3String("RideOpened(uint256,address,address,address,uint256,bytes32)")
         val REGISTERED_TOPIC: String = Hash.sha3String("Registered(address,uint8)")
 
+
+        private val QUOTE_DOMAIN: ByteArray = Hash.sha3("KlippelGo quote v1".toByteArray())
+
         private val uint256Ref = object : TypeReference<Uint256>() {}
         private val uint64Ref = object : TypeReference<Uint64>() {}
         private val uint8Ref = object : TypeReference<Uint8>() {}
@@ -260,7 +290,7 @@ class KlippelGoClient(
         private val ERRORS: Map<String, String> = listOf(
             "TokenNotAllowed()", "FareTooLow()", "WrongStatus(uint8)", "NotRider()", "NotDriver()", "NotParty()",
             "TooEarly()", "NotPermitted(address,bytes4)", "NotRegistered()", "InvalidRoles()", "AlreadyRated()",
-            "InvalidStars()", "NotParty()", "ERC20InsufficientBalance(address,uint256,uint256)",
+            "InvalidStars()", "ERC20InsufficientBalance(address,uint256,uint256)",
             "ERC20InsufficientAllowance(address,uint256,uint256)",
         ).associate { selectorHex(it) to it.substringBefore('(') }
 
@@ -274,6 +304,17 @@ class KlippelGoClient(
         }
 
         private fun topicOf(address: String) = Numeric.toHexStringWithPrefixZeroPadded(Numeric.toBigInt(address), 64)
+
+        /** keccak256 of the ABI encoding of fixed-size values, the same as Solidity's `keccak256(abi.encode(...))`. */
+        fun abiHash(vararg values: Type<*>): ByteArray =
+            Hash.sha3(Numeric.hexStringToByteArray(FunctionEncoder.encodeConstructor(values.toList())))
+
+        /** The address that signed `hash` (as an Ethereum signed message), or null for a malformed signature. */
+        fun signerOf(hash: ByteArray, sig: ByteArray): String? = runCatching {
+            require(sig.size == 65)
+            val data = Sign.SignatureData(sig[64], sig.copyOfRange(0, 32), sig.copyOfRange(32, 64))
+            "0x" + Keys.getAddress(Sign.signedPrefixedMessageToKey(hash, data))
+        }.getOrNull()
 
         private fun fn(name: String, inputs: List<Type<*>>, outputs: List<TypeReference<*>>) =
             Function(name, inputs, outputs)

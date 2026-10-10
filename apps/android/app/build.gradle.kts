@@ -62,10 +62,32 @@ val copyDeployment by tasks.registering(Copy::class) {
     from(rootProject.file("../../deployments")) { include("local.json") }
     into(layout.buildDirectory.dir("generated/deployments"))
 }
-tasks.named("preBuild") { dependsOn(copyDeployment) }
+
+// Builds the Rust core, which holds the gossip network, for phones (arm64) and emulators (x86_64). Needs the NDK
+// and `cargo install cargo-ndk`; scripts/two-phones.sh installs both.
+val coreDir = rootProject.file("../../core")
+val rustJniLibs = layout.buildDirectory.dir("rustJniLibs")
+val cargoNdk by tasks.registering(Exec::class) {
+    workingDir = coreDir
+    environment("ANDROID_HOME", android.sdkDirectory.path)
+    commandLine(
+        "cargo", "ndk", "-t", "arm64-v8a", "-t", "x86_64", "-o", rustJniLibs.get().asFile.path,
+        "build", "--release", "--lib",
+    )
+    inputs.dir(coreDir.resolve("src"))
+    inputs.files(coreDir.resolve("Cargo.toml"), coreDir.resolve("Cargo.lock"))
+    outputs.dir(rustJniLibs)
+}
+android.sourceSets["main"].jniLibs.srcDir(rustJniLibs)
+
+tasks.named("preBuild") { dependsOn(copyDeployment, cargoNdk) }
 
 dependencies {
-    implementation("org.klippelgo:chain")
+    implementation("org.klippelgo:chain") {
+        // The chain module uses JNA's desktop jar to load the Rust core. Phones need the Android build.
+        exclude(group = "net.java.dev.jna", module = "jna")
+    }
+    implementation("net.java.dev.jna:jna:5.17.0@aar")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
