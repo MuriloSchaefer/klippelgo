@@ -43,11 +43,13 @@ android {
             excludes += setOf(
                 "/META-INF/{AL2.0,LGPL2.1}",
                 "META-INF/DEPENDENCIES",
+                "META-INF/DISCLAIMER",
                 "META-INF/LICENSE*",
                 "META-INF/NOTICE*",
                 "META-INF/INDEX.LIST",
                 "META-INF/FastDoubleParser-*",
                 "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                "META-INF/versions/9/module-info.class",
                 "META-INF/io.netty.versions.properties",
             )
         }
