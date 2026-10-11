@@ -73,7 +73,7 @@ class Matchmaker(
     private var positionSentAt = 0L
 
     /** Rider: for each ride this phone locked, by quote hash, the key positions are sealed to and whose they are. */
-    private class Watch(val key: OfferKey, val driver: String, var last: DriverPosition? = null)
+    private class Watch(val key: OfferKey, val driver: String, var last: DriverPosition? = null, var newest: Long = 0)
     private val watching = HashMap<String, Watch>()
     private var announcedAt = 0L
 
@@ -222,8 +222,9 @@ class Matchmaker(
 
     /**
      * Driver: tells the rider of the ride this phone is on where it is. The position is sealed to the rider's
-     * key, so the cell sees that this driver is sending something for some ride and nothing else. Sent at most
-     * every few seconds; call it as often as fixes arrive.
+     * key. The cell sees that this driver is sending something for the ride with this quote hash, which ties it
+     * to the ride on chain, and not where the driver is. Sent at most every few seconds; call it as often as
+     * fixes arrive.
      */
     @Synchronized
     fun sharePosition(quoteHash: String, riderKey: ByteArray, latE7: Int, lonE7: Int) {
@@ -386,8 +387,13 @@ class Matchmaker(
         val parts = runCatching { openRoute(watch.key.secret, quote, sealed) }.getOrNull()?.split(',') ?: return
         if (parts.size != 3) return
         val position = runCatching { DriverPosition(parts[0].toInt(), parts[1].toInt(), parts[2].toLong()) }.getOrNull() ?: return
-        // Gossip can deliver out of order, and a replayed message is an old one.
-        if (position.atMs > (watch.last?.atMs ?: 0)) watch.last = position.copy(atMs = minOf(position.atMs, System.currentTimeMillis()))
+        // Gossip can deliver out of order, and a replayed message is an old one: only a position the driver
+        // stamped later than every one before it counts. Their clock orders their own messages and nothing
+        // else. How fresh a position is goes by when it arrived here, so a clock that runs ahead or behind
+        // neither lets an old message pass as new nor makes a live driver look silent.
+        if (position.atMs <= watch.newest) return
+        watch.newest = position.atMs
+        watch.last = position.copy(atMs = System.currentTimeMillis())
     }
 
     private fun startsAndEndsIn(quote: String, route: RouteSummary): Boolean = runCatching {

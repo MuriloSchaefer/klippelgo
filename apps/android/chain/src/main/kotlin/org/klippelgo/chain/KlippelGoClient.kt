@@ -72,6 +72,9 @@ class KlippelGoClient(
     fun rolesOf(who: String = address): Int =
         uint(call(deployment.registry, fn("rolesOf", listOf(Address(who)), listOf(uint8Ref)))[0]).toInt()
 
+    /** Rides that reached a final state, by id. They never change again. */
+    private val finished = java.util.concurrent.ConcurrentHashMap<BigInteger, Ride>()
+
     fun ride(id: BigInteger): Ride {
         val out = call(
             deployment.escrow,
@@ -194,8 +197,23 @@ class KlippelGoClient(
      * is above zero the driver is busy with someone else and this ride waits its turn. Anyone can read this off
      * the chain.
      */
-    fun ridesAhead(ride: Ride): Int = rideIds(driver = ride.driver).filter { it < ride.id }.take(RECENT_RIDES)
-        .count { ride(it).status.let { s -> s == RideStatus.Accepted || s == RideStatus.Started } }
+    fun ridesAhead(ride: Ride): Int = underWay(ride.driver).count { turn.compare(it, ride) < 0 }
+
+    /**
+     * The rides a driver accepted and has not finished, in the order they take them: a ride that started comes
+     * before one only accepted, then the order the riders locked them. The first is the one the driver is on.
+     * A ride in dispute is frozen and takes no turn.
+     *
+     * It looks at every ride that names the driver, not at the newest few: anyone can open rides naming a
+     * driver, and a window of recent ones could be filled with those to push a real ride out of sight. Rides
+     * that ended are remembered, so each is read from the chain once.
+     */
+    fun underWay(driver: String = address): List<Ride> = rideIds(driver = driver)
+        .map { id -> finished[id] ?: ride(id).also { if (it.status.isFinal) finished[id] = it } }
+        .filter { it.status == RideStatus.Accepted || it.status == RideStatus.Started }
+        .sortedWith(turn)
+
+    private val turn = compareBy<Ride>({ it.status != RideStatus.Started }, { it.id })
 
     /** Ride ids where this account is the driver, newest first. */
     fun ridesAsDriver(): List<BigInteger> = rideIds(driver = address)
@@ -394,9 +412,6 @@ class KlippelGoClient(
     companion object {
         const val ROLE_RIDER = 1
         const val ROLE_DRIVER = 2
-
-        /** How far back a driver's rides are looked at for ones still under way. */
-        private const val RECENT_RIDES = 10
 
         val RIDE_OPENED_TOPIC: String = Hash.sha3String("RideOpened(uint256,address,address,address,uint256,bytes32)")
         val REGISTERED_TOPIC: String = Hash.sha3String("Registered(address,uint8)")

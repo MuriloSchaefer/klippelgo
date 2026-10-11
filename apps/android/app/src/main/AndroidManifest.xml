@@ -2,7 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- The driver's own position on their own map. It is not sent anywhere. -->
+    <!-- The driver's own position on their own map. It leaves the phone only sealed to the rider of the ride
+         under way (apps/docs/security.md). -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 

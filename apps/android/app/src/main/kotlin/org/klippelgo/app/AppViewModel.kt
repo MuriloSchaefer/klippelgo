@@ -479,8 +479,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------------------------------------------------------------- driver's map
 
     /**
-     * Starts following this phone's position, once the driver has allowed it. The position stays on the phone:
-     * it places the driver on their own map and is where the way to the next pickup starts.
+     * Starts following this phone's position, once the driver has allowed it. It places the driver on their
+     * own map and is where the way to the next pickup starts. It leaves the phone only sealed to the rider of
+     * the ride under way ([sharePosition]).
      */
     @SuppressLint("MissingPermission")
     fun startLocation() {
@@ -549,13 +550,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Driver: lets the rider of the ride this phone is on see where it is. Only that rider: the position is
+     * Driver: lets the rider of the ride this phone is on see where it is: the oldest of all the rides it
+     * accepted and has not finished, never just of the ones on screen. Only that rider: the position is
      * sealed to a key they sent with their route, and riders whose turn has not come get nothing. The key is kept
      * next to the saved route, so it survives the app being closed.
      */
-    private fun sharePosition(m: Matchmaker?, rides: List<Ride>) {
+    private fun sharePosition(m: Matchmaker?, current: Ride?) {
         val here = _state.value.location ?: return
-        val current = rides.filter { it.status == RideStatus.Accepted || it.status == RideStatus.Started }.minByOrNull { it.id } ?: return
+        current ?: return
         val file = File(getApplication<Application>().filesDir, "rides").apply { mkdirs() }.resolve("${current.quoteHash.lowercase()}.riderkey")
         val key = m?.riderKey(current.quoteHash)?.also { if (!file.exists()) file.writeBytes(it) }
             ?: file.takeIf { it.exists() }?.readBytes() ?: return
@@ -690,7 +692,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val configs = c.coins.associateWith { c.tokenConfig(it) }
             val fees = configs.mapValues { it.value.first }
             val bonds = configs.mapValues { it.value.second to it.value.third }
-            val ids = (if (role == Role.RIDER) c.ridesAsRider() else c.ridesAsDriver()).take(MAX_RIDES)
+            // A driver's unfinished rides always show, however many newer ones name them: anyone can open a
+            // ride naming a driver, and that must not push the one they are driving off the screen.
+            val underWay = if (role == Role.DRIVER) c.underWay() else emptyList()
+            val recent = (if (role == Role.RIDER) c.ridesAsRider() else c.ridesAsDriver()).take(MAX_RIDES)
+            val ids = (recent + underWay.map { it.id }).distinct().sortedDescending()
             val rides = ids.map { c.ride(it) }
             val rated = rides.filter { it.status == RideStatus.Completed && c.hasRated(it.id) }
                 .map { it.id }.toSet()
@@ -706,9 +712,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val rideRoutes = if (role == Role.DRIVER) rideRoutes(c, m, rides) else ownRoutes(c, rides)
             // Rider: is the driver still busy with someone else, and if not, where are they.
             val mine = rides.firstOrNull { it.status.isActive }.takeIf { role == Role.RIDER }
-            val ridesAhead = mine?.let { runCatching { c.ridesAhead(it) }.getOrDefault(0) } ?: 0
+            // A read that failed says nothing: keep what was known, never "nobody ahead".
+            val ridesAhead = mine?.let { runCatching { c.ridesAhead(it) }.getOrDefault(_state.value.ridesAhead) } ?: 0
             val driverAt = mine?.takeIf { ridesAhead == 0 }?.let { m?.driverPosition(it.quoteHash) }?.let { Coordinate(it.latE7, it.lonE7) }
-            if (role == Role.DRIVER) sharePosition(m, rides)
+            if (role == Role.DRIVER) sharePosition(m, underWay.firstOrNull())
             val links = if (role == Role.DRIVER) links(rides, rideRoutes) else emptyList()
             _state.update {
                 if (it.role != role) it else it.copy(

@@ -14,3 +14,6 @@ core/target/
 # Map pack builds: OSM extracts, tiles, packs
 mappack/build/
 mappack/target/
+# Claude Code: which code state the security reviewer last looked at
+.claude/security-reviewed
+.claude/settings.local.json

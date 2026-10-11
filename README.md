@@ -8,6 +8,17 @@ deducted from the fare.
 The design is in the [KlippelGo Architecture Plan](https://claude.ai/code/artifact/9a1aa829-3b30-4485-9395-42fa77304dc8).
 How maps, routes and trip proofs are computed on the phone is in [docs/maps-and-routing.md](docs/maps-and-routing.md).
 
+## Documentation
+
+| Area | Architecture | Security | Scalability |
+| --- | --- | --- | --- |
+| Contracts | [overview](contracts/docs/overview.md) | [security](contracts/docs/security.md) | [scalability](contracts/docs/scalability.md) |
+| Rust core | [overview](core/docs/overview.md) | [security](core/docs/security.md) | [scalability](core/docs/scalability.md) |
+| Apps | [overview](apps/docs/overview.md) | [security](apps/docs/security.md) | [scalability](apps/docs/scalability.md) |
+
+These are the source of truth for structure, patterns and guarantees. [CLAUDE.md](CLAUDE.md) says how the
+skills and the security reviewer in `.claude/` use them.
+
 ## Layout
 
 | Path | What it is |

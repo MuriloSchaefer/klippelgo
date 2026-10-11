@@ -8,6 +8,9 @@ enum class RideStatus { None, Open, Accepted, Started, Completed, Cancelled, Dis
 
     val isActive get() = this == Open || this == Accepted || this == Started || this == Disputed
 
+    /** A ride in one of these never changes again. */
+    val isFinal get() = this == Completed || this == Cancelled || this == Resolved
+
     companion object {
         fun of(i: Int) = entries.getOrElse(i) { None }
     }
