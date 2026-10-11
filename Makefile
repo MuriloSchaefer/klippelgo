@@ -1,4 +1,4 @@
-.PHONY: test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-four-phones android-apk android-test-chain
+.PHONY: test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-four-phones android-apk android-test-chain e2e e2e-integrity e2e-security e2e-performance e2e-up e2e-down e2e-three-phones
 
 test: test-contracts test-core test-mappack
 
@@ -60,3 +60,29 @@ android-apk:
 android-test-chain:
 	testnet/publish-pack.sh testnet/fixtures/test-pack
 	cd apps/android/chain && KLIPPELGO_RPC=http://127.0.0.1:8545 KLIPPELGO_DEPLOYMENT=$(CURDIR)/deployments/local.json ../gradlew test
+
+## End-to-end tests: the real app on an emulator against the real chain, gossip and map (see tests/README.md).
+## Brings up whatever is missing first, or uses the chain at KLIPPELGO_RPC.
+e2e:
+	tests/run.sh
+
+e2e-integrity:
+	tests/run.sh integrity
+
+e2e-security:
+	tests/run.sh security
+
+e2e-performance:
+	tests/run.sh performance
+
+## Three copies of the app in one ride: a rider and two drivers on three emulators. Needs about 12 GB of free
+## RAM. HEADLESS=0 make e2e-three-phones shows the three windows.
+e2e-three-phones:
+	PHONES=3 tests/run.sh integrity --tests '*ThreePhones*'
+
+e2e-up:
+	tests/stack.sh up
+
+## Stops what the end-to-end tests started, and only that.
+e2e-down:
+	tests/stack.sh down

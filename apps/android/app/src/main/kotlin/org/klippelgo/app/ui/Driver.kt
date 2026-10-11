@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -52,6 +53,7 @@ import org.klippelgo.app.MapState
 import org.klippelgo.app.R
 import org.klippelgo.app.Role
 import org.klippelgo.app.UiState
+import org.klippelgo.app.ui.tags.Tags
 import org.klippelgo.chain.Blocker
 import org.klippelgo.chain.Ride
 import org.klippelgo.chain.RideRequest
@@ -153,7 +155,7 @@ fun driverScene(state: UiState, request: RideRequest? = null): MapScene? {
 @Composable
 private fun AutoSkipRules(state: UiState, vm: AppViewModel) {
     val quarter = BigDecimal("0.25")
-    KCard(padding = 14.dp) {
+    KCard(Modifier.testTag(Tags.AUTO_SKIP), padding = 14.dp) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(stringResource(R.string.auto_skip_title), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -161,12 +163,13 @@ private fun AutoSkipRules(state: UiState, vm: AppViewModel) {
                     Muted(stringResource(R.string.auto_skip_per_km), size = 13.sp)
                     Text(
                         if (state.minPerKm.signum() == 0) stringResource(R.string.auto_skip_off) else brl(state.minPerKm),
+                        Modifier.testTag(Tags.AUTO_SKIP_PER_KM),
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
-                StepButton("−", stringResource(R.string.lower_price), enabled = state.minPerKm.signum() > 0) { vm.setMinPerKm(state.minPerKm - quarter) }
-                StepButton("+", stringResource(R.string.raise_price), enabled = true) { vm.setMinPerKm(state.minPerKm + quarter) }
+                StepButton("−", stringResource(R.string.lower_price), enabled = state.minPerKm.signum() > 0, tag = Tags.AUTO_SKIP_PER_KM_LOWER) { vm.setMinPerKm(state.minPerKm - quarter) }
+                StepButton("+", stringResource(R.string.raise_price), enabled = true, tag = Tags.AUTO_SKIP_PER_KM_RAISE) { vm.setMinPerKm(state.minPerKm + quarter) }
             }
             val limit = (state.tariff?.riderRangeBps ?: 1_000) / 100
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -174,15 +177,16 @@ private fun AutoSkipRules(state: UiState, vm: AppViewModel) {
                     Muted(stringResource(R.string.auto_skip_below), size = 13.sp)
                     Text(
                         if (state.maxBelowPercent >= limit) stringResource(R.string.auto_skip_off) else stringResource(R.string.auto_skip_percent, state.maxBelowPercent),
+                        Modifier.testTag(Tags.AUTO_SKIP_BELOW),
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
-                StepButton("−", stringResource(R.string.lower_price), enabled = state.maxBelowPercent > 0) { vm.setMaxBelowPercent(state.maxBelowPercent - 1) }
-                StepButton("+", stringResource(R.string.raise_price), enabled = state.maxBelowPercent < limit) { vm.setMaxBelowPercent(state.maxBelowPercent + 1) }
+                StepButton("−", stringResource(R.string.lower_price), enabled = state.maxBelowPercent > 0, tag = Tags.AUTO_SKIP_BELOW_LOWER) { vm.setMaxBelowPercent(state.maxBelowPercent - 1) }
+                StepButton("+", stringResource(R.string.raise_price), enabled = state.maxBelowPercent < limit, tag = Tags.AUTO_SKIP_BELOW_RAISE) { vm.setMaxBelowPercent(state.maxBelowPercent + 1) }
             }
             if (state.skippedRequests > 0) {
-                Muted(pluralStringResource(R.plurals.auto_skipped, state.skippedRequests, state.skippedRequests), size = 12.sp)
+                Muted(pluralStringResource(R.plurals.auto_skipped, state.skippedRequests, state.skippedRequests), Modifier.testTag(Tags.AUTO_SKIP_SKIPPED), size = 12.sp)
             }
         }
     }
@@ -192,7 +196,12 @@ private fun AutoSkipRules(state: UiState, vm: AppViewModel) {
 private fun OnlinePill(online: Boolean) {
     Pill {
         Dot(if (online) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outline)
-        Text(stringResource(if (online) R.string.online else R.string.offline), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            stringResource(if (online) R.string.online else R.string.offline),
+            Modifier.testTag(Tags.goOnlineStatus(online)),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 
@@ -201,14 +210,14 @@ private fun GoOnline(state: UiState, vm: AppViewModel, online: Boolean, onToggle
     val button = 132.dp
     var sheetHeight by remember { mutableIntStateOf(0) }
     val lift = with(LocalDensity.current) { (button / 2).roundToPx() }
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest).testTag(Tags.GO_ONLINE)) {
         Column(Modifier.fillMaxSize()) {
             MapSurface(Modifier.weight(1f).fillMaxWidth(), driverScene(state)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OnlinePill(online)
                         Spacer(Modifier.weight(1f))
-                        Pill(onClick = onRiderMode) {
+                        Pill(Modifier.testTag(Tags.GO_ONLINE_RIDER_MODE), onClick = onRiderMode) {
                             Text(stringResource(R.string.rider_mode), fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         }
                     }
@@ -218,13 +227,17 @@ private fun GoOnline(state: UiState, vm: AppViewModel, online: Boolean, onToggle
             Sheet(Modifier.onSizeChanged { sheetHeight = it.height }) {
                 Spacer(Modifier.height(button / 2 - 10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Stat(stringResource(R.string.stat_today), earnedToday(state))
-                    Stat(stringResource(R.string.stat_score), scoreLabel(state.me))
-                    Stat(stringResource(R.string.stat_rides), (state.me?.completedRides ?: 0).toString())
+                    Stat(stringResource(R.string.stat_today), earnedToday(state), Tags.GO_ONLINE_TODAY)
+                    Stat(stringResource(R.string.stat_score), scoreLabel(state.me), Tags.GO_ONLINE_SCORE)
+                    Stat(stringResource(R.string.stat_rides), (state.me?.completedRides ?: 0).toString(), Tags.GO_ONLINE_RIDES)
                 }
                 when {
                     state.connected == true && !state.canAccept -> BlockedNotice(state)
-                    online -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    online -> Row(
+                        Modifier.testTag(Tags.GO_ONLINE_WAITING),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                         Muted(stringResource(R.string.waiting_rides), size = 13.sp)
                     }
@@ -244,7 +257,7 @@ private fun GoOnline(state: UiState, vm: AppViewModel, online: Boolean, onToggle
             color = if (online) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.primary,
             border = BorderStroke(6.dp, if (online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface),
             shadowElevation = 2.dp,
-            modifier = Modifier.align(Alignment.BottomCenter).offset { IntOffset(0, lift - sheetHeight) }.size(button),
+            modifier = Modifier.align(Alignment.BottomCenter).offset { IntOffset(0, lift - sheetHeight) }.size(button).testTag(Tags.GO_ONLINE_TOGGLE),
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Text(
@@ -273,7 +286,7 @@ private fun BlockedNotice(state: UiState) {
             Blocker.Disabled -> stringResource(R.string.cannot_accept)
         }
     }.ifEmpty { listOf(stringResource(R.string.cannot_accept)) }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(Modifier.testTag(Tags.BLOCKED), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         lines.forEach { Muted(it, size = 13.sp, color = MaterialTheme.colorScheme.error) }
     }
 }
@@ -281,10 +294,10 @@ private fun BlockedNotice(state: UiState) {
 private fun score(x100: Int): String = String.format(Locale.forLanguageTag("pt-BR"), "%.2f", x100 / 100.0)
 
 @Composable
-private fun RowScope.Stat(label: String, value: String) {
+private fun RowScope.Stat(label: String, value: String, tag: String) {
     Column(Modifier.weight(1f).background(MaterialTheme.colorScheme.background, RoundedCornerShape(12.dp)).padding(12.dp)) {
         Muted(label, size = 12.sp)
-        Text(value, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        Text(value, Modifier.testTag(tag), fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1)
     }
 }
 
@@ -314,6 +327,7 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
     val valid = fee != null && price > fee && price <= ceiling && price >= floor
 
     MapScreen(
+        tag = Tags.REQUEST,
         scene = driverScene(state, request),
         map = {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -324,21 +338,21 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
     ) {
         Text(stringResource(R.string.new_request), fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Column {
-            KeyValue(stringResource(R.string.role_rider_short), shortAddress(request.rider), strong = true)
+            KeyValue(stringResource(R.string.role_rider_short), shortAddress(request.rider), strong = true, tag = Tags.REQUEST_RIDER)
             // Roughly where the trip starts and ends: the regions shaded on the map, by neighbourhood name.
             state.regions[request.id]?.let { regions ->
                 // On the map the pickup region is the filled one and the drop-off the dashed one.
-                KeyValue(stringResource(R.string.region_pickup), regions.pickupName ?: stringResource(R.string.region_on_map), strong = true)
-                KeyValue(stringResource(R.string.region_dropoff), regions.dropoffName ?: stringResource(R.string.region_on_map), strong = true)
+                KeyValue(stringResource(R.string.region_pickup), regions.pickupName ?: stringResource(R.string.region_on_map), strong = true, tag = Tags.REQUEST_PICKUP)
+                KeyValue(stringResource(R.string.region_dropoff), regions.dropoffName ?: stringResource(R.string.region_on_map), strong = true, tag = Tags.REQUEST_DROPOFF)
             }
             // The rider's phone measured the route. Where it runs stays there; the length is what gets priced.
-            KeyValue(stringResource(R.string.trip), routeLabel(request.route.distanceM, request.route.durationS), strong = true)
-            KeyValue(stringResource(R.string.pays_at_most), brl(coin, request.maxFare), divider = false, strong = true)
+            KeyValue(stringResource(R.string.trip), routeLabel(request.route.distanceM, request.route.durationS), strong = true, tag = Tags.REQUEST_TRIP)
+            KeyValue(stringResource(R.string.pays_at_most), brl(coin, request.maxFare), divider = false, strong = true, tag = Tags.REQUEST_PAYS)
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StepButton("−", stringResource(R.string.lower_offer), enabled = fee != null && price - step > fee && price - step >= floor) { price -= step }
+            StepButton("−", stringResource(R.string.lower_offer), enabled = fee != null && price - step > fee && price - step >= floor, tag = Tags.REQUEST_LOWER) { price -= step }
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(brl(coin, price), fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                Text(brl(coin, price), Modifier.testTag(Tags.REQUEST_PRICE), fontSize = 28.sp, fontWeight = FontWeight.Bold)
                 Muted(
                     stringResource(R.string.per_km, brl(perKm(coin, price, request.route.distanceM))) +
                         (recommended?.let { " · " + stringResource(R.string.recommended_short, brl(coin, it)) } ?: ""),
@@ -348,20 +362,25 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
                     Muted(stringResource(R.string.you_receive, brl(coin, price - fee), brl(coin, fee)), size = 12.sp, align = TextAlign.Center)
                 }
                 if (mine != null) {
-                    Text(stringResource(R.string.your_offer, brl(coin, mine.fare)), fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
+                    Text(
+                        stringResource(R.string.your_offer, brl(coin, mine.fare)),
+                        Modifier.testTag(Tags.REQUEST_YOUR_OFFER),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
                 }
             }
-            StepButton("+", stringResource(R.string.raise_offer), enabled = price + step <= ceiling) {
+            StepButton("+", stringResource(R.string.raise_offer), enabled = price + step <= ceiling, tag = Tags.REQUEST_RAISE) {
                 price += step
             }
         }
         if (state.connected == true && !state.canAccept) BlockedNotice(state)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            SecondaryButton(stringResource(R.string.pass), onPass, Modifier.weight(1f))
+            SecondaryButton(stringResource(R.string.pass), onPass, Modifier.weight(1f).testTag(Tags.REQUEST_PASS))
             PrimaryButton(
                 stringResource(if (mine == null) R.string.action_send_offer else R.string.action_update_offer),
                 onClick = { onSend(coin.toReais(price)) },
-                modifier = Modifier.weight(2f),
+                modifier = Modifier.weight(2f).testTag(Tags.REQUEST_SEND),
                 enabled = valid && price != mine?.fare && state.canAccept,
                 busy = state.busy,
             )
@@ -370,14 +389,14 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
 }
 
 @Composable
-fun StepButton(symbol: String, description: String, enabled: Boolean, onClick: () -> Unit) {
+fun StepButton(symbol: String, description: String, enabled: Boolean, tag: String? = null, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         enabled = enabled,
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         contentColor = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
-        modifier = Modifier.size(52.dp).semantics { contentDescription = description },
+        modifier = Modifier.size(52.dp).tagged(tag).semantics { contentDescription = description },
     ) {
         Box(contentAlignment = Alignment.Center) { Text(symbol, fontSize = 24.sp) }
     }
@@ -391,12 +410,12 @@ fun StepButton(symbol: String, description: String, enabled: Boolean, onClick: (
 private fun DriverRide(state: UiState, current: Ride?, chosen: Ride?, request: RideRequest?, onQuote: () -> Unit, vm: AppViewModel) {
     val lead = current ?: chosen ?: return
     val coin = coinOf(state, lead.token)
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest).testTag(Tags.DRIVER_RIDE)) {
         Surface(color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.fillMaxWidth()) {
             Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(KIcons.Lock, contentDescription = null)
                 Column {
-                    Text(stringResource(R.string.guaranteed, brl(coin, lead.driverPayout)), fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.guaranteed, brl(coin, lead.driverPayout)), Modifier.testTag(Tags.DRIVER_RIDE_GUARANTEED), fontSize = 17.sp, fontWeight = FontWeight.Bold)
                     Text(stringResource(R.string.paid_at_end), fontSize = 13.sp)
                 }
             }
@@ -407,11 +426,11 @@ private fun DriverRide(state: UiState, current: Ride?, chosen: Ride?, request: R
         Sheet {
             if (current != null) {
                 val bond = brl(coinOf(state, current.token), current.driverBond)
-                RideSummary(state, current, next = false)
+                RideSummary(state, current, next = false, slot = Tags.SLOT_CURRENT)
                 when (current.status) {
                     RideStatus.Accepted -> {
-                        PrimaryButton(stringResource(R.string.action_start), { vm.start(current.id) }, busy = state.busy)
-                        SecondaryButton(stringResource(R.string.cancel_ride), { vm.cancel(current.id) }, Modifier.fillMaxWidth(), enabled = !state.busy)
+                        PrimaryButton(stringResource(R.string.action_start), { vm.start(current.id) }, Modifier.testTag(Tags.DRIVER_RIDE_START), busy = state.busy)
+                        SecondaryButton(stringResource(R.string.cancel_ride), { vm.cancel(current.id) }, Modifier.fillMaxWidth().testTag(Tags.DRIVER_RIDE_CANCEL), enabled = !state.busy)
                         Muted(stringResource(R.string.driver_cancel_hint, bond), size = 12.sp, align = TextAlign.Center)
                     }
                     RideStatus.Started -> Muted(stringResource(R.string.driver_trip_hint), size = 13.sp)
@@ -422,9 +441,9 @@ private fun DriverRide(state: UiState, current: Ride?, chosen: Ride?, request: R
                 val bond = brl(coinOf(state, chosen.token), chosen.driverBond)
                 if (current != null) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 // With a ride already in hand, this one is drawn in the other colour and comes after it.
-                RideSummary(state, chosen, next = current != null)
-                PrimaryButton(stringResource(R.string.action_accept), { vm.accept(chosen.id) }, enabled = state.canAccept, busy = state.busy)
-                SecondaryButton(stringResource(R.string.decline_ride), { vm.cancel(chosen.id) }, Modifier.fillMaxWidth(), enabled = !state.busy)
+                RideSummary(state, chosen, next = current != null, slot = Tags.SLOT_CHOSEN)
+                PrimaryButton(stringResource(R.string.action_accept), { vm.accept(chosen.id) }, Modifier.testTag(Tags.DRIVER_RIDE_ACCEPT), enabled = state.canAccept, busy = state.busy)
+                SecondaryButton(stringResource(R.string.decline_ride), { vm.cancel(chosen.id) }, Modifier.fillMaxWidth().testTag(Tags.DRIVER_RIDE_DECLINE), enabled = !state.busy)
                 Muted(
                     stringResource(R.string.accept_hint, bond) + " " + stringResource(R.string.decline_hint),
                     size = 12.sp,
@@ -445,10 +464,11 @@ private fun DriverRide(state: UiState, current: Ride?, chosen: Ride?, request: R
                         Muted(
                             routeLabel(request.route.distanceM, request.route.durationS) + " · " +
                                 stringResource(R.string.pays_at_most) + " " + brl(asked, request.maxFare),
+                            Modifier.testTag(Tags.DRIVER_RIDE_NEXT_REQUEST),
                             size = 13.sp,
                         )
                     }
-                    SecondaryButton(stringResource(R.string.make_offer), onQuote)
+                    SecondaryButton(stringResource(R.string.make_offer), onQuote, Modifier.testTag(Tags.DRIVER_RIDE_QUOTE))
                 }
             }
         }
@@ -457,7 +477,7 @@ private fun DriverRide(state: UiState, current: Ride?, chosen: Ride?, request: R
 
 /** One ride in the driver's sheet: what it is, who, how much, and its route once the rider's phone sent it. */
 @Composable
-private fun RideSummary(state: UiState, ride: Ride, next: Boolean) {
+private fun RideSummary(state: UiState, ride: Ride, next: Boolean, slot: String) {
     val coin = coinOf(state, ride.token)
     val route = state.rideRoutes[ride.id]
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -469,20 +489,22 @@ private fun RideSummary(state: UiState, ride: Ride, next: Boolean) {
                     RideStatus.Accepted -> stringResource(R.string.pickup_title)
                     else -> statusLabel(ride.status)
                 },
+                Modifier.testTag(Tags.rideTitle(slot)),
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
             )
         }
-        Text(shortAddress(ride.rider), fontFamily = PlexMono, fontSize = 15.sp)
-        Muted(stringResource(R.string.ride_number, ride.id.toString()) + " · " + brl(coin, ride.fare), size = 13.sp)
+        Text(shortAddress(ride.rider), Modifier.testTag(Tags.rideRider(slot)), fontFamily = PlexMono, fontSize = 15.sp)
+        Muted(stringResource(R.string.ride_number, ride.id.toString()) + " · " + brl(coin, ride.fare), Modifier.testTag(Tags.rideNumber(slot)), size = 13.sp)
         when {
             route != null -> Text(
                 routeLabel(route.distanceM.toInt(), route.durationS.toInt()) + " · " + stringResource(R.string.route_checked),
+                Modifier.testTag(Tags.rideRoute(slot, Tags.ROUTE_CHECKED)),
                 fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
             )
-            state.map !is MapState.Ready -> Muted(stringResource(R.string.route_needs_map), size = 13.sp)
-            else -> Muted(stringResource(R.string.route_waiting), size = 13.sp)
+            state.map !is MapState.Ready -> Muted(stringResource(R.string.route_needs_map), Modifier.testTag(Tags.rideRoute(slot, Tags.ROUTE_NEEDS_MAP)), size = 13.sp)
+            else -> Muted(stringResource(R.string.route_waiting), Modifier.testTag(Tags.rideRoute(slot, Tags.ROUTE_WAITING)), size = 13.sp)
         }
     }
 }

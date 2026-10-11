@@ -13,6 +13,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -20,6 +21,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.klippelgo.app.R
+import org.klippelgo.app.ui.tags.Tags
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -317,14 +319,15 @@ fun PackMap(scene: MapScene, ink: Color, accent: Color, ring: Color, muted: Colo
         }
     }
 
-    Box(modifier) {
+    // The tag goes on the box: the map itself is an Android view, which takes no tag from Compose.
+    Box(modifier.testTag(Tags.MAP)) {
         AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
         Column(
             Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            ZoomButton("+", stringResource(R.string.zoom_in)) { ready?.first?.animateCamera(CameraUpdateFactory.zoomIn()) }
-            ZoomButton("−", stringResource(R.string.zoom_out)) { ready?.first?.animateCamera(CameraUpdateFactory.zoomOut()) }
+            ZoomButton("+", stringResource(R.string.zoom_in), Tags.MAP_ZOOM_IN) { ready?.first?.animateCamera(CameraUpdateFactory.zoomIn()) }
+            ZoomButton("−", stringResource(R.string.zoom_out), Tags.MAP_ZOOM_OUT) { ready?.first?.animateCamera(CameraUpdateFactory.zoomOut()) }
         }
     }
 }
@@ -332,13 +335,13 @@ fun PackMap(scene: MapScene, ink: Color, accent: Color, ring: Color, muted: Colo
 private data class Stroke(val kind: LineKind, val colour: Color, val width: Float, val dash: Array<Float>)
 
 @Composable
-private fun ZoomButton(symbol: String, description: String, onClick: () -> Unit) {
+private fun ZoomButton(symbol: String, description: String, tag: String, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         shape = CircleShape,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         shadowElevation = 2.dp,
-        modifier = Modifier.size(44.dp).semantics { contentDescription = description },
+        modifier = Modifier.size(44.dp).testTag(tag).semantics { contentDescription = description },
     ) {
         Box(contentAlignment = Alignment.Center) { Text(symbol, fontSize = 22.sp, fontWeight = FontWeight.SemiBold) }
     }

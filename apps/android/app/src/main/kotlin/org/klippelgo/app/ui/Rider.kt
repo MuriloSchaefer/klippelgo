@@ -40,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +53,7 @@ import org.klippelgo.app.R
 import org.klippelgo.app.Role
 import org.klippelgo.app.UiState
 import org.klippelgo.app.setAppLanguage
+import org.klippelgo.app.ui.tags.Tags
 import org.klippelgo.chain.Coin
 import org.klippelgo.chain.Offer
 import org.klippelgo.chain.Ride
@@ -146,8 +148,8 @@ fun RiderApp(state: UiState, vm: AppViewModel) {
 
 /** A map with a sheet under it. The sheet scrolls if it ever outgrows the screen. */
 @Composable
-fun MapScreen(scene: MapScene? = null, map: @Composable BoxScope.() -> Unit, sheet: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
+fun MapScreen(tag: String? = null, scene: MapScene? = null, map: @Composable BoxScope.() -> Unit, sheet: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest).tagged(tag)) {
         MapSurface(Modifier.weight(1f).fillMaxWidth(), scene, map)
         Sheet(content = sheet)
     }
@@ -158,6 +160,7 @@ fun MapScreen(scene: MapScene? = null, map: @Composable BoxScope.() -> Unit, she
 @Composable
 private fun WhereTo(state: UiState, vm: AppViewModel, onAsk: () -> Unit, onProfile: () -> Unit) {
     MapScreen(
+        tag = Tags.WHERE_TO,
         scene = sceneOf(state, onCentre = vm::setPickup),
         map = {
             // The pin stays in the middle and the map moves under it: where it points is the pickup.
@@ -172,13 +175,13 @@ private fun WhereTo(state: UiState, vm: AppViewModel, onAsk: () -> Unit, onProfi
             }
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Pill { Text(totalBalance(state), fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
+                    Pill { Text(totalBalance(state), Modifier.testTag(Tags.WHERE_TO_BALANCE), fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
                     Spacer(Modifier.weight(1f))
                     Surface(
                         onClick = onProfile,
                         shape = CircleShape,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                        modifier = Modifier.size(44.dp),
+                        modifier = Modifier.size(44.dp).testTag(Tags.WHERE_TO_PROFILE),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(KIcons.Person, contentDescription = stringResource(R.string.tab_profile), Modifier.size(20.dp))
@@ -196,7 +199,7 @@ private fun WhereTo(state: UiState, vm: AppViewModel, onAsk: () -> Unit, onProfi
         if (state.map is MapState.Ready) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 FieldLabel(stringResource(R.string.pickup))
-                Text(state.pickupName ?: stringResource(R.string.pickup_pin), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text(state.pickupName ?: stringResource(R.string.pickup_pin), Modifier.testTag(Tags.WHERE_TO_PICKUP), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 Muted(stringResource(R.string.pickup_pin_hint), size = 12.sp)
             }
         } else {
@@ -208,7 +211,7 @@ private fun WhereTo(state: UiState, vm: AppViewModel, onAsk: () -> Unit, onProfi
             shape = RoundedCornerShape(14.dp),
             color = MaterialTheme.colorScheme.surfaceVariant,
             contentColor = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.fillMaxWidth().height(56.dp),
+            modifier = Modifier.fillMaxWidth().height(56.dp).testTag(Tags.WHERE_TO_ASK),
         ) {
             Row(
                 Modifier.padding(horizontal = 16.dp),
@@ -243,28 +246,38 @@ fun sceneOf(state: UiState, underWay: Boolean = false, onCentre: ((Coordinate) -
 fun MapNotice(state: UiState, onDownload: () -> Unit, modifier: Modifier = Modifier) {
     val map = state.map
     if (map is MapState.Ready) return
-    KCard(modifier = modifier, padding = 14.dp) {
+    KCard(modifier = modifier.testTag(Tags.MAP_NOTICE), padding = 14.dp) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(stringResource(R.string.map_title), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             when (map) {
-                MapState.Checking -> Muted(stringResource(R.string.map_checking), size = 13.sp)
-                MapState.NotPublished -> Muted(stringResource(R.string.map_not_published), size = 13.sp)
+                MapState.Checking -> Muted(stringResource(R.string.map_checking), Modifier.testTag(Tags.mapNoticeStatus(Tags.MAP_CHECKING)), size = 13.sp)
+                MapState.NotPublished -> Muted(stringResource(R.string.map_not_published), Modifier.testTag(Tags.mapNoticeStatus(Tags.MAP_NOT_PUBLISHED)), size = 13.sp)
                 is MapState.NotDownloaded -> {
-                    Muted(stringResource(if (state.role == Role.DRIVER) R.string.map_needed_driver else R.string.map_needed), size = 13.sp)
+                    Muted(
+                        stringResource(if (state.role == Role.DRIVER) R.string.map_needed_driver else R.string.map_needed),
+                        Modifier.testTag(Tags.mapNoticeStatus(Tags.MAP_NOT_DOWNLOADED)),
+                        size = 13.sp,
+                    )
                     val megabytes = (map.bytes / 1_000_000).toInt()
                     PrimaryButton(
                         if (megabytes > 0) stringResource(R.string.map_download_size, megabytes) else stringResource(R.string.map_download),
                         onDownload,
+                        Modifier.testTag(Tags.MAP_NOTICE_DOWNLOAD),
                     )
                 }
                 is MapState.Downloading -> {
                     val fraction = if (map.total > 0) map.done.toFloat() / map.total else 0f
-                    Muted(stringResource(R.string.map_downloading, (fraction * 100).roundToInt()), size = 13.sp)
+                    Muted(stringResource(R.string.map_downloading, (fraction * 100).roundToInt()), Modifier.testTag(Tags.mapNoticeStatus(Tags.MAP_DOWNLOADING)), size = 13.sp)
                     LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
                 }
                 is MapState.Failed -> {
-                    Muted(stringResource(R.string.map_failed, map.message), color = MaterialTheme.colorScheme.error, size = 13.sp)
-                    SecondaryButton(stringResource(R.string.map_download), onDownload)
+                    Muted(
+                        stringResource(R.string.map_failed, map.message),
+                        Modifier.testTag(Tags.mapNoticeStatus(Tags.MAP_FAILED)),
+                        color = MaterialTheme.colorScheme.error,
+                        size = 13.sp,
+                    )
+                    SecondaryButton(stringResource(R.string.map_download), onDownload, Modifier.testTag(Tags.MAP_NOTICE_DOWNLOAD))
                 }
                 is MapState.Ready -> {}
             }
@@ -277,7 +290,7 @@ fun MapNotice(state: UiState, onDownload: () -> Unit, modifier: Modifier = Modif
 private fun Destination(state: UiState, vm: AppViewModel, modifier: Modifier = Modifier) {
     var query by rememberSaveable { mutableStateOf("") }
     val destination = state.destination
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(modifier.testTag(Tags.DESTINATION), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         FieldLabel(stringResource(R.string.destination))
         if (destination == null) {
             OutlinedTextField(
@@ -290,10 +303,10 @@ private fun Destination(state: UiState, vm: AppViewModel, modifier: Modifier = M
                 leadingIcon = { Icon(KIcons.Search, contentDescription = null, Modifier.size(20.dp)) },
                 singleLine = true,
                 shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().testTag(Tags.DESTINATION_SEARCH),
             )
-            state.places.forEach { place ->
-                KCard(padding = 12.dp, onClick = { vm.chooseDestination(place) }) {
+            state.places.forEachIndexed { i, place ->
+                KCard(Modifier.testTag(Tags.destinationPlace(i)), padding = 12.dp, onClick = { vm.chooseDestination(place) }) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(place.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
@@ -309,24 +322,29 @@ private fun Destination(state: UiState, vm: AppViewModel, modifier: Modifier = M
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(destination.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text(destination.name, Modifier.testTag(Tags.DESTINATION_PICKED), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                             if (destination.context.isNotEmpty()) Muted(destination.context, size = 13.sp)
                         }
-                        TextButton(onClick = {
-                            query = ""
-                            vm.clearDestination()
-                        }) { Text(stringResource(R.string.change), fontSize = 14.sp) }
+                        TextButton(
+                            onClick = {
+                                query = ""
+                                vm.clearDestination()
+                            },
+                            modifier = Modifier.testTag(Tags.DESTINATION_CHANGE),
+                        ) { Text(stringResource(R.string.change), fontSize = 14.sp) }
                     }
                     val route = state.route
                     when {
                         route != null -> Text(
                             routeLabel(route.distanceM.toInt(), route.durationS.toInt()),
+                            Modifier.testTag(Tags.DESTINATION_ROUTE),
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Bold,
                         )
-                        state.routing -> Muted(stringResource(R.string.routing), size = 13.sp)
+                        state.routing -> Muted(stringResource(R.string.routing), Modifier.testTag(Tags.DESTINATION_ROUTING), size = 13.sp)
                         state.routeError != null -> Muted(
                             stringResource(R.string.route_failed, state.routeError),
+                            Modifier.testTag(Tags.DESTINATION_ROUTE_ERROR),
                             color = MaterialTheme.colorScheme.error,
                             size = 13.sp,
                         )
@@ -346,21 +364,21 @@ private fun TabBar(tab: Tab, onTab: (Tab) -> Unit) {
     Surface {
         Column {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Row(Modifier.fillMaxWidth().height(72.dp)) {
-                TabItem(KIcons.Pin, stringResource(R.string.tab_ride), tab == Tab.RIDE) { onTab(Tab.RIDE) }
-                TabItem(KIcons.Wallet, stringResource(R.string.tab_wallet), tab == Tab.WALLET) { onTab(Tab.WALLET) }
-                TabItem(KIcons.Rules, stringResource(R.string.tab_rules), tab == Tab.RULES) { onTab(Tab.RULES) }
-                TabItem(KIcons.Person, stringResource(R.string.tab_profile), tab == Tab.PROFILE) { onTab(Tab.PROFILE) }
+            Row(Modifier.fillMaxWidth().height(72.dp).testTag(Tags.TABS)) {
+                TabItem(KIcons.Pin, stringResource(R.string.tab_ride), tab == Tab.RIDE, Tags.tab("ride")) { onTab(Tab.RIDE) }
+                TabItem(KIcons.Wallet, stringResource(R.string.tab_wallet), tab == Tab.WALLET, Tags.tab("wallet")) { onTab(Tab.WALLET) }
+                TabItem(KIcons.Rules, stringResource(R.string.tab_rules), tab == Tab.RULES, Tags.tab("rules")) { onTab(Tab.RULES) }
+                TabItem(KIcons.Person, stringResource(R.string.tab_profile), tab == Tab.PROFILE, Tags.tab("profile")) { onTab(Tab.PROFILE) }
             }
         }
     }
 }
 
 @Composable
-private fun RowScope.TabItem(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
+private fun RowScope.TabItem(icon: ImageVector, label: String, selected: Boolean, tag: String, onClick: () -> Unit) {
     val color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
     Column(
-        Modifier.weight(1f).fillMaxSize().selectable(selected = selected, onClick = onClick),
+        Modifier.weight(1f).fillMaxSize().testTag(tag).selectable(selected = selected, onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -386,14 +404,15 @@ fun WalletScreen(state: UiState, vm: AppViewModel, onboarding: Boolean, onDone: 
                 coin?.let { vm.addMoney(it, BigDecimal(amount)) }
                 onDone()
             },
+            modifier = Modifier.testTag(Tags.WALLET_ADD),
             enabled = coin != null,
             busy = state.busy,
         )
     }
-    ScrollScreen {
+    ScrollScreen(if (onboarding) Tags.FUNDING else Tags.WALLET) {
         if (onboarding) {
             Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 20.dp, end = 12.dp), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onDone) {
+                TextButton(onClick = onDone, Modifier.testTag(Tags.WALLET_SKIP)) {
                     Text(stringResource(R.string.skip_for_now), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.secondary)
                 }
             }
@@ -409,9 +428,9 @@ fun WalletScreen(state: UiState, vm: AppViewModel, onboarding: Boolean, onDone: 
             KCard(Modifier.padding(start = 20.dp, top = 20.dp, end = 20.dp)) {
                 Column {
                     Muted(stringResource(R.string.balances), size = 13.sp)
-                    Text(totalBalance(state), fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                    Text(totalBalance(state), Modifier.testTag(Tags.WALLET_TOTAL), fontSize = 28.sp, fontWeight = FontWeight.Bold)
                     state.balances.entries.forEachIndexed { i, (c, units) ->
-                        KeyValue(c.symbol, brl(c, units), divider = i < state.balances.size - 1)
+                        KeyValue(c.symbol, brl(c, units), divider = i < state.balances.size - 1, tag = Tags.walletBalance(c.symbol))
                     }
                 }
             }
@@ -424,10 +443,10 @@ fun WalletScreen(state: UiState, vm: AppViewModel, onboarding: Boolean, onDone: 
         }
         Row(Modifier.padding(start = 20.dp, top = if (onboarding) 24.dp else 12.dp, end = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             listOf(20, 50, 100).forEach { n ->
-                Choice("R$ $n", amount == n, { amount = n }, Modifier.weight(1f))
+                Choice("R$ $n", amount == n, { amount = n }, Modifier.weight(1f).testTag(Tags.walletAmount(n)))
             }
         }
-        CoinChoice(coins, coin, onPick = { coinSymbol = it.symbol }, Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp))
+        CoinChoice(coins, coin, onPick = { coinSymbol = it.symbol }, Tags::walletCoin, Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp))
         Muted(
             stringResource(R.string.add_money_note),
             Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp),
@@ -444,11 +463,11 @@ fun WalletScreen(state: UiState, vm: AppViewModel, onboarding: Boolean, onDone: 
 }
 
 @Composable
-private fun CoinChoice(coins: List<Coin>, coin: Coin?, onPick: (Coin) -> Unit, modifier: Modifier = Modifier) {
+private fun CoinChoice(coins: List<Coin>, coin: Coin?, onPick: (Coin) -> Unit, tag: (String) -> String, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         FieldLabel(stringResource(R.string.coin_label))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            coins.forEach { c -> Choice(c.symbol, c == coin, { onPick(c) }, Modifier.weight(1f)) }
+            coins.forEach { c -> Choice(c.symbol, c == coin, { onPick(c) }, Modifier.weight(1f).testTag(tag(c.symbol))) }
         }
     }
 }
@@ -456,25 +475,34 @@ private fun CoinChoice(coins: List<Coin>, coin: Coin?, onPick: (Coin) -> Unit, m
 @Composable
 private fun History(state: UiState, vm: AppViewModel) {
     val past = state.rides.filter { !it.status.isActive }
-    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.padding(20.dp).testTag(Tags.HISTORY), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(stringResource(R.string.history), Modifier.padding(top = 8.dp), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-        if (past.isEmpty()) Muted(stringResource(R.string.no_rides))
+        if (past.isEmpty()) Muted(stringResource(R.string.no_rides), Modifier.testTag(Tags.HISTORY_EMPTY))
         past.forEach { ride ->
             val coin = coinOf(state, ride.token)
-            KCard(padding = 14.dp) {
+            KCard(Modifier.testTag(Tags.historyRide(ride.id.toString())), padding = 14.dp) {
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(statusLabel(ride.status), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                statusLabel(ride.status),
+                                Modifier.testTag(Tags.historyStatus(ride.id.toString(), ride.status.name)),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
                             Muted(stringResource(R.string.ride_number, ride.id.toString()) + " · " + shortAddress(ride.driver), size = 13.sp)
                         }
                         Text(brl(coin, ride.fare), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     }
                     if (ride.status == RideStatus.Completed) {
                         if (ride.id in state.rated) {
-                            Muted(stringResource(R.string.rated), Modifier.padding(top = 4.dp), size = 12.sp)
+                            Muted(
+                                stringResource(R.string.rated),
+                                Modifier.padding(top = 4.dp).testTag(Tags.historyStatus(ride.id.toString(), Tags.HISTORY_RATED)),
+                                size = 12.sp,
+                            )
                         } else {
-                            StarPicker(0, onPick = { vm.rate(ride.id, it) }, size = 24.dp)
+                            StarPicker(0, onPick = { vm.rate(ride.id, it) }, size = 24.dp, tag = Tags.historyStars(ride.id.toString()))
                         }
                     }
                 }
@@ -486,7 +514,7 @@ private fun History(state: UiState, vm: AppViewModel) {
 /** What the escrow charges and holds today, read from the chain. Voting on it is not in the app yet. */
 @Composable
 private fun Rules(state: UiState) {
-    ScrollScreen {
+    ScrollScreen(Tags.RULES) {
         Column(Modifier.padding(start = 20.dp, top = 28.dp, end = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Title(stringResource(R.string.tab_rules))
             Muted(stringResource(R.string.rules_body))
@@ -500,15 +528,20 @@ private fun Rules(state: UiState) {
                         Text(stringResource(R.string.tariff_title), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                         Muted(stringResource(R.string.tariff_body), size = 13.sp)
                         Column {
-                            KeyValue(stringResource(R.string.tariff_base), reais(tariff.baseCentavos))
-                            KeyValue(stringResource(R.string.tariff_per_km), reais(tariff.perKmCentavos))
-                            KeyValue(stringResource(R.string.tariff_per_minute), reais(tariff.perMinuteCentavos))
-                            KeyValue(stringResource(R.string.tariff_minimum), reais(tariff.minimumCentavos))
-                            KeyValue(stringResource(R.string.tariff_rider_range), stringResource(R.string.tariff_percent_either_way, tariff.riderRangeBps / 100))
+                            KeyValue(stringResource(R.string.tariff_base), reais(tariff.baseCentavos), tag = Tags.RULES_BASE)
+                            KeyValue(stringResource(R.string.tariff_per_km), reais(tariff.perKmCentavos), tag = Tags.RULES_PER_KM)
+                            KeyValue(stringResource(R.string.tariff_per_minute), reais(tariff.perMinuteCentavos), tag = Tags.RULES_PER_MINUTE)
+                            KeyValue(stringResource(R.string.tariff_minimum), reais(tariff.minimumCentavos), tag = Tags.RULES_MINIMUM)
+                            KeyValue(
+                                stringResource(R.string.tariff_rider_range),
+                                stringResource(R.string.tariff_percent_either_way, tariff.riderRangeBps / 100),
+                                tag = Tags.RULES_RIDER_RANGE,
+                            )
                             KeyValue(
                                 stringResource(R.string.tariff_driver_discount),
                                 stringResource(R.string.tariff_percent_under, tariff.driverDiscountBps / 100, tariff.riderRangeBps / 100),
                                 divider = false,
+                                tag = Tags.RULES_DRIVER_DISCOUNT,
                             )
                         }
                         // A worked example with today's numbers: 5 km in 12 minutes.
@@ -531,9 +564,9 @@ private fun Rules(state: UiState) {
                 KCard {
                     Column {
                         Text(coin.symbol, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                        KeyValue(stringResource(R.string.institute_per_ride), brl(coin, fee))
-                        KeyValue(stringResource(R.string.rule_rider_bond), brl(coin, riderBond))
-                        KeyValue(stringResource(R.string.rule_driver_bond), brl(coin, driverBond), divider = false)
+                        KeyValue(stringResource(R.string.institute_per_ride), brl(coin, fee), tag = Tags.rulesFee(coin.symbol))
+                        KeyValue(stringResource(R.string.rule_rider_bond), brl(coin, riderBond), tag = Tags.rulesRiderBond(coin.symbol))
+                        KeyValue(stringResource(R.string.rule_driver_bond), brl(coin, driverBond), divider = false, tag = Tags.rulesDriverBond(coin.symbol))
                     }
                 }
             }
@@ -544,15 +577,26 @@ private fun Rules(state: UiState) {
 
 @Composable
 private fun Profile(state: UiState, vm: AppViewModel) {
-    ScrollScreen {
+    ScrollScreen(Tags.PROFILE) {
         Title(stringResource(R.string.tab_profile), Modifier.padding(start = 20.dp, top = 28.dp, end = 20.dp))
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             KCard {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Avatar(56.dp)
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(state.name.ifBlank { stringResource(R.string.role_rider_short) }, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        Text(shortAddress(state.address), fontFamily = PlexMono, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            state.name.ifBlank { stringResource(R.string.role_rider_short) },
+                            Modifier.testTag(Tags.PROFILE_NAME),
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            shortAddress(state.address),
+                            Modifier.testTag(Tags.PROFILE_ADDRESS),
+                            fontFamily = PlexMono,
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         if (state.name.isNotBlank()) Tag(stringResource(R.string.only_you_this_phone))
                     }
                 }
@@ -563,6 +607,7 @@ private fun Profile(state: UiState, vm: AppViewModel) {
                     if (state.connected != null) {
                         Muted(
                             stringResource(if (state.connected) R.string.connected else R.string.not_connected, state.rpcUrl),
+                            Modifier.testTag(Tags.profileChain(state.connected)),
                             size = 13.sp,
                             color = if (state.connected) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                         )
@@ -570,6 +615,7 @@ private fun Profile(state: UiState, vm: AppViewModel) {
                     if (state.gossipConnected != null) {
                         Muted(
                             stringResource(if (state.gossipConnected) R.string.gossip_connected else R.string.gossip_not_connected),
+                            Modifier.testTag(Tags.profileGossip(state.gossipConnected)),
                             size = 13.sp,
                             color = if (state.gossipConnected) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                         )
@@ -582,8 +628,8 @@ private fun Profile(state: UiState, vm: AppViewModel) {
                 Spacer(Modifier.weight(1f))
                 LanguagePills(currentLanguage(), ::setAppLanguage)
             }
-            SecondaryButton(stringResource(R.string.driver_mode), { vm.connect(Role.DRIVER, state.rpcUrl) }, Modifier.fillMaxWidth())
-            TextButton(onClick = vm::signOut, Modifier.align(Alignment.CenterHorizontally)) {
+            SecondaryButton(stringResource(R.string.driver_mode), { vm.connect(Role.DRIVER, state.rpcUrl) }, Modifier.fillMaxWidth().testTag(Tags.PROFILE_DRIVER_MODE))
+            TextButton(onClick = vm::signOut, Modifier.align(Alignment.CenterHorizontally).testTag(Tags.PROFILE_SIGN_OUT)) {
                 Muted(stringResource(R.string.sign_out))
             }
         }
@@ -605,7 +651,7 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
     val coins = state.balances.keys.toList()
     val coin = request?.let { coinOf(state, it.token) } ?: coins.firstOrNull { it.symbol == coinSymbol } ?: coins.firstOrNull()
 
-    ScrollScreen {
+    ScrollScreen(if (request == null) Tags.ASK else Tags.OFFERS) {
         Row(Modifier.padding(start = 12.dp, top = 20.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically) {
             BackButton(onBack)
             Text(
@@ -637,16 +683,17 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                     Muted(stringResource(R.string.price_needs_route), size = 13.sp)
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        StepButton("−", stringResource(R.string.lower_price), enabled = centavos - step >= range.first) { steps -= 1 }
+                        StepButton("−", stringResource(R.string.lower_price), enabled = centavos - step >= range.first, tag = Tags.ASK_LOWER) { steps -= 1 }
                         Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(brl(fare), fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                            Text(brl(fare), Modifier.testTag(Tags.ASK_PRICE), fontSize = 28.sp, fontWeight = FontWeight.Bold)
                             Muted(
                                 stringResource(R.string.price_recommended, brl(BigDecimal(recommended).movePointLeft(2))),
+                                Modifier.testTag(Tags.ASK_RECOMMENDED),
                                 size = 12.sp,
                                 align = TextAlign.Center,
                             )
                         }
-                        StepButton("+", stringResource(R.string.raise_price), enabled = centavos + step <= range.last) { steps += 1 }
+                        StepButton("+", stringResource(R.string.raise_price), enabled = centavos + step <= range.last, tag = Tags.ASK_RAISE) { steps += 1 }
                     }
                     Muted(
                         stringResource(R.string.price_range_hint, tariff.riderRangeBps / 100, tariff.driverDiscountBps / 100, tariff.riderRangeBps / 100),
@@ -655,7 +702,7 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                 }
                 Muted(stringResource(R.string.max_fare_hint), size = 13.sp)
             }
-            CoinChoice(coins, coin, onPick = { coinSymbol = it.symbol }, Modifier.padding(start = 20.dp, top = 20.dp, end = 20.dp))
+            CoinChoice(coins, coin, onPick = { coinSymbol = it.symbol }, Tags::askCoin, Modifier.padding(start = 20.dp, top = 20.dp, end = 20.dp))
             NetworkNotice(state, Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp))
             Spacer(Modifier.weight(1f))
             Column(
@@ -664,11 +711,12 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (coin != null && !enough) {
-                    Muted(stringResource(R.string.not_enough_balance), color = MaterialTheme.colorScheme.error, size = 13.sp)
+                    Muted(stringResource(R.string.not_enough_balance), Modifier.testTag(Tags.ASK_NOT_ENOUGH), color = MaterialTheme.colorScheme.error, size = 13.sp)
                 }
                 PrimaryButton(
                     stringResource(R.string.ask_for_offers),
                     onClick = { coin?.let { vm.requestRide(it, fare) } },
+                    modifier = Modifier.testTag(Tags.ASK_SUBMIT),
                     enabled = enough && state.route != null && centavos != null,
                     busy = state.busy,
                 )
@@ -681,14 +729,14 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                 .sortedWith(compareBy<Offer> { it.fare }.thenByDescending { drivers.getValue(it.driver).score })
             Column(Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp)) {
                 state.destination?.let { KeyValue(stringResource(R.string.destination), it.name) }
-                KeyValue(stringResource(R.string.trip), routeLabel(request.route.distanceM, request.route.durationS))
-                KeyValue(stringResource(R.string.pay_at_most), brl(asked, request.maxFare), divider = false)
+                KeyValue(stringResource(R.string.trip), routeLabel(request.route.distanceM, request.route.durationS), tag = Tags.OFFERS_TRIP)
+                KeyValue(stringResource(R.string.pay_at_most), brl(asked, request.maxFare), divider = false, tag = Tags.OFFERS_PRICE)
             }
             if (state.askedAgain) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.tertiaryContainer,
-                    modifier = Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp),
+                    modifier = Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp).testTag(Tags.OFFERS_ASKED_AGAIN),
                 ) {
                     Text(stringResource(R.string.asked_again), Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 13.sp, lineHeight = 18.sp)
                 }
@@ -699,7 +747,7 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Dot(MaterialTheme.colorScheme.tertiary)
-                Muted(stringResource(if (offers.isEmpty()) R.string.waiting_offers else R.string.offers_arriving))
+                Muted(stringResource(if (offers.isEmpty()) R.string.waiting_offers else R.string.offers_arriving), Modifier.testTag(Tags.OFFERS_STATUS))
             }
             NetworkNotice(state, Modifier.padding(start = 20.dp, end = 20.dp, bottom = 8.dp))
             // Nobody quoting: the rider can ask again at another price, inside the fare guide's range.
@@ -709,13 +757,13 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                 val (lowest, highest) = asked.fromCentavos(range.first) to asked.fromCentavos(range.last)
                 val step = asked.fromCentavos(Tariff.STEP_CENTAVOS)
                 var price by remember(request.id) { mutableStateOf(request.maxFare) }
-                KCard(Modifier.padding(horizontal = 20.dp), padding = 14.dp) {
+                KCard(Modifier.padding(horizontal = 20.dp).testTag(Tags.REPRICE), padding = 14.dp) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(stringResource(R.string.reprice_title), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            StepButton("−", stringResource(R.string.lower_price), enabled = price - step >= lowest) { price -= step }
+                            StepButton("−", stringResource(R.string.lower_price), enabled = price - step >= lowest, tag = Tags.REPRICE_LOWER) { price -= step }
                             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(brl(asked, price), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                                Text(brl(asked, price), Modifier.testTag(Tags.REPRICE_PRICE), fontSize = 24.sp, fontWeight = FontWeight.Bold)
                                 Muted(
                                     stringResource(
                                         R.string.price_recommended,
@@ -725,12 +773,13 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                                     align = TextAlign.Center,
                                 )
                             }
-                            StepButton("+", stringResource(R.string.raise_price), enabled = price + step <= highest) { price += step }
+                            StepButton("+", stringResource(R.string.raise_price), enabled = price + step <= highest, tag = Tags.REPRICE_RAISE) { price += step }
                         }
                         val needed = price + (state.bonds[asked]?.first ?: BigInteger.ZERO)
                         PrimaryButton(
                             stringResource(R.string.reprice_action),
                             onClick = { vm.changePrice(request, price) },
+                            modifier = Modifier.testTag(Tags.REPRICE_SUBMIT),
                             enabled = price != request.maxFare && (state.balances[asked] ?: BigInteger.ZERO) >= needed,
                             busy = state.busy,
                         )
@@ -742,6 +791,7 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                 offers.forEachIndexed { i, offer ->
                     val d = drivers.getValue(offer.driver)
                     KCard(
+                        modifier = Modifier.testTag(Tags.offer(offer.driver)),
                         padding = 14.dp,
                         border = if (i == 0) {
                             BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
@@ -781,12 +831,12 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
 }
 
 @Composable
-private fun DriverRow(state: UiState, driver: String, avatar: Int = 48) {
+private fun DriverRow(state: UiState, driver: String, avatar: Int = 48, tag: String? = null) {
     val d = state.drivers.firstOrNull { it.address == driver }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Avatar(avatar.dp)
         Column {
-            Text(shortAddress(driver) + " · " + scoreLabel(d), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text(shortAddress(driver) + " · " + scoreLabel(d), Modifier.tagged(tag), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             if (d != null) Muted(stringResource(R.string.driver_rides, d.completedRides), size = 13.sp)
         }
     }
@@ -799,23 +849,24 @@ private fun ConfirmFare(state: UiState, request: RideRequest, offer: Offer, onBa
     val bond = state.bonds[coin]?.first ?: BigInteger.ZERO
     val scene = sceneOf(state)
     MapScreen(
+        tag = Tags.CONFIRM,
         scene = scene,
         map = {
             if (scene == null) RouteArt(Modifier.fillMaxSize())
             BackButton(onBack, Modifier.padding(20.dp), onMap = true)
         },
     ) {
-        DriverRow(state, offer.driver)
+        DriverRow(state, offer.driver, tag = Tags.CONFIRM_DRIVER)
         Column {
-            Text(brl(coin, offer.fare), fontSize = 36.sp, lineHeight = 40.sp, fontWeight = FontWeight.Bold)
+            Text(brl(coin, offer.fare), Modifier.testTag(Tags.CONFIRM_FARE), fontSize = 36.sp, lineHeight = 40.sp, fontWeight = FontWeight.Bold)
             Muted(
                 routeLabel(request.route.distanceM, request.route.durationS) + " · " +
                     stringResource(R.string.per_km, brl(perKm(coin, offer.fare, request.route.distanceM))),
                 size = 13.sp,
             )
-            KeyValue(stringResource(R.string.to_driver), brl(coin, offer.fare - fee))
-            KeyValue(stringResource(R.string.institute_per_ride), brl(coin, fee))
-            KeyValue(stringResource(R.string.bond_back_on_arrival), brl(coin, bond), divider = false)
+            KeyValue(stringResource(R.string.to_driver), brl(coin, offer.fare - fee), tag = Tags.CONFIRM_TO_DRIVER)
+            KeyValue(stringResource(R.string.institute_per_ride), brl(coin, fee), tag = Tags.CONFIRM_FEE)
+            KeyValue(stringResource(R.string.bond_back_on_arrival), brl(coin, bond), divider = false, tag = Tags.CONFIRM_BOND)
         }
         Surface(
             shape = RoundedCornerShape(14.dp),
@@ -834,6 +885,7 @@ private fun ConfirmFare(state: UiState, request: RideRequest, offer: Offer, onBa
         PrimaryButton(
             stringResource(R.string.lock_amount, brl(coin, offer.fare + bond)),
             onConfirm,
+            Modifier.testTag(Tags.CONFIRM_LOCK),
             busy = state.busy,
             icon = KIcons.Lock,
         )
@@ -848,6 +900,7 @@ private fun OnTheWay(state: UiState, ride: Ride, onCancel: () -> Unit) {
     val coin = coinOf(state, ride.token)
     val scene = sceneOf(state)
     MapScreen(
+        tag = Tags.ON_THE_WAY,
         scene = scene,
         map = {
             if (scene == null) RouteArt(Modifier.fillMaxSize())
@@ -856,13 +909,13 @@ private fun OnTheWay(state: UiState, ride: Ride, onCancel: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                LockedPill(stringResource(R.string.locked_for_ride, brl(coin, ride.fare + ride.riderBond)))
+                LockedPill(stringResource(R.string.locked_for_ride, brl(coin, ride.fare + ride.riderBond)), Tags.ON_THE_WAY_LOCKED)
                 NetworkNotice(state)
             }
         },
     ) {
-        Text(statusLabel(ride.status), fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        DriverRow(state, ride.driver, avatar = 56)
+        Text(statusLabel(ride.status), Modifier.testTag(Tags.onTheWayStatus(ride.status.name)), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        DriverRow(state, ride.driver, avatar = 56, tag = Tags.ON_THE_WAY_DRIVER)
         DriverWhereabouts(state)
         when (ride.status) {
             RideStatus.Open -> Muted(stringResource(R.string.hint_open), size = 13.sp)
@@ -873,7 +926,7 @@ private fun OnTheWay(state: UiState, ride: Ride, onCancel: () -> Unit) {
             else -> {}
         }
         if (ride.status == RideStatus.Open || ride.status == RideStatus.Accepted) {
-            TextButton(onClick = onCancel, enabled = !state.busy, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            TextButton(onClick = onCancel, enabled = !state.busy, modifier = Modifier.align(Alignment.CenterHorizontally).testTag(Tags.ON_THE_WAY_CANCEL)) {
                 Text(stringResource(R.string.cancel_ride), fontSize = 14.sp, color = MaterialTheme.colorScheme.secondary)
             }
         }
@@ -890,7 +943,7 @@ private fun DriverWhereabouts(state: UiState) {
         state.ridesAhead > 0 -> Surface(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.tertiaryContainer,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().testTag(Tags.DRIVER_BUSY),
         ) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
@@ -901,7 +954,11 @@ private fun DriverWhereabouts(state: UiState) {
                 Muted(stringResource(R.string.driver_busy_body), size = 13.sp)
             }
         }
-        state.driverAt != null -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        state.driverAt != null -> Row(
+            Modifier.testTag(Tags.DRIVER_LIVE),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Dot(NextRide, 10.dp)
             Muted(stringResource(R.string.driver_live), size = 13.sp)
         }
@@ -909,10 +966,10 @@ private fun DriverWhereabouts(state: UiState) {
 }
 
 @Composable
-private fun LockedPill(text: String) {
+private fun LockedPill(text: String, tag: String) {
     Pill {
         Icon(KIcons.Lock, contentDescription = null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.secondary)
-        Text(text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.secondary)
+        Text(text, Modifier.testTag(tag), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.secondary)
     }
 }
 
@@ -921,6 +978,7 @@ private fun OnTrip(state: UiState, ride: Ride, onArrived: () -> Unit) {
     val coin = coinOf(state, ride.token)
     val scene = sceneOf(state, underWay = true)
     MapScreen(
+        tag = Tags.ON_TRIP,
         scene = scene,
         map = {
             if (scene == null) RouteArt(Modifier.fillMaxSize(), underWay = true)
@@ -932,7 +990,7 @@ private fun OnTrip(state: UiState, ride: Ride, onArrived: () -> Unit) {
             Icon(KIcons.Lock, contentDescription = null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.secondary)
             Text(
                 brl(coin, ride.fare),
-                Modifier.padding(start = 4.dp),
+                Modifier.padding(start = 4.dp).testTag(Tags.ON_TRIP_FARE),
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.secondary,
@@ -941,6 +999,6 @@ private fun OnTrip(state: UiState, ride: Ride, onArrived: () -> Unit) {
         DriverRow(state, ride.driver)
         DriverWhereabouts(state)
         Muted(stringResource(R.string.signal_note), size = 12.sp)
-        PrimaryButton(stringResource(R.string.action_complete), onArrived)
+        PrimaryButton(stringResource(R.string.action_complete), onArrived, Modifier.testTag(Tags.ON_TRIP_ARRIVED))
     }
 }

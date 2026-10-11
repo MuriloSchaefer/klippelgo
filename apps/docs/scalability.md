@@ -88,7 +88,31 @@ identically. What must be rewritten is what is Kotlin today: `Matchmaker` and `K
 starts, moving message validation from `Matchmaker` into the core would give both platforms one
 implementation of the checks in [security.md](security.md).
 
+## Measured
+
+[`tests/performance`](../../tests/performance) times what a person waits for, on the real app, and fails when a
+figure passes its ceiling ([tests/README.md](../../tests/README.md)). Every run adds to
+`tests/.run/report/performance.json`. These are from an x86 emulator on a developer's computer, with a local
+chain mining every two seconds, on the Cascavel pack (7 MB), on 2026-10-11. They say where the time goes, not
+what a phone will do.
+
+| What | Measured | Ceiling |
+| --- | --- | --- |
+| Cold start to the first screen | 1.3 s | 6 s |
+| Map pack downloaded from the mirror, verified and opened | 3.6 s | 90 s |
+| Reopening the app to a usable map (pack checked against the chain again) | 4.8 s | 20 s |
+| Address search, typed text to first result | 0.25 s | 3 s |
+| Route found by Valhalla and measured by the verifier | 0.36 s | 5 s |
+| A rider's request reaching a driver's screen | 2.0 s | 15 s |
+| A driver's offer reaching the rider's screen | 1.0 s | 10 s |
+| Locking the fare, tap to the ride on screen | 4.5 s | 30 s |
+| Driver's screen with 150 open requests: passing to the next one | 0.6 s | 5 s |
+| Memory with the map open | 265 MB | 900 MB |
+| Memory added by 150 open requests | 31 MB | 300 MB |
+
+What moves a ride along is the two-second refresh (S1) and the block time, not the phone's own work.
+
 ## Not measured yet
 
 RPC calls per refresh, battery drain while online, time to route on low-end devices, and gossip throughput per
-cell. Measure before choosing among the levers above.
+cell beyond 150 open requests. Measure before choosing among the levers above.

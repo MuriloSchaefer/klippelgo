@@ -188,7 +188,43 @@ Real today. A change touching one should close it or leave it no worse, and say 
 ## How it is tested
 
 `TwoPhonesRideTest` plays a ride between two clients over a real gossip node and chain, and asserts what each
-side learned. A new check on a message needs a case there that sends the bad message and shows it is dropped. That is
-still owed for most rows of the message table: the test covers the honest path, and the replay rule for
-positions has no case yet.
-UI flows are checked by hand on emulators (`make android-two-phones`, `make android-four-phones`).
+side learned.
+
+The end-to-end suite in [`tests/security`](../../tests/security) holds the app itself to the invariants: the
+real app on an emulator, a real chain and gossip network, and a stranger on that network who records the cell
+and sends forged messages ([tests/README.md](../../tests/README.md)). A new check on a message needs a case
+there that sends the bad message, shows the screen never reflects it, and then shows an honest one getting
+through.
+
+| Test | Holds the app to | How |
+| --- | --- | --- |
+| `ForgedRequestsTest` | A1, A6, and of A7 that a request on an inactive pack is ignored; the `request` and `close` rows | Ten requests that each break one rule never reach a driver's screen: wrong signer, no rider role, price over and under the range, inactive pack, expired, expiring too far ahead, invalid pickup cell, zero distance, unknown coin. A withdrawal signed by anyone but the rider does nothing |
+| `ForgedOffersTest` | A1, A3, A6; the `offer` row | Nine offers that each break one rule never reach a rider's screen: wrong signer, over the ceiling, under the floor, a valid signature moved to another fare or another expiry, expiring after the request, expired, for another request, and a well-formed one from an account the policy does not let accept |
+| `RoutePrivacyTest` | A9; "Who learns what" | Everything said in the cell during a ride is recorded: the request has the documented fields and no more, and no point of the route or of the driver appears in the clear, nor inside the sealed fields once their base64 is undone |
+| `RevealedRouteTest` | A5 | A drivable route in the right regions that is not the one locked in the escrow is never shown as checked, and the same trip revealed honestly is. It stops short of P14 |
+| `ThreePhonesTest` (integrity) | The honest path of A4 and A5 between real apps | Three copies of the app, a rider and two drivers: the driver not picked gets no ride and no route, and the one picked is shown the route as checked |
+| `RiderRideTest` (integrity) | A14, and the honest path of A4 | The amounts on the confirmation screen are the amounts the escrow holds after the lock |
+
+In each forgery test the stranger also sends a message of its own that breaks no rule, and it must be shown:
+that is what says each forgery was turned away for the one thing wrong with it.
+
+Still owed:
+
+- A10 from the driver's side: a driver's app holding two rides sends positions only for the current one, and
+  stops when it ends. Today only the positive path is covered (`DriverRideTest`).
+- The replay rule for positions, and a forged `position` shown to be ignored.
+- The `route` row's signature and addressee checks, sent as forgeries.
+- The caps (200 requests, 50 offers per request), the offer sequence rule, zero fare, zero duration, and an
+  invalid drop-off cell.
+- "Fare above the token's fee" in the `offer` row: with today's tariff the driver's floor is always above the
+  fee, so no gossip message reaches that check. It needs a unit test with a tariff where it can.
+- A4's refusals: a lock that the app should decline to make.
+- The map pack checks against a lying mirror (the rest of A7, and A8).
+- A12 and A13, which are about the device and not the network.
+
+The UI agent these tests drive the app through is in the test APK only. It can read the screen and inject
+touches, so that APK belongs on test emulators and never on a phone someone uses; `tests/stack.sh` refuses a
+device that is not an emulator, as do the tests and the CLI, and the agent answers only adb's shell user and root. The app's own APK gains only the
+tags: names on UI pieces, in every build type, readable by the accessibility services that can already read
+the text beside them. One tag says slightly more than the screen: an offer's tag carries the driver's whole
+address, where the card shortens it. The address is public on gossip and on chain.

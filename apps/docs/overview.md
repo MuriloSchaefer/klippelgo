@@ -53,6 +53,8 @@ flowchart TB
 | `Matchmaker` | [`Matchmaker.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/Matchmaker.kt) | Every gossip message: building, signing, validating, expiring |
 | `KlippelGoClient` | [`KlippelGoClient.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/KlippelGoClient.kt) | Every contract read and write, account signatures, the fare band rules |
 | Core | [`core/`](../../core/docs/overview.md) | Hashes, route checks, sealing, the gossip transport, address search |
+| Tags | [`ui/tags/Tags.kt`](../android/app/src/main/kotlin/org/klippelgo/app/ui/tags/Tags.kt) | The name of every piece of UI a person reads or touches. The end-to-end tests compile this same file |
+| UI agent | [`app/src/androidTest/…/UiAgent.kt`](../android/app/src/androidTest/kotlin/org/klippelgo/app/agent/UiAgent.kt) | Test APK only. Reads the screen and injects touches for the [end-to-end tests](../../tests/README.md) |
 
 The `:chain` module has no Android dependency. That is deliberate: `TwoPhonesRideTest` plays a whole ride
 between two in-process "phones" against a local chain and a real gossip node, on the JVM
@@ -156,6 +158,10 @@ These are the rules new app code follows. The skill that applies them is
    never switches account.
 10. **Leave the screen before replacing the app on an emulator** (`KEYCODE_HOME`): the emulator's graphics can
     crash when the app is killed with the map showing. The scripts do it.
+11. **Every piece a person reads or touches has a tag** from `Tags.kt`, as `<component>.<element>`. A whole
+    screen's tag is on its outermost box. A tag that says a state carries it in the name
+    (`on-the-way.status.Accepted`), so tests do not depend on the language. `Tags.kt` stays plain Kotlin: the
+    test harness compiles it. A native Android view takes no tag from Compose; tag the box around it.
 
 **Changing the app**
 
@@ -164,9 +170,12 @@ These are the rules new app code follows. The skill that applies them is
 2. A new or changed gossip message: bump its domain version, validate every field on receipt, add it to the
    message table in [security.md](security.md), and cover it in `TwoPhonesRideTest`.
 3. Add strings in all three languages.
-4. `make android-test-chain`, then `./gradlew :app:assembleDebug`, then play it on emulators
-   (`make android-two-phones` or `make android-four-phones`).
-5. Update these docs when a layer, a flow, a stored file or a guarantee changed.
+4. Tag what a person can read or touch, and give it a function in the component's driver
+   (`tests/harness/drivers`). A new flow gets a test in `tests/integrity`; a new check on what comes from
+   outside gets one in `tests/security` ([tests/README.md](../../tests/README.md)).
+5. `make android-test-chain`, then `make e2e`, which builds the app, installs it on an emulator and uses it
+   as a person would. To watch two apps ride together: `make android-two-phones` or `make android-four-phones`.
+6. Update these docs when a layer, a flow, a stored file or a guarantee changed.
 
 **Tooling**: Kotlin 2.3, Compose, compileSdk 36, JDK 17. Chain access through web3j. The Rust core is built for
 Android by Gradle through `cargo-ndk`.

@@ -32,6 +32,7 @@ skills and the security reviewer in `.claude/` use them.
 | `mappack/` | Builds a region's map pack from OpenStreetMap with Docker. See [its README](mappack/README.md) |
 | `apps/android` | Android app (Kotlin/Compose): rider and driver modes against the local testnet. See [its README](apps/android/README.md) |
 | `apps/ios` | iOS app shell (Swift/SwiftUI), not created yet |
+| `tests/` | End-to-end tests: the real app on an emulator against a real chain, gossip network and map pack, split into integrity, security and performance, with a CLI to use the app by hand or by agent. See [its README](tests/README.md) |
 
 ## Local testnet
 
@@ -110,7 +111,12 @@ change only through a governance proposal.
 
 ```sh
 make test         # forge test + cargo test in core/ and mappack/
+make e2e          # the real app on an emulator, against the real chain, gossip and map: integrity, security, performance
 ```
+
+`make e2e` brings up whatever is missing (or uses the chain at `KLIPPELGO_RPC`), installs the app and runs
+every suite. Nothing in it is mocked; the other people in a ride are peer accounts on the same network.
+[tests/README.md](tests/README.md) explains the suites, the UI drivers and the `klippelgo` CLI.
 
 ## Checking a ride
 

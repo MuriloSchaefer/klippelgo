@@ -48,6 +48,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -56,6 +57,10 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.klippelgo.app.R
+import org.klippelgo.app.ui.tags.Tags
+
+/** Names this piece for the tests (see [Tags]). Nothing when there is no name to give. */
+fun Modifier.tagged(tag: String?): Modifier = if (tag == null) this else testTag(tag)
 
 @Composable
 fun PrimaryButton(
@@ -134,7 +139,7 @@ fun Choice(text: String, selected: Boolean, onClick: () -> Unit, modifier: Modif
 @Composable
 fun BackButton(onClick: () -> Unit, modifier: Modifier = Modifier, onMap: Boolean = false) {
     val button = @Composable {
-        IconButton(onClick = onClick, Modifier.size(44.dp)) {
+        IconButton(onClick = onClick, Modifier.size(44.dp).testTag(Tags.BACK)) {
             Icon(KIcons.Back, contentDescription = stringResource(R.string.back), Modifier.size(22.dp))
         }
     }
@@ -233,11 +238,11 @@ fun Avatar(size: Dp = 48.dp) {
 
 /** A label on the left and its value on the right, with a hairline under it. */
 @Composable
-fun KeyValue(label: String, value: String, divider: Boolean = true, strong: Boolean = false) {
+fun KeyValue(label: String, value: String, divider: Boolean = true, strong: Boolean = false, tag: String? = null) {
     Column {
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Muted(label, Modifier.weight(1f))
-            Text(value, fontSize = 14.sp, fontWeight = if (strong) FontWeight.SemiBold else FontWeight.Normal)
+            Text(value, Modifier.tagged(tag), fontSize = 14.sp, fontWeight = if (strong) FontWeight.SemiBold else FontWeight.Normal)
         }
         if (divider) HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
     }
@@ -348,10 +353,10 @@ fun RouteArt(modifier: Modifier = Modifier, underWay: Boolean = false) {
 
 /** Five stars; tapping the nth picks n. */
 @Composable
-fun StarPicker(stars: Int, onPick: (Int) -> Unit, modifier: Modifier = Modifier, size: Dp = 32.dp) {
+fun StarPicker(stars: Int, onPick: (Int) -> Unit, modifier: Modifier = Modifier, size: Dp = 32.dp, tag: String? = null) {
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         (1..5).forEach { n ->
-            IconButton(onClick = { onPick(n) }, Modifier.size(size + 16.dp)) {
+            IconButton(onClick = { onPick(n) }, Modifier.size(size + 16.dp).tagged(tag?.let { Tags.star(it, n) })) {
                 Icon(
                     if (n <= stars) KIcons.StarFilled else KIcons.Star,
                     contentDescription = stringResource(R.string.stars_n, n),
@@ -375,7 +380,7 @@ fun LanguagePills(current: String, onPick: (String) -> Unit, modifier: Modifier 
                     shape = CircleShape,
                     color = if (on) MaterialTheme.colorScheme.primary else Color.Transparent,
                     contentColor = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.widthIn(min = 44.dp).height(36.dp),
+                    modifier = Modifier.widthIn(min = 44.dp).height(36.dp).testTag(Tags.language(tag.substringBefore('-'))),
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(label, fontSize = 13.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium)
@@ -388,8 +393,8 @@ fun LanguagePills(current: String, onPick: (String) -> Unit, modifier: Modifier 
 
 /** A full-screen column that scrolls when the content is taller than the screen, and otherwise lets weights fill it. */
 @Composable
-fun ScrollScreen(content: @Composable ColumnScope.() -> Unit) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+fun ScrollScreen(tag: String? = null, content: @Composable ColumnScope.() -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize().tagged(tag)) {
         Column(Modifier.verticalScroll(rememberScrollState()).heightIn(min = maxHeight), content = content)
     }
 }

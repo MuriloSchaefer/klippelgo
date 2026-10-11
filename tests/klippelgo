@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# The KlippelGo test CLI: drives the app on a phone through its UI drivers, and plays the peer accounts.
+# `tests/klippelgo help` says what it can do; tests/README.md explains it.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+BIN="$HERE/build/install/klippelgo/bin/klippelgo"
+if [ -z "${JAVA_HOME:-}" ]; then
+  for d in /usr/lib/jvm/java-17-openjdk /usr/lib/jvm/java-17-openjdk-amd64 /usr/lib/jvm/java-21-openjdk /usr/lib/jvm/java-21-openjdk-amd64; do
+    [ -x "$d/bin/java" ] && export JAVA_HOME="$d" && break
+  done
+fi
+# Build it the first time, and again whenever the harness or the app's tag names changed.
+if [ ! -x "$BIN" ] || [ -n "$(find "$HERE/harness" "$HERE/build.gradle.kts" "$HERE/../apps/android/app/src/main/kotlin/org/klippelgo/app/ui/tags" "$HERE/../apps/android/chain/src/main" -newer "$BIN" -print -quit)" ]; then
+  (cd "$HERE" && ../apps/android/gradlew -q installDist) >&2
+  touch "$BIN"
+fi
+exec "$BIN" "$@"

@@ -15,6 +15,7 @@ changing code, and keep them true when the code changes.
 | `apps/` | [overview](apps/docs/overview.md) | [security](apps/docs/security.md) | [scalability](apps/docs/scalability.md) |
 
 The design of maps, routes and trip proofs is [docs/maps-and-routing.md](docs/maps-and-routing.md).
+The end-to-end tests, their UI drivers and the CLI that plays a user are in [tests/README.md](tests/README.md).
 
 ## How to work here
 
@@ -49,3 +50,6 @@ changes it asks once for a review of what came in.
 - Match the surrounding code: its naming, comment density and idiom. Comments say why, in plain sentences.
 - User-facing text is Portuguese first, with English and Spanish alongside.
 - Do not commit or push unless asked.
+- A piece of UI a person can read or touch has a tag in `Tags.kt` and a function in its driver under
+  `tests/harness/drivers`. A new screen, flow or gossip check comes with a test in `tests/integrity`,
+  `tests/security` or `tests/performance` ([tests/README.md](tests/README.md), "Writing a test").
