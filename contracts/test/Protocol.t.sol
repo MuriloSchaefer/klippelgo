@@ -7,6 +7,7 @@ import {ProtocolDeployer} from "../script/ProtocolDeployer.sol";
 import {PBACGovernor} from "../src/PBACGovernor.sol";
 import {RideEscrow} from "../src/RideEscrow.sol";
 import {DisputeCourt} from "../src/DisputeCourt.sol";
+import {MapRegistry} from "../src/MapRegistry.sol";
 import {Governed} from "../src/Governed.sol";
 import {MockBRL} from "../src/mocks/MockBRL.sol";
 
@@ -22,6 +23,7 @@ contract ProtocolTest is Test, ProtocolDeployer {
     address[3] jurors = [makeAddr("juror0"), makeAddr("juror1"), makeAddr("juror2")];
 
     uint256 constant FARE = 23_4000; // R$ 23,40 in BRZ (4 decimals)
+    bytes32 constant RECEIPT = keccak256("receipt");
 
     function setUp() public {
         brla = new MockBRL("BRLA", "BRLA", 18);
@@ -54,7 +56,9 @@ contract ProtocolTest is Test, ProtocolDeployer {
                 driverMinStakeBrl: 100,
                 validatorMinStakeBrl: 500,
                 driverMinScore: 450,
-                proposerMinAccountAge: 0
+                proposerMinAccountAge: 0,
+                mapRebuildQuorum: 3,
+                mapGracePeriod: 30 days
             })
         );
 
@@ -106,7 +110,7 @@ contract ProtocolTest is Test, ProtocolDeployer {
         uint256 driverBefore = brz.balanceOf(driver);
         uint256 id = _openAndStart();
         vm.prank(rider);
-        p.escrow.complete(id);
+        p.escrow.complete(id, RECEIPT);
         p.feeVault.sweep(brz);
 
         assertEq(brz.balanceOf(rider), riderBefore - FARE);
@@ -122,13 +126,56 @@ contract ProtocolTest is Test, ProtocolDeployer {
         assertEq(brzFee, 1e4);
     }
 
-    function test_TimeoutSettlesWithoutRider() public {
+    function test_TimeoutSettlesWithoutRiderOnceDriverFilesReceipt() public {
         uint256 id = _openAndStart();
+        skip(2 hours);
+        vm.expectRevert(RideEscrow.NoReceipt.selector);
+        p.escrow.timeout(id);
+
+        vm.prank(rider);
+        vm.expectRevert(RideEscrow.NotDriver.selector);
+        p.escrow.submitReceipt(id, RECEIPT);
+        vm.prank(driver);
+        p.escrow.submitReceipt(id, RECEIPT);
         vm.expectRevert(RideEscrow.TooEarly.selector);
         p.escrow.timeout(id);
         skip(30 minutes);
         p.escrow.timeout(id);
-        assertEq(uint8(p.escrow.ride(id).status), uint8(RideEscrow.Status.Completed));
+
+        RideEscrow.Ride memory r = p.escrow.ride(id);
+        assertEq(uint8(r.status), uint8(RideEscrow.Status.Completed));
+        assertEq(r.receiptHash, RECEIPT);
+    }
+
+    function test_RiderCompletesOnlyWithTheReceiptOnRecord() public {
+        uint256 id = _openAndStart();
+        vm.prank(rider);
+        vm.expectRevert(RideEscrow.NoReceipt.selector);
+        p.escrow.complete(id, bytes32(0));
+
+        vm.startPrank(driver);
+        p.escrow.submitReceipt(id, RECEIPT);
+        vm.expectRevert(RideEscrow.ReceiptMismatch.selector);
+        p.escrow.submitReceipt(id, keccak256("a longer trip"));
+        vm.stopPrank();
+
+        vm.startPrank(rider);
+        vm.expectRevert(RideEscrow.ReceiptMismatch.selector);
+        p.escrow.complete(id, keccak256("another receipt"));
+        p.escrow.complete(id, RECEIPT);
+        vm.stopPrank();
+        assertEq(p.escrow.ride(id).receiptHash, RECEIPT);
+    }
+
+    function test_DisputeStopsTheTimeout() public {
+        uint256 id = _openAndStart();
+        vm.prank(driver);
+        p.escrow.submitReceipt(id, RECEIPT);
+        vm.prank(rider);
+        p.court.raise(id, keccak256("evidence"));
+        skip(30 minutes);
+        vm.expectRevert(abi.encodeWithSelector(RideEscrow.WrongStatus.selector, RideEscrow.Status.Disputed));
+        p.escrow.timeout(id);
     }
 
     function test_DriverCancelAfterAcceptPaysRiderTheBond() public {
@@ -152,7 +199,7 @@ contract ProtocolTest is Test, ProtocolDeployer {
     function test_RatingOnceByPartiesOnly() public {
         uint256 id = _openAndStart();
         vm.prank(rider);
-        p.escrow.complete(id);
+        p.escrow.complete(id, RECEIPT);
         vm.prank(rider);
         p.reputation.rate(id, 4);
         vm.prank(rider);
@@ -187,7 +234,7 @@ contract ProtocolTest is Test, ProtocolDeployer {
     function test_LowScoreDriverIsBlocked() public {
         uint256 id = _openAndStart();
         vm.prank(rider);
-        p.escrow.complete(id);
+        p.escrow.complete(id, RECEIPT);
         vm.prank(rider);
         p.reputation.rate(id, 3);
         assertFalse(p.governor.hasPermission(driver, address(p.escrow), RideEscrow.accept.selector));
@@ -289,5 +336,145 @@ contract ProtocolTest is Test, ProtocolDeployer {
             abi.encodeWithSelector(Governed.NotPermitted.selector, driver, DisputeCourt.commit.selector)
         );
         p.court.commit(id, bytes32(uint256(1)));
+    }
+
+    // ---------------------------------------------------------------- map packs
+
+    bytes32 constant MANIFEST = keccak256("manifest.json of br-pr-cascavel 2026.11");
+    bytes32 constant PROOF_ROOT = keccak256("proof root");
+
+    function _pack(bytes32 proofRoot) internal pure returns (MapRegistry.Pack memory) {
+        return MapRegistry.Pack({
+            region: "br-pr-cascavel",
+            version: 202611,
+            osmSequence: 4567,
+            osmSha256: keccak256("pbf"),
+            proofRoot: proofRoot,
+            cid: "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+            activeFrom: 0,
+            retiredAfter: 0
+        });
+    }
+
+    /// @dev Runs one call through a proposal, the vote of the three validators and the timelock.
+    function _govern(address target, bytes memory call) internal {
+        address[] memory targets = new address[](1);
+        uint256[] memory values = new uint256[](1);
+        bytes[] memory calls = new bytes[](1);
+        targets[0] = target;
+        calls[0] = call;
+        vm.prank(jurors[0]);
+        uint256 id = p.governor.propose(targets, values, calls, "Map pack");
+        for (uint256 i; i < 3; ++i) {
+            vm.prank(jurors[i]);
+            p.governor.vote(id, true);
+        }
+        skip(2 minutes);
+        p.governor.queue(id);
+        skip(1 minutes);
+        p.governor.execute(id, targets, values, calls);
+    }
+
+    function test_PackActivatesOnceAQuorumRebuiltTheSameRoot() public {
+        for (uint256 i; i < 2; ++i) {
+            vm.prank(jurors[i]);
+            p.maps.attest(MANIFEST, PROOF_ROOT);
+        }
+        // Two rebuilds agree and governance votes yes, but the quorum is three: the proposal cannot execute.
+        bytes memory activation = abi.encodeCall(p.maps.activate, (MANIFEST, _pack(PROOF_ROOT)));
+        address[] memory targets = new address[](1);
+        uint256[] memory values = new uint256[](1);
+        bytes[] memory calls = new bytes[](1);
+        targets[0] = address(p.maps);
+        calls[0] = activation;
+        vm.prank(jurors[0]);
+        uint256 id = p.governor.propose(targets, values, calls, "Too early");
+        for (uint256 i; i < 3; ++i) {
+            vm.prank(jurors[i]);
+            p.governor.vote(id, true);
+        }
+        skip(2 minutes);
+        p.governor.queue(id);
+        skip(1 minutes);
+        vm.expectRevert();
+        p.governor.execute(id, targets, values, calls);
+        assertEq(p.maps.proofRootOf(MANIFEST), bytes32(0));
+
+        vm.prank(jurors[2]);
+        p.maps.attest(MANIFEST, PROOF_ROOT);
+        _govern(address(p.maps), activation);
+
+        assertEq(p.maps.proofRootOf(MANIFEST), PROOF_ROOT);
+        assertEq(p.maps.latest(keccak256("br-pr-cascavel")), MANIFEST);
+        assertTrue(p.maps.isActive(MANIFEST, uint64(block.timestamp)));
+        assertEq(p.maps.pack(MANIFEST).version, 202611);
+    }
+
+    function test_DisagreeingRebuildsDoNotReachQuorum() public {
+        vm.prank(jurors[0]);
+        p.maps.attest(MANIFEST, PROOF_ROOT);
+        vm.prank(jurors[1]);
+        p.maps.attest(MANIFEST, PROOF_ROOT);
+        vm.prank(jurors[2]);
+        p.maps.attest(MANIFEST, keccak256("a different root"));
+        assertEq(p.maps.attestations(MANIFEST, PROOF_ROOT), 2);
+
+        vm.prank(jurors[2]);
+        vm.expectRevert(MapRegistry.AlreadyAttested.selector);
+        p.maps.attest(MANIFEST, PROOF_ROOT);
+        vm.prank(address(p.governor));
+        vm.expectRevert(abi.encodeWithSelector(MapRegistry.QuorumNotReached.selector, 2, 3));
+        p.maps.activate(MANIFEST, _pack(PROOF_ROOT));
+    }
+
+    function test_OnlyStakedValidatorsAttestAndOnlyGovernanceActivates() public {
+        vm.prank(driver);
+        vm.expectRevert(
+            abi.encodeWithSelector(Governed.NotPermitted.selector, driver, MapRegistry.attest.selector)
+        );
+        p.maps.attest(MANIFEST, PROOF_ROOT);
+        vm.expectRevert(Governed.NotGovernor.selector);
+        p.maps.activate(MANIFEST, _pack(PROOF_ROOT));
+        vm.expectRevert(Governed.NotGovernor.selector);
+        p.maps.setRebuildQuorum(1);
+    }
+
+    function test_NewPackRetiresTheOldOneAfterTheGracePeriod() public {
+        bytes32 next = keccak256("manifest.json of br-pr-cascavel 2026.12");
+        for (uint256 i; i < 3; ++i) {
+            vm.startPrank(jurors[i]);
+            p.maps.attest(MANIFEST, PROOF_ROOT);
+            p.maps.attest(next, keccak256("next root"));
+            vm.stopPrank();
+        }
+        vm.startPrank(address(p.governor));
+        p.maps.activate(MANIFEST, _pack(PROOF_ROOT));
+        vm.expectRevert(MapRegistry.AlreadyActivated.selector);
+        p.maps.activate(MANIFEST, _pack(PROOF_ROOT));
+
+        skip(31 days);
+        MapRegistry.Pack memory newer = _pack(keccak256("next root"));
+        newer.version = 202612;
+        p.maps.activate(next, newer);
+        vm.stopPrank();
+
+        uint64 nowTs = uint64(block.timestamp);
+        assertEq(p.maps.latest(keccak256("br-pr-cascavel")), next);
+        assertTrue(p.maps.isActive(MANIFEST, nowTs + 30 days));
+        assertFalse(p.maps.isActive(MANIFEST, nowTs + 30 days + 1));
+        assertTrue(p.maps.isActive(next, nowTs + 365 days));
+        assertFalse(p.maps.isActive(keccak256("never activated"), nowTs));
+    }
+
+    function test_GovernanceSetsVerifierTolerances() public {
+        (uint32 endpoint, uint32 bps,,,,,,) = p.maps.verifierParams();
+        assertEq(endpoint, 50);
+        assertEq(bps, 200);
+
+        MapRegistry.VerifierParams memory looser = _launchVerifierParams();
+        looser.distanceToleranceBps = 300;
+        _govern(address(p.maps), abi.encodeCall(p.maps.setVerifierParams, (looser)));
+        (, bps,,,,,,) = p.maps.verifierParams();
+        assertEq(bps, 300);
     }
 }

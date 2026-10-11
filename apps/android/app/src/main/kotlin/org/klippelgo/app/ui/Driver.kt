@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.klippelgo.app.AppViewModel
+import org.klippelgo.app.MapState
 import org.klippelgo.app.R
 import org.klippelgo.app.Role
 import org.klippelgo.app.UiState
@@ -82,7 +83,7 @@ fun DriverApp(state: UiState, vm: AppViewModel) {
         }
         else -> {
             BackHandler(enabled = online) { online = false }
-            GoOnline(state, online, onToggle = { online = !online }, onRiderMode = { vm.connect(Role.RIDER, state.rpcUrl) })
+            GoOnline(state, vm, online, onToggle = { online = !online }, onRiderMode = { vm.connect(Role.RIDER, state.rpcUrl) })
         }
     }
 }
@@ -96,13 +97,13 @@ private fun OnlinePill(online: Boolean) {
 }
 
 @Composable
-private fun GoOnline(state: UiState, online: Boolean, onToggle: () -> Unit, onRiderMode: () -> Unit) {
+private fun GoOnline(state: UiState, vm: AppViewModel, online: Boolean, onToggle: () -> Unit, onRiderMode: () -> Unit) {
     val button = 132.dp
     var sheetHeight by remember { mutableIntStateOf(0) }
     val lift = with(LocalDensity.current) { (button / 2).roundToPx() }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
         Column(Modifier.fillMaxSize()) {
-            MapSurface(Modifier.weight(1f).fillMaxWidth()) {
+            MapSurface(Modifier.weight(1f).fillMaxWidth(), sceneOf(state)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OnlinePill(online)
@@ -128,6 +129,10 @@ private fun GoOnline(state: UiState, online: Boolean, onToggle: () -> Unit, onRi
                         Muted(stringResource(R.string.waiting_rides), size = 13.sp)
                     }
                     else -> Muted(stringResource(R.string.go_online_body), size = 13.sp)
+                }
+                // Quoting needs no map: the request says how long the trip is. The map is for seeing the streets.
+                if (state.map is MapState.NotDownloaded || state.map is MapState.Downloading || state.map is MapState.Failed) {
+                    MapNotice(state, vm::downloadMap)
                 }
             }
         }
@@ -203,6 +208,7 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
     val valid = fee != null && price > fee && price <= request.maxFare
 
     MapScreen(
+        scene = sceneOf(state),
         map = {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OnlinePill(online = true)
@@ -213,12 +219,15 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
         Text(stringResource(R.string.new_request), fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Column {
             KeyValue(stringResource(R.string.role_rider_short), shortAddress(request.rider), strong = true)
+            // The rider's phone measured the route. Where it runs stays there; the length is what gets priced.
+            KeyValue(stringResource(R.string.trip), routeLabel(request.route.distanceM, request.route.durationS), strong = true)
             KeyValue(stringResource(R.string.pays_at_most), brl(coin, request.maxFare), divider = false, strong = true)
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             StepButton("−", stringResource(R.string.lower_offer), enabled = fee != null && price - step > fee) { price -= step }
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(brl(coin, price), fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                Muted(stringResource(R.string.per_km, brl(perKm(coin, price, request.route.distanceM))), size = 12.sp)
                 if (fee != null) {
                     Muted(stringResource(R.string.you_receive, brl(coin, price - fee), brl(coin, fee)), size = 12.sp, align = TextAlign.Center)
                 }

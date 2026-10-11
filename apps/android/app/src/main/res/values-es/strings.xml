@@ -133,4 +133,28 @@
     <string name="action_start">Pasajero a bordo: iniciar</string>
     <string name="driver_cancel_hint">Si cancelas, tu garantía de %1$s va al pasajero.</string>
     <string name="driver_trip_hint">El pago sale cuando el pasajero confirme la llegada.</string>
+
+    <!-- Map, search and routes -->
+    <string name="map_credit">© OpenStreetMap</string>
+    <string name="pickup">Recogida</string>
+    <string name="pickup_pin">En el punto marcado</string>
+    <string name="pickup_pin_hint">Mueve el mapa para marcar dónde debe llegar el auto.</string>
+    <string name="destination">Destino</string>
+    <string name="search_destination">Dirección o lugar</string>
+    <string name="change">Cambiar</string>
+    <string name="trip">Trayecto</string>
+    <string name="per_km">%1$s por km</string>
+    <string name="routing">Calculando la ruta en este teléfono…</string>
+    <string name="route_failed">No se pudo trazar la ruta: %1$s</string>
+    <string name="route_private">La búsqueda y la ruta se calculan en este teléfono. Los conductores solo ven la distancia y la duración del trayecto.</string>
+    <string name="map_title">Mapa de la región</string>
+    <string name="map_checking">Verificando el mapa…</string>
+    <string name="map_not_published">Todavía no se publicó ningún mapa en esta red.</string>
+    <string name="map_needed">Para pedir un viaje, descarga el mapa de la región. Después, el mapa, la búsqueda y las rutas funcionan sin internet.</string>
+    <string name="map_download">Descargar mapa</string>
+    <string name="map_download_size">Descargar mapa (%1$d MB)</string>
+    <string name="map_downloading">Descargando y verificando el mapa: %1$d%%</string>
+    <string name="map_failed">No se pudo usar el mapa: %1$s</string>
+    <string name="zoom_in">Acercar el mapa</string>
+    <string name="zoom_out">Alejar el mapa</string>
 </resources>

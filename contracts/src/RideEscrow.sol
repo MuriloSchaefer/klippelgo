@@ -9,7 +9,8 @@ import {IPBACGovernor} from "./interfaces/IPBACGovernor.sol";
 import {Reputation} from "./Reputation.sol";
 
 /// @notice Holds a ride's fare between pickup and arrival. The chain sees only addresses, the token, the fare
-/// and hashes of the quote and pickup proof; exact places stay in the riders' and drivers' encrypted channel.
+/// and hashes of the quote, the pickup proof and the trip receipt; exact places stay in the riders' and drivers'
+/// encrypted channel.
 ///
 /// Open -> Accepted -> Started -> Completed, with Cancelled from Open/Accepted and Disputed -> Resolved from
 /// Accepted/Started. On completion the driver gets the fare minus a flat fee (R$ 1,00 in that token's units),
@@ -41,6 +42,8 @@ contract RideEscrow is Governed, ReentrancyGuard {
         uint256 driverBond;
         bytes32 quoteHash;
         bytes32 pickupProofHash;
+        bytes32 receiptHash;
+        uint64 receiptAt;
     }
 
     /// @dev Per-token settings. A token is on the allow-list when `fee` is non-zero.
@@ -71,6 +74,7 @@ contract RideEscrow is Governed, ReentrancyGuard {
     );
     event RideAccepted(uint256 indexed rideId);
     event RideStarted(uint256 indexed rideId, bytes32 pickupProofHash);
+    event ReceiptSubmitted(uint256 indexed rideId, address indexed by, bytes32 receiptHash);
     event RideCompleted(uint256 indexed rideId, uint256 driverPayout, uint256 fee);
     event RideCancelled(uint256 indexed rideId, address indexed by);
     event RideDisputed(uint256 indexed rideId);
@@ -89,6 +93,8 @@ contract RideEscrow is Governed, ReentrancyGuard {
     error NotParty();
     error NotCourt();
     error TooEarly();
+    error NoReceipt();
+    error ReceiptMismatch();
     error InvalidBps();
 
     constructor(IPBACGovernor governor_, uint64 completionTimeout_) Governed(governor_) {
@@ -121,7 +127,9 @@ contract RideEscrow is Governed, ReentrancyGuard {
             riderBond: cfg.riderBond,
             driverBond: cfg.driverBond,
             quoteHash: quoteHash,
-            pickupProofHash: bytes32(0)
+            pickupProofHash: bytes32(0),
+            receiptHash: bytes32(0),
+            receiptAt: 0
         });
         token.safeTransferFrom(msg.sender, address(this), fare + cfg.riderBond);
         emit RideOpened(rideId, msg.sender, driver, address(token), fare, quoteHash);
@@ -148,19 +156,42 @@ contract RideEscrow is Governed, ReentrancyGuard {
         emit RideStarted(rideId, pickupProofHash);
     }
 
-    /// @notice Rider confirms arrival.
-    function complete(uint256 rideId) external nonReentrant {
+    /// @notice Rider confirms arrival with the hash of the trip receipt both phones signed. If the driver already
+    /// put a receipt on record it must be the same one: a rider who disagrees with it raises a dispute instead.
+    function complete(uint256 rideId, bytes32 receiptHash) external nonReentrant {
         Ride storage r = _rides[rideId];
         if (r.status != Status.Started) revert WrongStatus(r.status);
         if (msg.sender != r.rider) revert NotRider();
+        if (receiptHash == bytes32(0)) revert NoReceipt();
+        if (r.receiptAt == 0) {
+            r.receiptHash = receiptHash;
+            r.receiptAt = uint64(block.timestamp);
+            emit ReceiptSubmitted(rideId, msg.sender, receiptHash);
+        } else if (r.receiptHash != receiptHash) {
+            revert ReceiptMismatch();
+        }
         _settle(rideId, r);
     }
 
-    /// @notice Anyone can settle a started ride once the timeout passes with no dispute.
+    /// @notice Driver puts their trip receipt on record when the rider does not confirm arrival. This starts
+    /// the clock for `timeout` and commits the driver to their evidence before any dispute.
+    function submitReceipt(uint256 rideId, bytes32 receiptHash) external {
+        Ride storage r = _rides[rideId];
+        if (r.status != Status.Started) revert WrongStatus(r.status);
+        if (msg.sender != r.driver) revert NotDriver();
+        if (receiptHash == bytes32(0)) revert NoReceipt();
+        if (r.receiptAt != 0) revert ReceiptMismatch();
+        r.receiptHash = receiptHash;
+        r.receiptAt = uint64(block.timestamp);
+        emit ReceiptSubmitted(rideId, msg.sender, receiptHash);
+    }
+
+    /// @notice Anyone can settle a ride once the driver's receipt has stood for the timeout with no dispute.
     function timeout(uint256 rideId) external nonReentrant {
         Ride storage r = _rides[rideId];
         if (r.status != Status.Started) revert WrongStatus(r.status);
-        if (block.timestamp < r.startedAt + completionTimeout) revert TooEarly();
+        if (r.receiptAt == 0) revert NoReceipt();
+        if (block.timestamp < r.receiptAt + completionTimeout) revert TooEarly();
         _settle(rideId, r);
     }
 

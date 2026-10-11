@@ -11,3 +11,6 @@ core/target/
 .DS_Store
 .idea/
 .vscode/
+# Map pack builds: OSM extracts, tiles, packs
+mappack/build/
+mappack/target/

@@ -349,4 +349,15 @@ fun brl(coin: Coin, units: BigInteger): String =
 
 fun brl(reais: BigDecimal): String = brlFormat.format(reais.setScale(2, RoundingMode.DOWN))
 
+/** "8,5 km" from 8 500 m; "850 m" under a kilometre. */
+fun distanceLabel(metres: Int): String =
+    if (metres < 1000) "$metres m" else String.format(java.util.Locale.forLanguageTag("pt-BR"), "%.1f km", metres / 1000.0)
+
+/** "8,5 km · 22 min" */
+fun routeLabel(metres: Int, seconds: Int): String = distanceLabel(metres) + " · " + maxOf(1, (seconds + 30) / 60) + " min"
+
+/** What a fare comes to per kilometre of the route, in reais. */
+fun perKm(coin: Coin, fare: BigInteger, metres: Int): BigDecimal =
+    coin.toReais(fare).multiply(BigDecimal(1000)).divide(BigDecimal(maxOf(metres, 1)), 2, RoundingMode.HALF_UP)
+
 fun shortAddress(a: String): String = if (a.length > 12) a.take(6) + "…" + a.takeLast(4) else a

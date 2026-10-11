@@ -23,14 +23,26 @@ import org.klippelgo.chain.Matchmaker
 import org.klippelgo.chain.Offer
 import org.klippelgo.chain.Ride
 import org.klippelgo.chain.RideRequest
+import org.klippelgo.chain.RouteSummary
+import org.klippelgo.core.Coordinate
 import org.klippelgo.core.GossipConfig
 import org.klippelgo.core.GossipNode
+import org.klippelgo.core.MeasuredRoute
+import org.klippelgo.core.OfferTerms
+import org.klippelgo.core.Place
+import org.klippelgo.core.VehicleKind
+import org.klippelgo.core.coarseRoute
+import org.klippelgo.core.quoteJson
+import org.klippelgo.core.routeHash
 import org.web3j.crypto.Hash
+import org.web3j.utils.Numeric
+import java.io.File
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.URI
+import java.security.SecureRandom
 
 enum class Role { RIDER, DRIVER }
 
@@ -65,6 +77,17 @@ data class UiState(
     val myOffers: Map<BigInteger, Offer> = emptyMap(),
     /** Whether this phone has any gossip peer. Without one, requests and offers reach nobody. */
     val gossipConnected: Boolean? = null,
+    /** The map pack on this phone: maps, search and routes all come from it. */
+    val map: MapState = MapState.Checking,
+    /** Rider: where the car should come, set by moving the map under the pin, and what the map calls it. */
+    val pickup: Coordinate? = null,
+    val pickupName: String? = null,
+    /** Rider: what the destination search found, the place picked, and the route to it once measured. */
+    val places: List<Place> = emptyList(),
+    val destination: Place? = null,
+    val route: MeasuredRoute? = null,
+    val routing: Boolean = false,
+    val routeError: String? = null,
 )
 
 const val DEFAULT_RPC = "http://10.0.2.2:8545"
@@ -87,6 +110,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     )
     val state: StateFlow<UiState> = _state
 
+    private val maps = MapStore(app)
+    @Volatile private var pack: OpenPack? = null
+    private var packId: ByteArray? = null
+    private var mapJob: Job? = null
+    private var searchJob: Job? = null
+    private var routeJob: Job? = null
+
+    /** The route behind this phone's open request, with the salt its hash was made with. Never gossiped. */
+    private var pending: Pair<MeasuredRoute, ByteArray>? = null
+
     private var client: KlippelGoClient? = null
     @Volatile private var match: Matchmaker? = null
     private val matchLock = Any()
@@ -105,6 +138,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         client = c
         _state.value = UiState(role = role, rpcUrl = rpcUrl, address = c.address, name = _state.value.name)
         leaveGossip()
+        prepareMap()
         val mySession = session
         poller = viewModelScope.launch(Dispatchers.IO) {
             runCatching { c.ensureRegistered(if (role == Role.RIDER) KlippelGoClient.ROLE_RIDER else KlippelGoClient.ROLE_DRIVER) }
@@ -153,6 +187,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Back to the welcome screen. */
     fun signOut() {
         leaveGossip()
+        mapJob?.cancel()
         client = null
         prefs.edit().remove("role").apply()
         _state.update { UiState(rpcUrl = it.rpcUrl, name = it.name) }
@@ -162,18 +197,156 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------------------------------------------------------- rider actions
 
-    /** Ask nearby drivers for quotes up to `maxFareReais`. */
-    fun requestRide(coin: Coin, maxFareReais: BigDecimal) = act { match?.requestRide(coin, coin.toBaseUnits(maxFareReais)) }
+    /**
+     * Ask nearby drivers for quotes up to `maxFareReais` for the measured route. The request says how far and how
+     * long the trip is, rounded, and carries a salted hash of the route. Where it starts and ends stays here.
+     */
+    fun requestRide(coin: Coin, maxFareReais: BigDecimal) = act {
+        val route = _state.value.route ?: throw IllegalStateException("No route yet")
+        val id = packId ?: throw IllegalStateException("No map pack")
+        val salt = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val coarse = coarseRoute(route.distanceM, route.durationS)
+        val summary = RouteSummary(
+            packId = Numeric.toHexString(id),
+            routeHash = Numeric.toHexString(routeHash(id, route, salt)),
+            distanceM = coarse.distanceM.toInt(),
+            durationS = coarse.durationS.toInt(),
+        )
+        pending = route to salt
+        match?.requestRide(coin, coin.toBaseUnits(maxFareReais), summary)
+    }
 
     fun cancelRequest(request: RideRequest) = act { match?.closeRequest(request) }
 
-    /** Take a driver's quote: its fare is what gets locked in the escrow. */
-    fun acceptOffer(request: RideRequest, offer: Offer) = act { match?.acceptOffer(request, offer) }
+    /**
+     * Take a driver's quote: its fare is what gets locked in the escrow. The full quote, with the route the
+     * locked hash commits to, is kept on this phone as the ride's evidence.
+     */
+    fun acceptOffer(request: RideRequest, offer: Offer) = act {
+        val rideId = match?.acceptOffer(request, offer) ?: return@act
+        val (route, salt) = pending ?: return@act
+        val id = packId ?: return@act
+        val terms = OfferTerms(offer.fare.toString(), request.token, request.rider, offer.driver, offer.expiresAt.toULong())
+        File(getApplication<Application>().filesDir, "rides").apply { mkdirs() }
+            .resolve("$rideId.quote.json").writeText(quoteJson(id, route, salt, terms))
+    }
 
-    /** Confirms arrival, which pays the driver, and rates them when `stars` is 1 to 5. */
+    /**
+     * Confirms arrival, which pays the driver, and rates them when `stars` is 1 to 5.
+     *
+     * The receipt hash is a stand-in. The real one is the hash of the trip receipt both phones sign over their
+     * GPS logs (`TripLog` and `MapPack.draftReceipt` in the core), which needs the encrypted ride channel the
+     * phones do not have yet.
+     */
     fun complete(id: BigInteger, stars: Int = 0) = act {
-        it.complete(id)
+        it.complete(id, Hash.sha3("receipt:$id:${System.currentTimeMillis()}".toByteArray()))
         if (stars in 1..5) it.rate(id, stars)
+        _state.update { s -> s.copy(destination = null, route = null, places = emptyList()) }
+    }
+
+    // ---------------------------------------------------------------- map
+
+    /** The pack mirror runs next to the chain node, so its address comes from the node address. */
+    private fun mirror(): String = "http://${URI(_state.value.rpcUrl.trim()).host}:${MapStore.MIRROR_PORT}"
+
+    /** Finds out which pack governance activated for the region and opens it if this phone has it. */
+    private fun prepareMap() {
+        val c = client ?: return
+        mapJob?.cancel()
+        pack?.close()
+        pack = null
+        mapJob = viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(map = MapState.Checking) }
+            // The chain node may still be starting, and the pack may be published later: keep asking.
+            var id: ByteArray? = null
+            while (isActive && id == null) {
+                val asked = runCatching { c.latestPack(MapStore.PILOT_REGION) }
+                id = asked.getOrNull()
+                if (id == null) {
+                    if (asked.isSuccess) _state.update { it.copy(map = MapState.NotPublished) }
+                    delay(5_000)
+                }
+            }
+            packId = id ?: return@launch
+            if (maps.isInstalled(id)) {
+                openMap(c, id)
+            } else {
+                val bytes = runCatching { maps.size(mirror(), id) }.getOrDefault(0)
+                _state.update { it.copy(map = MapState.NotDownloaded(bytes)) }
+            }
+        }
+    }
+
+    private fun openMap(c: KlippelGoClient, id: ByteArray) {
+        val opened = runCatching { maps.open(id, c) }
+        pack = opened.getOrNull()
+        _state.update { s ->
+            val p = opened.getOrNull()?.pack ?: return@update s.copy(map = MapState.Failed(message(opened.exceptionOrNull()!!)))
+            val centre = p.bounds()?.let {
+                Coordinate((it.southWest.latE7 + it.northEast.latE7) / 2, (it.southWest.lonE7 + it.northEast.lonE7) / 2)
+            } ?: Coordinate(0, 0)
+            s.copy(map = MapState.Ready(p.region(), p.version().toInt(), p.basemapPath(), centre), pickup = s.pickup ?: centre)
+        }
+    }
+
+    /** Fetches the region's pack from the mirror, checks it and opens it. */
+    fun downloadMap() {
+        val c = client ?: return
+        val id = packId ?: return
+        if (_state.value.map is MapState.Downloading) return
+        mapJob = viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(map = MapState.Downloading(0, 0)) }
+            val result = runCatching {
+                maps.download(mirror(), id) { done, total -> _state.update { it.copy(map = MapState.Downloading(done, total)) } }
+            }
+            if (result.isSuccess) {
+                openMap(c, id)
+            } else {
+                _state.update { it.copy(map = MapState.Failed(message(result.exceptionOrNull()!!))) }
+            }
+        }
+    }
+
+    /** Rider moved the map: the pin is the pickup point. A route already measured is measured again from it. */
+    fun setPickup(at: Coordinate) {
+        if (at == _state.value.pickup) return
+        _state.update { it.copy(pickup = at, route = null, routeError = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val name = runCatching { pack?.pack?.reverse(at)?.name }.getOrNull()
+            _state.update { if (it.pickup == at) it.copy(pickupName = name) else it }
+        }
+        _state.value.destination?.let(::chooseDestination)
+    }
+
+    /** Looks the typed text up in the pack's own search index. Nothing leaves the phone. */
+    fun searchPlaces(query: String) {
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(150) // let the rider finish the word
+            val found = runCatching { pack?.pack?.search(query, _state.value.pickup, 8u) }.getOrNull().orEmpty()
+            if (isActive) _state.update { it.copy(places = found) }
+        }
+    }
+
+    /** Routes from the pickup pin to the place, on this phone, and measures the route with the verifier. */
+    fun chooseDestination(place: Place) {
+        val from = _state.value.pickup ?: return
+        val router = pack ?: return
+        routeJob?.cancel()
+        _state.update { it.copy(destination = place, route = null, routing = true, routeError = null, places = emptyList()) }
+        routeJob = viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching { router.route(from, place.at, VehicleKind.CAR) }
+            if (isActive) {
+                _state.update {
+                    it.copy(route = result.getOrNull(), routing = false, routeError = result.exceptionOrNull()?.let(::message))
+                }
+            }
+        }
+    }
+
+    fun clearDestination() {
+        routeJob?.cancel()
+        _state.update { it.copy(destination = null, route = null, routing = false, routeError = null, places = emptyList()) }
     }
 
     /** Adds test reais, the local testnet's stand-in for paying a PIX. */
@@ -249,6 +422,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         leaveGossip()
+        pack?.close()
     }
 
     companion object {

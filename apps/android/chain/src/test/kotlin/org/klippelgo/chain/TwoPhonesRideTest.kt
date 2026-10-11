@@ -3,9 +3,11 @@ package org.klippelgo.chain
 import org.klippelgo.core.GossipConfig
 import org.klippelgo.core.GossipNode
 import org.web3j.crypto.Hash
+import org.web3j.utils.Numeric
 import java.io.File
 import java.math.BigDecimal
 import java.math.BigInteger
+import java.security.SecureRandom
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
@@ -17,7 +19,8 @@ import kotlin.test.assertTrue
  * runs on its own thread with its own key and its own gossip node. They agree a fare over gossip, through a
  * bootstrap node, and from then on only learn what the other did by reading the chain.
  *
- * Runs when KLIPPELGO_RPC is set, e.g.
+ * Runs when KLIPPELGO_RPC is set, against a chain that has the test map pack (`testnet/publish-pack.sh
+ * testnet/fixtures/test-pack`), e.g.
  *   KLIPPELGO_RPC=http://127.0.0.1:8545 KLIPPELGO_DEPLOYMENT=../../../deployments/local.json ./gradlew test
  */
 class TwoPhonesRideTest {
@@ -32,6 +35,16 @@ class TwoPhonesRideTest {
             return
         }
         val riderPhone = KlippelGoClient(rpc, DevAccount.RIDER.privateKey, deployment)
+        // A map pack governance activated on this chain (`make publish-pack`). The route itself stays on the
+        // rider's phone: the request carries its hash, as the phone computes it from the pack, and how long it is.
+        val pack = riderPhone.latestPack(TEST_REGION)
+            ?: error("No map pack on this chain. Run: testnet/publish-pack.sh testnet/fixtures/test-pack")
+        val route = RouteSummary(
+            packId = Numeric.toHexString(pack),
+            routeHash = Numeric.toHexString(ByteArray(32).also { SecureRandom().nextBytes(it) }),
+            distanceM = 8_500,
+            durationS = 1_320,
+        )
         val driverPhone = KlippelGoClient(rpc, DevAccount.DRIVER.privateKey, deployment)
         val coin = riderPhone.brz
         val maxFare = coin.toBaseUnits(BigDecimal("25.00"))
@@ -48,6 +61,19 @@ class TwoPhonesRideTest {
         val driverMatch = Matchmaker(driverPhone, gossip())
 
         val pool = Executors.newFixedThreadPool(2)
+        // Stands in for the hash of the trip receipt both phones sign at arrival.
+        val receipt = Hash.sha3("trip receipt".toByteArray())
+
+        // A request for a route on a map nobody activated reaches no driver.
+        val unknownPack = route.copy(packId = Numeric.toHexString(Hash.sha3("no such pack".toByteArray())))
+        val ignored = riderMatch.requestRide(coin, maxFare, unknownPack)
+        repeat(6) {
+            riderMatch.tick()
+            driverMatch.tick()
+            Thread.sleep(500)
+        }
+        assertTrue(driverMatch.openRequests().isEmpty())
+        riderMatch.closeRequest(ignored)
 
         // Driver phone: quote R$ 23,40 for the rider's request, then wait for the ride, accept it and start it.
         val driverJob = pool.submit<BigInteger> {
@@ -55,6 +81,7 @@ class TwoPhonesRideTest {
                 driverMatch.openRequests().firstOrNull { it.rider == riderPhone.address }
             }
             assertEquals(maxFare, request.maxFare)
+            assertEquals(route, request.route) // 8,5 km and 22 min, and nothing about where
             driverMatch.sendOffer(request, coin.toBaseUnits(BigDecimal("24.00")))
             val quote = driverMatch.sendOffer(request, fare) // a newer quote replaces the earlier one
             val id = poll("a new ride for the driver", driverMatch) {
@@ -68,6 +95,7 @@ class TwoPhonesRideTest {
             driverPhone.accept(id)
             driverPhone.start(id, Hash.sha3("pickup proof $id".toByteArray()))
             poll("the rider to confirm arrival") { id.takeIf { driverPhone.ride(id).status == RideStatus.Completed } }
+            assertEquals(Numeric.toHexString(receipt), driverPhone.ride(id).receiptHash)
             driverPhone.rate(id, 5)
             id
         }
@@ -75,7 +103,7 @@ class TwoPhonesRideTest {
         // Rider phone: ask for a ride up to R$ 25,00, take the driver's quote, wait until the driver has started
         // the ride, then confirm arrival.
         val riderJob = pool.submit<BigInteger> {
-            val request = riderMatch.requestRide(coin, maxFare)
+            val request = riderMatch.requestRide(coin, maxFare, route)
             val offer = poll("the driver's R$ 23,40 quote", riderMatch) {
                 riderMatch.offers(request).firstOrNull { it.fare == fare }
             }
@@ -84,7 +112,7 @@ class TwoPhonesRideTest {
             val id = riderMatch.acceptOffer(request, offer)
             assertTrue(riderMatch.openRequests().isEmpty())
             poll("the driver to start the ride", riderMatch) { id.takeIf { riderPhone.ride(id).status == RideStatus.Started } }
-            riderPhone.complete(id)
+            riderPhone.complete(id, receipt)
             riderPhone.rate(id, 5)
             id
         }
@@ -99,6 +127,11 @@ class TwoPhonesRideTest {
         // Driver nets R$ 22,40: the R$ 23,40 fare minus R$ 1,00 for Instituto Klippel (the bond comes back).
         assertEquals(coin.toBaseUnits(BigDecimal("22.40")), driverPhone.balanceOf(coin) - driverBefore)
         println("Ride $riderId completed: driver received R$ 22,40, Instituto Klippel R$ 1,00")
+    }
+
+    private companion object {
+        /** Region of `testnet/fixtures/test-pack`, a manifest that stands in for a map pack. */
+        const val TEST_REGION = "test-no-map"
     }
 
     /** Waits for `check`, running the phone's gossip the way the app's two-second loop does. */

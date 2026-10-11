@@ -1,7 +1,8 @@
 # Maps and routing on the phone
 
-Status: design proposal, not built yet. Decisions marked **Default** stand until the project decides otherwise
-(see [Open decisions](#open-decisions)).
+Status: build-order steps 1 to 5 are built, in part or in full; [What is built](#what-is-built) says how far
+each went and where the build departed from this design. Decisions marked **Default** stand until the project
+decides otherwise (see [Open decisions](#open-decisions)).
 
 KlippelGo computes maps, routes, ETAs and trip distances on the rider's and driver's phones, from OpenStreetMap
 data, with open-source libraries only. No routing API, tile server or geocoder ever sees a trip. Every number
@@ -26,7 +27,7 @@ All of them are open source, widely used, and run without any third-party servic
 | Map data | [OpenStreetMap](https://www.openstreetmap.org), Brazil extract from [Geofabrik](https://download.geofabrik.de/south-america/brazil.html) | ODbL | The only open, global, editable road map. Brazil's coverage is good in the large cities. |
 | Map drawing | [MapLibre Native](https://maplibre.org) (Android and iOS) | BSD-2 | The open fork of Mapbox GL. Renders vector tiles on the GPU and [reads PMTiles files](https://maplibre.org/maplibre-native/android/examples/data/PMTiles/) offline. |
 | Vector tiles | [Planetiler](https://github.com/onthegomap/planetiler) building the [Protomaps basemap](https://github.com/protomaps/basemaps) into one [PMTiles](https://github.com/protomaps/PMTiles) file | Apache-2.0, BSD-3 | One file per region, no tile server, fast to build. |
-| Routing, ETA, map-matching | [Valhalla](https://github.com/valhalla/valhalla) | MIT | Tiled routing graph designed for offline use, car and motorcycle profiles, and map-matching (Meili) in the same engine. C++, builds for Android and iOS. |
+| Routing, ETA, map-matching | [Valhalla](https://github.com/valhalla/valhalla), on phones through [valhalla-mobile](https://github.com/Rallista/valhalla-mobile) | MIT | Tiled routing graph designed for offline use, car and motorcycle profiles, and map-matching (Meili) in the same engine. valhalla-mobile ships it built for Android and iOS. |
 | Turn-by-turn for drivers | [Ferrostar](https://github.com/stadiamaps/ferrostar) | BSD-3 | Navigation core in Rust with Kotlin and Swift UIs, built around Valhalla. We plug in a local route adapter instead of its HTTP one. |
 | Address and place search | [SQLite](https://sqlite.org) FTS5 and R*Tree, built from OSM addresses and places | Public domain | Search and reverse geocoding fully offline. Accent folding (`remove_diacritics`) handles Portuguese. |
 | Build tools | [osmium-tool](https://osmcode.org/osmium-tool/) to cut regions, Rust [`osmpbf`](https://crates.io/crates/osmpbf) for the proof index | GPL-3.0 (build time only), MIT/Apache-2.0 | Standard OSM tooling. |
@@ -131,18 +132,32 @@ sequenceDiagram
 ```
 RouteQuote {
   packId        manifestHash of the map pack
-  pickup        lat, lon as int32 × 10⁷
+  pickup        lat, lon as int32 × 10⁷, where the route meets the road
   dropoff       lat, lon as int32 × 10⁷
+  vehicle       car or motorcycle
   path          the route as a list of (OSM way id, OSM node id) steps
   distanceM     uint32, metres, computed by the verifier
   durationS     uint32, seconds, Valhalla's estimate
+  salt          32 random bytes
   fare          token amount, the accepted offer
   token         stablecoin address
   rider, driver addresses
   expiry        timestamp
+  previous      hash of the quote this one amends, or zero
 }
-quoteHash = keccak256(canonical encoding of RouteQuote)
+routeHash = keccak256("KlippelGo route v1", packId … salt)
+quoteHash = keccak256("KlippelGo route quote v1", chain id, escrow, routeHash, fare … previous)
 ```
+
+The hash has two levels so that a driver can sign an offer before seeing the route. The gossip request carries
+`routeHash`, which the salt makes useless for guessing places, and every offer signs the `quoteHash` built from
+it. When the rider later reveals the route, the driver checks that it hashes to what they priced. The exact
+byte layout is in `core/verify/src/quote.rs`, and `contracts/test/ProofEncoding.t.sol` rebuilds the same hashes
+in Solidity.
+
+A step moves from one node to a neighbouring node of its way, so each step is one road segment. The pickup and
+drop-off in the quote are the points where Valhalla put the route on the road, not the pins the rider dropped:
+a pin in the middle of a square can be further from any road than the endpoint tolerance.
 
 The fare stays a free market between rider and driver. What the quote proves is the distance the fare was
 agreed for, so the rider sees an honest R$/km and nobody can later argue about which route was priced.
@@ -184,7 +199,12 @@ receiptHash = keccak256(canonical encoding of TripReceipt)
 - **Detours.** A stop or route change the rider asks for mid-trip is a new quote both phones sign, chained to
   the old one. Without one, the fare is the quoted fare (upfront pricing, as riders in Brazil expect).
 - **On-chain.** `complete` gains a `receiptHash` argument. On the timeout path the driver submits their own
-  receipt hash first, so an unresponsive rider cannot block payment and the driver is on record with evidence.
+  receipt hash first with `submitReceipt`, so an unresponsive rider cannot block payment and the driver is on
+  record with evidence. The timeout runs from that submission, not from the start of the ride, and a rider who
+  then completes must name the same receipt; one who disagrees raises a dispute.
+- **Map-matching is not trusted either.** Meili sometimes sends a noisy log a few metres up a side street and
+  back. The verifier refuses a path with a stretch the log did not drive, so the phone drops such spurs, one at
+  a time and only while the verifier still objects, before it writes the receipt.
 
 ## The verifier
 
@@ -202,10 +222,19 @@ It checks:
 5. **The trace** (for receipts). Fixes are in time order, every fix lies within its own reported accuracy plus
    a margin of the path, speeds and accelerations are physically possible, the mock-location flag is off, and
    the hash chain and signatures check out.
+6. **The driven distance** (for receipts). The log is followed along the driven path: each fix is placed on the
+   path near where it was taken, never behind the one before, and never further ahead than the log itself moved
+   in a straight line, stretched by a detour tolerance (**Default: 25%**, governed). The distance is what lies
+   between the first and the last fix. This is what stops a receipt from claiming streets nobody drove.
+
+Its tolerances live in `MapRegistry.verifierParams`, so governance sets them and every checker reads the same
+ones. Fixes the phone itself rates worse than 50 m, as in a tunnel, are kept in the hash chain but not used to
+place the trip.
 
 Valhalla stays untrusted: if it returns a bad path, the verifier rejects it and the app shows an error.
-Translating Valhalla's output into `(way id, node id)` steps works from its shape points and way ids; the
-prototype will confirm Valhalla's shape points line up exactly with OSM node coordinates.
+Translating Valhalla's output into `(way id, node id)` steps works from the way ids and shape points of its
+`trace_attributes` answer (`core/proofs/src/valhalla.rs`). Valhalla's shape points are the way's nodes rounded
+to six decimals, which is enough to find them again; see [What is built](#what-is-built) for the measurements.
 
 ## Who checks what
 
@@ -246,9 +275,15 @@ benchmark on-device proving once the verifier exists.**
   design.
 - **Map quality** is OSM's. Missing streets or wrong one-ways show up as route mismatches. KlippelGo should
   encourage drivers to fix OSM directly, and those fixes arrive with the next monthly pack.
-- **App size and build effort.** Valhalla is a large C++ dependency to cross-compile for Android and iOS. The
-  prototype measures binary size, pack size, route time and memory on a mid-range Android phone before
-  committing.
+- **Padding within the detour tolerance.** The driven distance is bounded by how far the log itself moved,
+  stretched by the detour tolerance. A receipt can therefore overstate a trip by up to that tolerance where the
+  streets allow it. With upfront fares this moves no money; it matters if fares ever become metered.
+- **Trips that leave their route on rural tracks** may get no receipt, because map-matching fails there (see
+  [What is built](#what-is-built)). The ride can still be settled by the rider confirming, or disputed.
+- **Turn restrictions** are not in the proof index, so the verifier accepts a path through a forbidden turn.
+  Valhalla does not route through them.
+- **App size and build effort.** Valhalla is a large C++ dependency. The app uses prebuilt libraries for it,
+  which ties the app to their release schedule and their Android SDK and Kotlin versions.
 - **Licences.** OSM data is ODbL: the app shows "© OpenStreetMap contributors" on the map, and packs are
   published openly under ODbL, which suits a project that publishes its packs anyway. All libraries above are
   compatible with the repository's AGPL-3.0.
@@ -258,7 +293,7 @@ benchmark on-device proving once the verifier exists.**
 | Where | Change |
 | --- | --- |
 | `contracts/` | New `MapRegistry` (governed). `RideEscrow.complete` and the timeout path take a `receiptHash`. |
-| `core/` | New `verify` crate. Canonical encodings and hashes for `RouteQuote` and `TripReceipt`. Trace log and key certification. Valhalla binding (C++ via `cxx`). |
+| `core/` | New `verify` crate. Canonical encodings and hashes for `RouteQuote` and `TripReceipt`. Trace log and key certification. New `proofs` crate: packs on disk, Valhalla's answers turned into paths, evidence files, the juror tool. |
 | Android app | Replace `MapSurface` and `RouteArt` placeholders with MapLibre. Request carries route distance and duration. Pack download and check screen. |
 | New `mappack/` | Docker build for a region pack and the deterministic proof-index tool. |
 
@@ -284,4 +319,57 @@ benchmark on-device proving once the verifier exists.**
 | Distance tolerance between phones | Any percentage | 2% |
 | Pack update cadence | Weekly, monthly, quarterly | Monthly |
 | Rebuild quorum to activate a pack | Any number of validators | 3 |
-| Pilot city | One metro area | Not chosen (needed for step 1) |
+| Pilot city | One metro area | Cascavel, Paraná |
+| Detour tolerance when following a log along a path | Any percentage | 25% |
+
+## What is built
+
+| Step | State |
+| --- | --- |
+| 1. Pilot pack and a real map | Built. `mappack/` builds the Cascavel pack; the Android app downloads it, checks it against `MapRegistry`, draws it with MapLibre and searches it offline. |
+| 2. On-device routing | Built on Android, for cars: Valhalla routes on the phone and the request carries distance and duration. Driver navigation with Ferrostar is not started. |
+| 3. Route quote proof | Built: proof index, verifier, `MapRegistry` with rebuild attestations, and the rider's phone locking the real quote hash. The driver checking the rider's route before accepting is in the core (`MapPack.check_quote`) but not in the app. |
+| 4. Trip proof | Built and tested in the core and on chain: logs with countersigned heads, map-matching, the receipt, `receiptHash` in `complete`, `submitReceipt` and `timeout`. Not in the app, which sends a stand-in receipt hash. |
+| 5. Dispute tooling | `klippelgo-juror` checks revealed evidence against a pack. Default rules for small fares are not started. |
+| 6. Zero-knowledge study | Not started. The verifier is `no_std` and integer-only, as that study needs. |
+
+What keeps steps 3 and 4 out of the app is the encrypted ride channel: the exact route, the trace keys and the
+log heads all cross it, and it is not built. The app also places the pickup with a pin instead of reading the
+phone's location, and has no way to choose a motorcycle.
+
+**Where the build departed from the design above**
+
+- Valhalla reaches the phone through valhalla-mobile's prebuilt libraries, called from Kotlin, instead of a
+  `cxx` binding inside the Rust core. The core builds Valhalla's requests and reads its answers as JSON, so the
+  platform code only passes strings. iOS can do the same with valhalla-mobile's Swift package.
+- Search runs in the Rust core on a SQLite it bundles, so it does not depend on which SQLite features a phone's
+  system library has.
+- The quote hash has two levels and a salt, and the quote names its vehicle and the quote it amends (see
+  [Route and price](#1-route-and-price-before-the-ride)).
+- `timeout` needs the driver's receipt on record and counts from it.
+- Trace keys sign a head's digest with ECDSA P-256 over SHA-256, which is what the Secure Enclave and StrongBox
+  offer. Each log carries the other phone's trace key and its certificate, so one log is enough to check a
+  receipt when a party withholds theirs.
+
+**What the prototype measured**, on Valhalla 3.9.1, with the Cascavel pack and with a pack of central São
+Paulo, a much denser network:
+
+- Every sampled route, car and motorcycle, translated into a path the verifier accepts: 1000 of 1000 in
+  Cascavel (15 769 km) and 1500 of 1500 in São Paulo (14 485 km).
+- The verifier's distances are within 0.27% and 0.31% of Valhalla's own for every one of them.
+- Every simulated ride passed from route to juror, 100 in Cascavel and 120 in São Paulo: a route, two GPS logs
+  with 3 to 4 m of noise, signed and countersigned heads, a receipt.
+- A receipt's driven path is the quoted route when the logs followed it. Written from the map-matched log
+  alone, as a trip that left its route needs, all 120 São Paulo rides still pass, 4 of them after dropping a
+  detour map-matching invented. In Cascavel 87 of 100 do: on the farm tracks around the city Valhalla's
+  map-matching loses the thread and returns disconnected pieces. Bridging those is not built.
+- The Cascavel pack is 7.6 MB; the São Paulo one, 15 km across, 73 MB.
+- A 14 km trip's evidence, with both logs, is 355 KB of JSON. A 3.8 km route touches 23 chunks of the proof
+  index, 162 KB.
+- The proof index is rebuilt to the same root on the host and in Docker.
+- Getting there took aligning the proof index's tag rules with Valhalla's in two places: driveways, and paths
+  explicitly opened to motor vehicles. `mappack/README.md` has the commands to repeat all of this on any pack.
+
+Not measured: anything on a real phone. Route time, memory and battery on a mid-range Android device, and real
+GPS logs instead of simulated ones, are still open. The debug APK is 123 MB with two architectures, most of it
+Valhalla and MapLibre.

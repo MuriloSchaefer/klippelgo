@@ -8,8 +8,9 @@ import {Reputation} from "../src/Reputation.sol";
 import {FeeVault} from "../src/FeeVault.sol";
 import {RideEscrow} from "../src/RideEscrow.sol";
 import {DisputeCourt} from "../src/DisputeCourt.sol";
+import {MapRegistry} from "../src/MapRegistry.sol";
 
-/// @notice Deploys and wires the six protocol contracts, sets the first policies and the BRL allow-list, then
+/// @notice Deploys and wires the seven protocol contracts, sets the first policies and the BRL allow-list, then
 /// ends the bootstrap so only governance can change anything. Shared by the deploy script and the tests.
 abstract contract ProtocolDeployer {
     bytes32 public constant CREDENTIAL_CNH = keccak256("klippelgo.credential.CNH");
@@ -35,6 +36,8 @@ abstract contract ProtocolDeployer {
         uint256 validatorMinStakeBrl;
         uint16 driverMinScore; // x100
         uint32 proposerMinAccountAge;
+        uint32 mapRebuildQuorum; // validators that must rebuild a map pack to the same proof root
+        uint64 mapGracePeriod; // how long a pack outlives its replacement
     }
 
     struct Protocol {
@@ -44,6 +47,7 @@ abstract contract ProtocolDeployer {
         FeeVault feeVault;
         RideEscrow escrow;
         DisputeCourt court;
+        MapRegistry maps;
     }
 
     function _deployProtocol(Config memory c) internal returns (Protocol memory p) {
@@ -53,6 +57,7 @@ abstract contract ProtocolDeployer {
         p.feeVault = new FeeVault(p.governor, c.feeBeneficiary);
         p.escrow = new RideEscrow(p.governor, c.completionTimeout);
         p.court = new DisputeCourt(p.governor, p.escrow, c.commitPeriod, c.revealPeriod);
+        p.maps = new MapRegistry(p.governor, c.mapRebuildQuorum, c.mapGracePeriod, _launchVerifierParams());
 
         PBACGovernor g = p.governor;
         g.bootstrapCall(address(g), abi.encodeCall(g.setModules, (p.registry, p.reputation)));
@@ -96,12 +101,32 @@ abstract contract ProtocolDeployer {
         );
         _policy(
             g,
+            address(p.maps),
+            MapRegistry.attest.selector,
+            _p(p.registry.ROLE_VALIDATOR(), 0, 0, c.validatorMinStakeBrl * stakeOne, bytes32(0))
+        );
+        _policy(
+            g,
             address(g),
             PBACGovernor.propose.selector,
             _p(anyRole, 0, c.proposerMinAccountAge, 0, bytes32(0))
         );
 
         g.finishBootstrap();
+    }
+
+    /// @dev The defaults of `Params` in the verifier crate (core/verify/src/lib.rs).
+    function _launchVerifierParams() internal pure returns (MapRegistry.VerifierParams memory) {
+        return MapRegistry.VerifierParams({
+            endpointToleranceM: 50,
+            distanceToleranceBps: 200,
+            traceMarginM: 25,
+            maxAccuracyM: 50,
+            detourToleranceBps: 2_500,
+            maxSpeedCmS: 6_000,
+            maxAccelCmS2: 1_200,
+            maxHeadIntervalMs: 60_000
+        });
     }
 
     function _p(uint8 roles, uint16 minScore, uint32 minAge, uint256 minStake, bytes32 credential)

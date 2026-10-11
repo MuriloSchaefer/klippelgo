@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "region": "test-no-map",
+  "version": 202601,
+  "osm": {
+    "source": "none: this manifest stands in for a map pack in tests that need only a pack id on chain",
+    "sequence": 0,
+    "sha256": "0x0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "proofRoot": "0x74657374207061636b20776974686f757420612070726f6f6620696e64657800",
+  "tools": {},
+  "files": {}
+}

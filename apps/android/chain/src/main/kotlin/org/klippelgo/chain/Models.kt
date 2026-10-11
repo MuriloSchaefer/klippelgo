@@ -26,10 +26,29 @@ data class Ride(
     val riderBond: BigInteger,
     val driverBond: BigInteger,
     val quoteHash: String,
+    /** Hash of the trip receipt on record, or all zeros while there is none. */
+    val receiptHash: String,
+    /** Unix seconds when the receipt was put on record, 0 while there is none. */
+    val receiptAt: Long,
 ) {
     /** What the driver keeps: the fare minus R$ 1,00 for Instituto Klippel. */
     val driverPayout: BigInteger get() = fare - fee
 }
+
+/**
+ * What a request tells drivers about the trip, computed on the rider's phone from its map pack: enough to price
+ * it, and nothing that places it. The exact route stays on the rider's phone behind `routeHash`.
+ */
+data class RouteSummary(
+    /** Id of the map pack the route was computed on (`manifestHash` in MapRegistry), as 0x hex. */
+    val packId: String,
+    /** The rider's salted commitment to the route, as 0x hex. Every quote for the request signs over it. */
+    val routeHash: String,
+    /** Metres by road, rounded to 500 m. */
+    val distanceM: Int,
+    /** Seconds, rounded to a minute. No traffic is known. */
+    val durationS: Int,
+)
 
 /** A rider's request for a ride, as gossiped to nearby drivers. */
 data class RideRequest(
@@ -41,6 +60,7 @@ data class RideRequest(
     val maxFare: BigInteger,
     /** Unix seconds, by the phones' clocks. */
     val expiresAt: Long,
+    val route: RouteSummary,
 )
 
 /** A driver's signed quote for a request. The rider locks `quoteHash` in the escrow when taking it. */

@@ -21,7 +21,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -44,6 +46,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.klippelgo.app.AppViewModel
+import org.klippelgo.app.MapState
 import org.klippelgo.app.R
 import org.klippelgo.app.Role
 import org.klippelgo.app.UiState
@@ -53,6 +56,7 @@ import org.klippelgo.chain.Offer
 import org.klippelgo.chain.Ride
 import org.klippelgo.chain.RideRequest
 import org.klippelgo.chain.RideStatus
+import org.klippelgo.core.Coordinate
 import java.math.BigDecimal
 import java.math.BigInteger
 import kotlin.math.roundToInt
@@ -112,10 +116,11 @@ fun RiderApp(state: UiState, vm: AppViewModel) {
             } else {
                 val leave = {
                     request?.let(vm::cancelRequest)
+                    vm.clearDestination()
                     asking = false
                 }
                 BackHandler(onBack = leave)
-                Offers(state, onBack = leave, onAsk = vm::requestRide, onPick = { picked = it.driver })
+                Offers(state, vm, onBack = leave, onPick = { picked = it.driver })
             }
         }
         else -> {
@@ -123,7 +128,7 @@ fun RiderApp(state: UiState, vm: AppViewModel) {
             Column(Modifier.fillMaxSize()) {
                 Box(Modifier.weight(1f)) {
                     when (tab) {
-                        Tab.RIDE -> WhereTo(state, onAsk = { asking = true }, onProfile = { tab = Tab.PROFILE })
+                        Tab.RIDE -> WhereTo(state, vm, onAsk = { asking = true }, onProfile = { tab = Tab.PROFILE })
                         Tab.WALLET -> WalletScreen(state, vm, onboarding = false)
                         Tab.RULES -> Rules(state)
                         Tab.PROFILE -> Profile(state, vm)
@@ -137,9 +142,9 @@ fun RiderApp(state: UiState, vm: AppViewModel) {
 
 /** A map with a sheet under it. The sheet scrolls if it ever outgrows the screen. */
 @Composable
-fun MapScreen(map: @Composable BoxScope.() -> Unit, sheet: @Composable ColumnScope.() -> Unit) {
+fun MapScreen(scene: MapScene? = null, map: @Composable BoxScope.() -> Unit, sheet: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
-        MapSurface(Modifier.weight(1f).fillMaxWidth(), map)
+        MapSurface(Modifier.weight(1f).fillMaxWidth(), scene, map)
         Sheet(content = sheet)
     }
 }
@@ -147,9 +152,11 @@ fun MapScreen(map: @Composable BoxScope.() -> Unit, sheet: @Composable ColumnSco
 // ------------------------------------------------------------------- home and tabs
 
 @Composable
-private fun WhereTo(state: UiState, onAsk: () -> Unit, onProfile: () -> Unit) {
+private fun WhereTo(state: UiState, vm: AppViewModel, onAsk: () -> Unit, onProfile: () -> Unit) {
     MapScreen(
+        scene = sceneOf(state, onCentre = vm::setPickup),
         map = {
+            // The pin stays in the middle and the map moves under it: where it points is the pickup.
             Box(
                 Modifier.align(Alignment.Center).size(40.dp)
                     .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.18f), CircleShape),
@@ -182,8 +189,18 @@ private fun WhereTo(state: UiState, onAsk: () -> Unit, onProfile: () -> Unit) {
             Modifier.align(Alignment.CenterHorizontally).size(40.dp, 4.dp)
                 .background(MaterialTheme.colorScheme.outlineVariant, CircleShape),
         )
+        if (state.map is MapState.Ready) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                FieldLabel(stringResource(R.string.pickup))
+                Text(state.pickupName ?: stringResource(R.string.pickup_pin), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Muted(stringResource(R.string.pickup_pin_hint), size = 12.sp)
+            }
+        } else {
+            MapNotice(state, vm::downloadMap)
+        }
         Surface(
             onClick = onAsk,
+            enabled = state.map is MapState.Ready,
             shape = RoundedCornerShape(14.dp),
             color = MaterialTheme.colorScheme.surfaceVariant,
             contentColor = MaterialTheme.colorScheme.onSurface,
@@ -196,6 +213,118 @@ private fun WhereTo(state: UiState, onAsk: () -> Unit, onProfile: () -> Unit) {
             ) {
                 Icon(KIcons.Search, contentDescription = null, Modifier.size(20.dp))
                 Text(stringResource(R.string.where_to), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+/** The map for a ride screen when the phone has a map pack; `null` leaves the grey grid. */
+@Composable
+fun sceneOf(state: UiState, underWay: Boolean = false, onCentre: ((Coordinate) -> Unit)? = null): MapScene? {
+    val map = state.map as? MapState.Ready ?: return null
+    return MapScene(
+        basemap = map.basemap,
+        centre = state.pickup ?: map.centre,
+        route = state.route?.line.orEmpty(),
+        underWay = underWay,
+        onCentre = onCentre,
+    )
+}
+
+/** Where the map pack stands when it is not ready: what is missing, and the button to fetch it. */
+@Composable
+fun MapNotice(state: UiState, onDownload: () -> Unit, modifier: Modifier = Modifier) {
+    val map = state.map
+    if (map is MapState.Ready) return
+    KCard(modifier = modifier, padding = 14.dp) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(stringResource(R.string.map_title), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            when (map) {
+                MapState.Checking -> Muted(stringResource(R.string.map_checking), size = 13.sp)
+                MapState.NotPublished -> Muted(stringResource(R.string.map_not_published), size = 13.sp)
+                is MapState.NotDownloaded -> {
+                    Muted(stringResource(R.string.map_needed), size = 13.sp)
+                    val megabytes = (map.bytes / 1_000_000).toInt()
+                    PrimaryButton(
+                        if (megabytes > 0) stringResource(R.string.map_download_size, megabytes) else stringResource(R.string.map_download),
+                        onDownload,
+                    )
+                }
+                is MapState.Downloading -> {
+                    val fraction = if (map.total > 0) map.done.toFloat() / map.total else 0f
+                    Muted(stringResource(R.string.map_downloading, (fraction * 100).roundToInt()), size = 13.sp)
+                    LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                }
+                is MapState.Failed -> {
+                    Muted(stringResource(R.string.map_failed, map.message), color = MaterialTheme.colorScheme.error, size = 13.sp)
+                    SecondaryButton(stringResource(R.string.map_download), onDownload)
+                }
+                is MapState.Ready -> {}
+            }
+        }
+    }
+}
+
+/** Where to: the search box and what it finds, then the place picked with the route measured to it. */
+@Composable
+private fun Destination(state: UiState, vm: AppViewModel, modifier: Modifier = Modifier) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val destination = state.destination
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        FieldLabel(stringResource(R.string.destination))
+        if (destination == null) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = {
+                    query = it
+                    vm.searchPlaces(it)
+                },
+                placeholder = { Text(stringResource(R.string.search_destination)) },
+                leadingIcon = { Icon(KIcons.Search, contentDescription = null, Modifier.size(20.dp)) },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            state.places.forEach { place ->
+                KCard(padding = 12.dp, onClick = { vm.chooseDestination(place) }) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(place.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            if (place.context.isNotEmpty()) Muted(place.context, size = 13.sp)
+                        }
+                        place.distanceM?.let { Muted(distanceLabel(it.toInt()), size = 13.sp) }
+                    }
+                }
+            }
+            Muted(stringResource(R.string.route_private), size = 12.sp)
+        } else {
+            KCard(padding = 14.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(destination.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            if (destination.context.isNotEmpty()) Muted(destination.context, size = 13.sp)
+                        }
+                        TextButton(onClick = {
+                            query = ""
+                            vm.clearDestination()
+                        }) { Text(stringResource(R.string.change), fontSize = 14.sp) }
+                    }
+                    val route = state.route
+                    when {
+                        route != null -> Text(
+                            routeLabel(route.distanceM.toInt(), route.durationS.toInt()),
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        state.routing -> Muted(stringResource(R.string.routing), size = 13.sp)
+                        state.routeError != null -> Muted(
+                            stringResource(R.string.route_failed, state.routeError),
+                            color = MaterialTheme.colorScheme.error,
+                            size = 13.sp,
+                        )
+                    }
+                }
             }
         }
     }
@@ -423,11 +552,11 @@ private fun Profile(state: UiState, vm: AppViewModel) {
 // ------------------------------------------------------------------- asking for a ride
 
 /**
- * Before the request goes out: how much the rider will pay at most. After: the drivers' quotes, cheapest first,
- * then best rated.
+ * Before the request goes out: where to, and how much the rider will pay at most. After: the drivers' quotes,
+ * cheapest first, then best rated.
  */
 @Composable
-private fun Offers(state: UiState, onBack: () -> Unit, onAsk: (Coin, BigDecimal) -> Unit, onPick: (Offer) -> Unit) {
+private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick: (Offer) -> Unit) {
     val request = state.request
     var maxFare by rememberSaveable { mutableFloatStateOf(30f) }
     var coinSymbol by rememberSaveable { mutableStateOf("BRZ") }
@@ -448,7 +577,12 @@ private fun Offers(state: UiState, onBack: () -> Unit, onAsk: (Coin, BigDecimal)
             val fare = BigDecimal(maxFare.roundToInt())
             val needed = coin?.let { it.toBaseUnits(fare) + (state.bonds[it]?.first ?: BigInteger.ZERO) }
             val enough = coin != null && needed != null && (state.balances[coin] ?: BigInteger.ZERO) >= needed
-            Column(Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (state.map is MapState.Ready) {
+                Destination(state, vm, Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp))
+            } else {
+                MapNotice(state, vm::downloadMap, Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp))
+            }
+            Column(Modifier.padding(start = 20.dp, top = 20.dp, end = 20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.pay_at_most), Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     Text(brl(fare), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
@@ -469,8 +603,8 @@ private fun Offers(state: UiState, onBack: () -> Unit, onAsk: (Coin, BigDecimal)
                 }
                 PrimaryButton(
                     stringResource(R.string.ask_for_offers),
-                    onClick = { coin?.let { onAsk(it, fare) } },
-                    enabled = enough,
+                    onClick = { coin?.let { vm.requestRide(it, fare) } },
+                    enabled = enough && state.route != null,
                     busy = state.busy,
                 )
                 Muted(stringResource(R.string.no_surge), size = 12.sp, align = TextAlign.Center)
@@ -480,9 +614,10 @@ private fun Offers(state: UiState, onBack: () -> Unit, onAsk: (Coin, BigDecimal)
             val drivers = state.drivers.filter { it.canAccept }.associateBy { it.address }
             val offers = state.offers.filter { it.driver in drivers }
                 .sortedWith(compareBy<Offer> { it.fare }.thenByDescending { drivers.getValue(it.driver).score })
-            Row(Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(stringResource(R.string.pay_at_most), Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text(brl(asked, request.maxFare), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Column(Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp)) {
+                state.destination?.let { KeyValue(stringResource(R.string.destination), it.name) }
+                KeyValue(stringResource(R.string.trip), routeLabel(request.route.distanceM, request.route.durationS))
+                KeyValue(stringResource(R.string.pay_at_most), brl(asked, request.maxFare), divider = false)
             }
             Row(
                 Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp, bottom = 8.dp),
@@ -552,15 +687,22 @@ private fun ConfirmFare(state: UiState, request: RideRequest, offer: Offer, onBa
     val coin = coinOf(state, request.token)
     val fee = state.fees[coin] ?: BigInteger.ZERO
     val bond = state.bonds[coin]?.first ?: BigInteger.ZERO
+    val scene = sceneOf(state)
     MapScreen(
+        scene = scene,
         map = {
-            RouteArt(Modifier.fillMaxSize())
+            if (scene == null) RouteArt(Modifier.fillMaxSize())
             BackButton(onBack, Modifier.padding(20.dp), onMap = true)
         },
     ) {
         DriverRow(state, offer.driver)
         Column {
             Text(brl(coin, offer.fare), fontSize = 36.sp, lineHeight = 40.sp, fontWeight = FontWeight.Bold)
+            Muted(
+                routeLabel(request.route.distanceM, request.route.durationS) + " · " +
+                    stringResource(R.string.per_km, brl(perKm(coin, offer.fare, request.route.distanceM))),
+                size = 13.sp,
+            )
             KeyValue(stringResource(R.string.to_driver), brl(coin, offer.fare - fee))
             KeyValue(stringResource(R.string.institute_per_ride), brl(coin, fee))
             KeyValue(stringResource(R.string.bond_back_on_arrival), brl(coin, bond), divider = false)
@@ -594,9 +736,11 @@ private fun ConfirmFare(state: UiState, request: RideRequest, offer: Offer, onBa
 @Composable
 private fun OnTheWay(state: UiState, ride: Ride, onCancel: () -> Unit) {
     val coin = coinOf(state, ride.token)
+    val scene = sceneOf(state)
     MapScreen(
+        scene = scene,
         map = {
-            RouteArt(Modifier.fillMaxSize())
+            if (scene == null) RouteArt(Modifier.fillMaxSize())
             Column(
                 Modifier.fillMaxWidth().padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -636,9 +780,11 @@ private fun LockedPill(text: String) {
 @Composable
 private fun OnTrip(state: UiState, ride: Ride, onArrived: () -> Unit) {
     val coin = coinOf(state, ride.token)
+    val scene = sceneOf(state, underWay = true)
     MapScreen(
+        scene = scene,
         map = {
-            RouteArt(Modifier.fillMaxSize(), underWay = true)
+            if (scene == null) RouteArt(Modifier.fillMaxSize(), underWay = true)
             NetworkNotice(state, Modifier.padding(20.dp))
         },
     ) {

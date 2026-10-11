@@ -1,0 +1,7 @@
+# Only mappack/Dockerfile builds from the repo root, and it needs just these.
+*
+!core/verify
+!core/proofs
+!mappack/Cargo.toml
+!mappack/Cargo.lock
+!mappack/src

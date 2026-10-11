@@ -55,8 +55,8 @@ mod tests {
     fn encodes_known_cells() {
         // Reference vector from the geohash spec (Jutland, Denmark).
         assert_eq!(encode(57.64911, 10.40744, 11), "u4pruydqqvj");
-        // Praça da Sé, São Paulo: a 5-character cell is all the gossip network sees.
-        assert_eq!(encode(-23.5505, -46.6333, DISCOVERY_PRECISION), "6gyf4");
+        // The centre of Cascavel, Paraná, the pilot city: a 5-character cell is all the gossip network sees.
+        assert_eq!(encode(-24.9555, -53.4552, DISCOVERY_PRECISION), "6g9fp");
         assert_eq!(topic("6gycf"), "/klippelgo/presence/1/6gycf");
     }
 }

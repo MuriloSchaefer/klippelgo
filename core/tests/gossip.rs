@@ -4,7 +4,7 @@ use klippelgo_core::gossip::{GossipConfig, GossipError, GossipMessage, GossipNod
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const TOPIC: &str = "/klippelgo/match/1/6gyf4";
+const TOPIC: &str = "/klippelgo/match/1/6g9fp";
 
 fn phone(bootstrap: &str) -> Arc<GossipNode> {
     let config = GossipConfig {

@@ -32,10 +32,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # The core, the verifier (core/verify) and the pack and evidence code (core/proofs) are one workspace.
       - working-directory: core
         run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-features --all-targets -- -D warnings
+          cargo test --workspace --all-features
+      - name: Map pack builder
+        working-directory: mappack
+        run: |
           cargo fmt --check
-          cargo clippy -- -D warnings
+          cargo clippy --all-targets -- -D warnings
           cargo test
 
   android:
@@ -49,7 +56,7 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: foundry-rs/foundry-toolchain@v1
-      # The Rust core holds the gossip network. core/rust-toolchain.toml picks the compiler and Android targets.
+      # The Rust core holds the gossip network and the trip proofs. core/rust-toolchain.toml picks the compiler and Android targets.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -62,6 +69,9 @@ jobs:
           testnet/anvil.sh > anvil.log 2>&1 &
           for i in $(seq 1 30); do cast chain-id 2>/dev/null && break; sleep 1; done
           testnet/deploy.sh
+          # Requests name the map pack their route was computed on, and drivers ignore packs that governance
+          # has not activated. This activates a stand-in pack through a proposal and a vote.
+          testnet/publish-pack.sh testnet/fixtures/test-pack
       - name: Rider and driver clients ride together on chain
         working-directory: apps/android/chain
         env:

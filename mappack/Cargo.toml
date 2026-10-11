@@ -1,0 +1,14 @@
+[package]
+name = "klippelgo-mappack"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Builds the parts of a KlippelGo map pack that are ours: the deterministic proof index, the offline search database and the manifest."
+
+[dependencies]
+klippelgo-proofs = { path = "../core/proofs", features = ["search"] }
+klippelgo-verify = { path = "../core/verify" }
+osmpbf = "0.3"
+
+[profile.release]
+debug = false

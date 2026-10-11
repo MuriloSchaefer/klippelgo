@@ -259,10 +259,35 @@ fun Sheet(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> 
     }
 }
 
-/** Stand-in for the map until the app has one: the wireframes' grey grid. */
+/**
+ * The map under every ride screen. With a map pack on the phone it is the real map; without one, the
+ * wireframes' grey grid stands in.
+ */
 @Composable
-fun MapSurface(modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit = {}) {
+fun MapSurface(modifier: Modifier = Modifier, scene: MapScene? = null, content: @Composable BoxScope.() -> Unit = {}) {
     val line = MaterialTheme.colorScheme.outlineVariant
+    if (scene != null) {
+        Box(modifier) {
+            PackMap(
+                scene,
+                ink = MaterialTheme.colorScheme.primary,
+                accent = MaterialTheme.colorScheme.tertiary,
+                ring = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.fillMaxSize(),
+            )
+            // The map data's licence asks for this credit wherever the map is shown.
+            Text(
+                stringResource(R.string.map_credit),
+                Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 4.dp)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 4.dp),
+                fontSize = 10.sp,
+                lineHeight = 14.sp,
+            )
+            content()
+        }
+        return
+    }
     Box(
         modifier
             .background(MaterialTheme.colorScheme.surfaceContainerHighest)
@@ -283,7 +308,10 @@ fun MapSurface(modifier: Modifier = Modifier, content: @Composable BoxScope.() -
     )
 }
 
-/** A route drawn over the map: dotted while it is only planned, solid blue once the trip is under way. */
+/**
+ * A route drawn as a picture, for screens with no real one to show: dotted while it is only planned, solid blue
+ * once the trip is under way.
+ */
 @Composable
 fun RouteArt(modifier: Modifier = Modifier, underWay: Boolean = false) {
     val ink = MaterialTheme.colorScheme.primary

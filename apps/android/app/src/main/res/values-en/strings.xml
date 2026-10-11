@@ -133,4 +133,28 @@
     <string name="action_start">Rider on board: start</string>
     <string name="driver_cancel_hint">If you cancel, your %1$s bond goes to the rider.</string>
     <string name="driver_trip_hint">You are paid when the rider confirms arrival.</string>
+
+    <!-- Map, search and routes -->
+    <string name="map_credit">© OpenStreetMap</string>
+    <string name="pickup">Pickup</string>
+    <string name="pickup_pin">At the pin</string>
+    <string name="pickup_pin_hint">Move the map to mark where the car should come.</string>
+    <string name="destination">Destination</string>
+    <string name="search_destination">Address or place</string>
+    <string name="change">Change</string>
+    <string name="trip">Trip</string>
+    <string name="per_km">%1$s per km</string>
+    <string name="routing">Working out the route on this phone…</string>
+    <string name="route_failed">Could not find a route: %1$s</string>
+    <string name="route_private">Search and routing run on this phone. Drivers see only how far and how long the trip is.</string>
+    <string name="map_title">Map of the region</string>
+    <string name="map_checking">Checking the map…</string>
+    <string name="map_not_published">No map has been published on this network yet.</string>
+    <string name="map_needed">To ask for a ride, download the map of the region. After that the map, search and routes work with no internet.</string>
+    <string name="map_download">Download map</string>
+    <string name="map_download_size">Download map (%1$d MB)</string>
+    <string name="map_downloading">Downloading and checking the map: %1$d%%</string>
+    <string name="map_failed">The map could not be used: %1$s</string>
+    <string name="zoom_in">Zoom in</string>
+    <string name="zoom_out">Zoom out</string>
 </resources>

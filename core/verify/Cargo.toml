@@ -1,0 +1,15 @@
+[package]
+name = "klippelgo-verify"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Deterministic checker for KlippelGo route quotes and trip receipts: integer maths only, no I/O, runs the same on a phone, a juror's laptop and inside a zkVM."
+
+[dependencies]
+k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "sha256"] }
+tiny-keccak = { version = "2", features = ["keccak"] }
+
+[dev-dependencies]
+k256 = { version = "0.13", features = ["ecdsa"] }
+p256 = { version = "0.13", features = ["ecdsa", "sha256"] }

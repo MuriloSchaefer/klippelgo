@@ -14,8 +14,12 @@ import java.security.SecureRandom
 
 /**
  * Matches riders and drivers over gossip, as in the architecture plan: the rider gossips a request with a max
- * fare, drivers answer with signed quotes, and the rider locks the quote it picks in the escrow. Nothing here
- * touches the chain until that lock.
+ * fare and the route's distance and duration, drivers answer with signed quotes, and the rider locks the quote
+ * it picks in the escrow. Nothing here touches the chain until that lock.
+ *
+ * The request says how far and how long the trip is, rounded, and on which map pack it was computed. Where it
+ * starts and ends stays on the rider's phone: the request carries only a salted hash of the route, which every
+ * quote signs over.
  *
  * Gossip is open: anyone can join a topic, publish to it and replay what they heard. So every message is signed
  * by the account it speaks for and checked here before it is believed. Gossip also keeps no history, so the
@@ -43,6 +47,7 @@ class Matchmaker(
     private val quotes = HashMap<BigInteger, LinkedHashMap<String, Quote>>()
     private val closed = HashMap<BigInteger, ByteArray?>()
     private val riders = HashMap<String, Boolean>()
+    private val packs = HashMap<String, Boolean>()
     private var announcedAt = 0L
 
     init {
@@ -100,12 +105,12 @@ class Matchmaker(
 
     // ---------------------------------------------------------------- rider
 
-    /** Asks the drivers in the cell for quotes up to `maxFare`. */
+    /** Asks the drivers in the cell for quotes up to `maxFare` for a trip of this length. */
     @Synchronized
-    fun requestRide(coin: Coin, maxFare: BigInteger, ttlSeconds: Long = REQUEST_TTL): RideRequest {
+    fun requestRide(coin: Coin, maxFare: BigInteger, route: RouteSummary, ttlSeconds: Long = REQUEST_TTL): RideRequest {
         val expiresAt = now() + ttlSeconds
         val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        val id = requestId(client.address, coin.address, maxFare, expiresAt, nonce)
+        val id = requestId(client.address, coin.address, maxFare, expiresAt, nonce, route)
         val message = encode(
             "t" to "request",
             "rider" to client.address,
@@ -113,9 +118,13 @@ class Matchmaker(
             "maxFare" to maxFare.toString(),
             "expiresAt" to expiresAt,
             "nonce" to Numeric.toHexString(nonce),
+            "pack" to route.packId,
+            "route" to route.routeHash,
+            "distanceM" to route.distanceM,
+            "durationS" to route.durationS,
             "sig" to Numeric.toHexString(client.sign(id)),
         )
-        val request = RideRequest(BigInteger(1, id), client.address, coin.address.lowercase(), maxFare, expiresAt)
+        val request = RideRequest(BigInteger(1, id), client.address, coin.address.lowercase(), maxFare, expiresAt, route)
         requests[request.id] = Seen(request, message, System.currentTimeMillis())
         node.publish(topic, message)
         return request
@@ -184,7 +193,13 @@ class Matchmaker(
         val token = m.address("token")
         val maxFare = BigInteger(m.text("maxFare"))
         val expiresAt = m.get("expiresAt").asLong()
-        val id = requestId(rider, token, maxFare, expiresAt, m.bytes("nonce", 32))
+        val route = RouteSummary(
+            packId = Numeric.toHexString(m.bytes("pack", 32)),
+            routeHash = Numeric.toHexString(m.bytes("route", 32)),
+            distanceM = m.get("distanceM").asInt(),
+            durationS = m.get("durationS").asInt(),
+        )
+        val id = requestId(rider, token, maxFare, expiresAt, m.bytes("nonce", 32), route)
         val key = BigInteger(1, id)
         requests[key]?.let {
             it.at = System.currentTimeMillis()
@@ -193,9 +208,12 @@ class Matchmaker(
         val now = now()
         if (requests.size >= MAX_REQUESTS || expiresAt <= now || expiresAt > now + MAX_TTL) return
         if (maxFare.signum() <= 0 || client.coins.none { it.address.equals(token, ignoreCase = true) }) return
+        if (route.distanceM <= 0 || route.durationS <= 0) return
         if (KlippelGoClient.signerOf(id, m.bytes("sig", 65)) != rider) return
         if (!riders.getOrPut(rider) { client.rolesOf(rider) and KlippelGoClient.ROLE_RIDER != 0 }) return
-        requests[key] = Seen(RideRequest(key, rider, token, maxFare, expiresAt), data, System.currentTimeMillis())
+        // A route means something only on a map governance activated: anyone can check it against that pack.
+        if (!packs.getOrPut(route.packId) { client.packIsActive(Numeric.hexStringToByteArray(route.packId)) }) return
+        requests[key] = Seen(RideRequest(key, rider, token, maxFare, expiresAt, route), data, System.currentTimeMillis())
     }
 
     private fun receiveOffer(m: JsonNode, data: ByteArray) {
@@ -225,17 +243,27 @@ class Matchmaker(
 
     // ---------------------------------------------------------------- encoding
 
-    private fun requestId(rider: String, token: String, maxFare: BigInteger, expiresAt: Long, nonce: ByteArray) =
-        KlippelGoClient.abiHash(
-            Bytes32(REQUEST_DOMAIN),
-            Uint256(client.deployment.chainId),
-            Address(client.deployment.escrow),
-            Address(rider),
-            Address(token),
-            Uint256(maxFare),
-            Uint64(expiresAt),
-            Bytes32(nonce),
-        )
+    private fun requestId(
+        rider: String,
+        token: String,
+        maxFare: BigInteger,
+        expiresAt: Long,
+        nonce: ByteArray,
+        route: RouteSummary,
+    ) = KlippelGoClient.abiHash(
+        Bytes32(REQUEST_DOMAIN),
+        Uint256(client.deployment.chainId),
+        Address(client.deployment.escrow),
+        Address(rider),
+        Address(token),
+        Uint256(maxFare),
+        Uint64(expiresAt),
+        Bytes32(nonce),
+        Bytes32(Numeric.hexStringToByteArray(route.packId)),
+        Bytes32(Numeric.hexStringToByteArray(route.routeHash)),
+        Uint256(route.distanceM.toLong()),
+        Uint256(route.durationS.toLong()),
+    )
 
     private fun offerHash(quoteHash: ByteArray, seq: Long) =
         KlippelGoClient.abiHash(Bytes32(OFFER_DOMAIN), Bytes32(quoteHash), Uint64(seq))
@@ -252,8 +280,8 @@ class Matchmaker(
     private fun JsonNode.address(key: String): String = Numeric.toHexString(bytes(key, 20))
 
     companion object {
-        /** Praça da Sé, São Paulo. Every phone uses this cell until the app reads its location. */
-        const val DEV_CELL = "6gyf4"
+        /** The centre of Cascavel, Paraná, the pilot city. Every phone uses this cell until the app reads its location. */
+        const val DEV_CELL = "6g9fp"
 
         /** Port the bootstrap node listens on (`make gossip-node`). */
         const val DEFAULT_PORT = 4001
@@ -268,7 +296,7 @@ class Matchmaker(
         private const val MAX_REQUESTS = 200
         private const val MAX_OFFERS_PER_REQUEST = 50
 
-        private val REQUEST_DOMAIN: ByteArray = Hash.sha3("KlippelGo request v1".toByteArray())
+        private val REQUEST_DOMAIN: ByteArray = Hash.sha3("KlippelGo request v2".toByteArray())
         private val OFFER_DOMAIN: ByteArray = Hash.sha3("KlippelGo offer v1".toByteArray())
         private val CLOSE_DOMAIN: ByteArray = Hash.sha3("KlippelGo close v1".toByteArray())
 

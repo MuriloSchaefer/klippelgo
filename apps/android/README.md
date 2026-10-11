@@ -1,9 +1,14 @@
 # KlippelGo Android
 
 Kotlin and Jetpack Compose app. The same app plays rider or driver, so two emulators side by side can run a
-whole ride against the local testnet: the rider asks for a ride with a max fare, the driver answers with a
-price, the rider takes the offer, the driver accepts and starts the ride, the rider confirms arrival, and both
-rate each other.
+whole ride against the local testnet: the rider picks where to go on the map and asks for a ride with a max
+fare, the driver sees how far the trip is and answers with a price, the rider takes the offer, the driver
+accepts and starts the ride, the rider confirms arrival, and both rate each other.
+
+The map, the address search and the route all run on the phone, from a map pack it downloads once: MapLibre
+draws it, a SQLite index searches it, Valhalla routes on it, and the Rust core's verifier measures the route
+against the pack's proof index (see [docs/maps-and-routing.md](../../docs/maps-and-routing.md)). No map, search
+or routing service is asked anything.
 
 Request and offers travel over the gossip network (libp2p GossipSub, in the Rust core), through a bootstrap
 node on your computer. Nothing reaches the chain until the rider takes an offer. From then on each step is a
@@ -14,9 +19,10 @@ Portuguese is the default language. English and Spanish can be picked on the fir
 
 | Path | What it is |
 | --- | --- |
-| `app/` | Compose UI and a view model that polls the chain and the gossip network |
+| `app/` | Compose UI, a view model that polls the chain and the gossip network, and the map pack store |
+| `app/src/main/assets/map` | The map's style, fonts and icons, bundled so no server is needed. `scripts/map-style.sh` regenerates them |
 | `chain/` | Plain Kotlin client for the contracts (web3j) and the matchmaker that signs and checks gossip messages. Builds and tests without the Android SDK |
-| `../../core` | Rust core with the gossip node, bound to Kotlin with UniFFI. Gradle builds it with cargo |
+| `../../core` | Rust core with the gossip node, map packs and trip proofs, bound to Kotlin with UniFFI. Gradle builds it with cargo |
 | `scripts/two-phones.sh` | Starts the gossip bootstrap node and both emulators, installs the app and opens each in its role |
 
 ## What you need
@@ -28,7 +34,8 @@ Portuguese is the default language. English and Spanish can be picked on the fir
   fetches them on the first build.
 - Docker with Compose, which runs the gossip bootstrap node.
 - Foundry for the local chain (see the root README).
-- About 8 GB of free RAM for two emulators, and about 6 GB of disk for the SDK and system image.
+- About 8 GB of free RAM for two emulators, and about 6 GB of disk for the SDK and system image. Building the
+  map pack takes about 5 GB more, mostly shared sources downloaded once.
 - On Linux, access to `/dev/kvm` (without it the emulator is unusably slow).
 
 Android Studio is optional. `make android-two-phones` downloads Google's command-line tools into
@@ -45,8 +52,14 @@ From the repo root, in three terminals:
 ```sh
 make testnet                  # 1. local chain on http://127.0.0.1:8545 (leave it running)
 make deploy                   # 2. contracts, mock BRLA/BRZ, seeded rider and driver
-make android-two-phones       # 3. gossip node, two emulators, app installed, rider on one and driver on the other
+make mappack                  #    the pilot city's map pack (Cascavel, Paraná), built with Docker; once
+make publish-pack             #    activate it on the chain: validators attest it, governance votes
+make serve-packs              # 3. serve the pack to the phones on port 4002 (leave it running)
+make android-two-phones       # 4. gossip node, two emulators, app installed, rider on one and driver on the other
 ```
+
+`make publish-pack` is needed again after every `make testnet-reset`. It moves the chain's clock three minutes
+ahead to get through the vote and the timelock.
 
 The first run downloads an Android 35 system image and the NDK, compiles the Rust core, and creates two
 emulators, `KlippelGo_Rider` and `KlippelGo_Driver`. Later runs reuse them. The script starts the gossip
@@ -55,14 +68,18 @@ shows its log); run `make gossip-node` yourself to keep it in a terminal instead
 
 Then play a ride:
 
-1. **Rider** (emulator-5554): tap **Para onde?**, leave R$ 30,00 in BRZ as the most you will pay and tap
-   **Pedir ofertas**. The request goes out over gossip. Nothing is locked yet.
+1. **Rider** (emulator-5554): tap **Baixar mapa** the first time. The app fetches the pack and checks it
+   against `MapRegistry`. Move the map so the pin sits where the car should come, then tap **Para onde?**, type
+   an address or a place, and pick a result. The route is worked out on the phone and shown as distance and
+   time. Leave R$ 30,00 in BRZ as the most you will pay and tap **Pedir ofertas**. The request goes out over
+   gossip with the trip's distance and duration, rounded, and a salted hash of the route. Nothing is locked yet.
 2. **Driver** (emulator-5556): tap **Ficar online**. The request appears as **Nova solicitação** within a few
-   seconds. Set your price with − and +, at or below the rider's max, and tap **Enviar oferta**. You can change
-   it and send again.
-3. **Rider**: the offer appears under **Escolha um motorista**, cheapest first. Tap it, check the breakdown and
-   tap **Bloquear**. The offered fare and a R$ 2,00 bond are locked in the escrow, with the hash of the quote
-   the driver signed.
+   seconds, with the trip's length. Set your price with − and +, at or below the rider's max, and tap **Enviar
+   oferta**. You can change it and send again.
+3. **Rider**: the offer appears under **Escolha um motorista**, cheapest first. Tap it, check the route, the
+   price per km and the breakdown, and tap **Bloquear**. The offered fare and a R$ 2,00 bond are locked in the
+   escrow, with the hash of the quote the driver signed. The quote itself, with the exact route, is saved on
+   the rider's phone under `files/rides/`.
 4. **Driver**: the screen changes to **O passageiro escolheu você**. Tap **Aceitar corrida** (posts a R$ 5,00
    bond), then **Passageiro embarcou: iniciar**.
 5. **Rider**: the status changes to **Em viagem**. Tap **Cheguei ao destino**, pick the stars and tap
@@ -77,15 +94,31 @@ rides; **Perfil** switches to driver mode.
 ### What the screens leave out
 
 The screens follow the [KlippelGo Wireframes](https://claude.ai/artifact/1W2kMTkP6EYG93XmUXHQ93). Parts the
-protocol cannot back yet are left out instead of faked: the map (a grey grid stands in), destination and saved
-places, names, car and plate, arrival times, chat, call, share and SOS, the pickup QR code and Bluetooth check,
-PIX, and Face ID.
+protocol cannot back yet are left out instead of faked: saved places, names, car and plate, the driver's
+position and arrival time, turn-by-turn directions, chat, call, share and SOS, the pickup QR code and Bluetooth
+check, PIX, and Face ID. A phone without the map pack shows a grey grid where the map goes.
+
+The pickup point is the pin the rider places; the app does not read the phone's location yet. The route is for
+a car: the core also routes and verifies for motorcycles, and the app has no way to pick one yet.
+
+### What the trip proofs do and do not do yet
+
+The rider's phone computes the route with Valhalla, turns it into a path on the pack's proof index, has the
+verifier measure it, and locks the hash of the resulting quote. `klippelgo-juror` confirms a saved quote against
+the pack and the hash on chain.
+
+Not wired into the app, though built and tested in the core: the driver checking the rider's route before
+accepting, both phones logging GPS and countersigning each other's log, and the trip receipt at arrival. All
+three travel over the encrypted ride channel, which does not exist yet. Until it does, the driver prices the
+distance the rider's phone reports without being able to check it, and the app sends a stand-in hash where the
+trip receipt's hash belongs, as it already does for the pickup proof.
 
 ### What the gossip layer does and does not do yet
 
 Every request, offer and withdrawal is signed by the account it speaks for, and each phone checks the signature,
-the expiry, the max fare and the rider's registration before showing anything. A quote names its request, rider,
-driver, token, fare, chain, escrow and expiry, so it cannot be replayed elsewhere. Gossip keeps no history, so a
+the expiry, the max fare, the rider's registration and that the request's map pack is one governance activated
+before showing anything. A quote names the route's hash, rider, driver, token, fare, chain, escrow and expiry,
+so it cannot be replayed elsewhere or moved to another route. Gossip keeps no history, so a
 rider's app announces its request every few seconds, and a request nobody announces for 10 seconds disappears.
 
 Still missing from the architecture plan and its security review: session certificates (the wallet key signs
@@ -118,7 +151,12 @@ not built yet.
 - **Sem pares na rede P2P / No peers on the P2P network.** The gossip bootstrap node is not running. Start it
   with `make gossip-node`. The app looks for it on port 4001 of the same host as the node address.
 - **The driver never sees the request.** Both phones must show **Conectado à rede P2P**. A request takes up to
-  five seconds to appear.
+  five seconds to appear. Drivers also ignore requests whose map pack is not active on the chain: run
+  `make publish-pack` after a `make testnet-reset`.
+- **Nenhum mapa foi publicado nesta rede ainda / No map has been published.** Run `make mappack` once and
+  `make publish-pack`.
+- **O mapa não pôde ser usado / The map could not be used.** `make serve-packs` must be running. The app looks
+  for the mirror on port 4002 of the same host as the node address.
 - **A real phone on Wi-Fi.** Start the chain with `ANVIL_HOST=0.0.0.0 make testnet` and enter
   `http://<your computer's LAN IP>:8545` as the node address. Debug builds allow plain HTTP to any host. The
   gossip node's port 4001 is already published on every interface.
@@ -134,7 +172,7 @@ not built yet.
 
 `chain/` has a test that plays rider and driver on two threads against a running testnet, the same way the two
 emulators do. Each side gets its own gossip node, and they agree the fare through a bootstrap node the test
-starts:
+starts. It activates a stand-in map pack on the chain first, since drivers ignore requests on unknown packs:
 
 ```sh
 make android-test-chain       # needs make testnet and make deploy first

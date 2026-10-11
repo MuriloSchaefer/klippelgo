@@ -47,7 +47,9 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
                 driverMinStakeBrl: 100,
                 validatorMinStakeBrl: 500,
                 driverMinScore: 450,
-                proposerMinAccountAge: 0
+                proposerMinAccountAge: 0,
+                mapRebuildQuorum: 3,
+                mapGracePeriod: 30 days
             })
         );
 
@@ -94,6 +96,7 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
         vm.serializeAddress(k, "FeeVault", address(p.feeVault));
         vm.serializeAddress(k, "RideEscrow", address(p.escrow));
         vm.serializeAddress(k, "DisputeCourt", address(p.court));
+        vm.serializeAddress(k, "MapRegistry", address(p.maps));
         vm.serializeAddress(k, "institutoKlippel", institutoKlippel);
         vm.serializeAddress(k, "attester", attester);
         vm.serializeAddress(k, "rider", rider);
@@ -106,6 +109,7 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
         console2.log("FeeVault         ", address(p.feeVault));
         console2.log("RideEscrow       ", address(p.escrow));
         console2.log("DisputeCourt     ", address(p.court));
+        console2.log("MapRegistry      ", address(p.maps));
         console2.log("BRLA (mock)      ", address(brla));
         console2.log("BRZ (mock)       ", address(brz));
         console2.log("Written to deployments/local.json");

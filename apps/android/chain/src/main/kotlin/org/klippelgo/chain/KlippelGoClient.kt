@@ -1,5 +1,7 @@
 package org.klippelgo.chain
 
+import org.klippelgo.core.EscrowRef
+import org.klippelgo.core.OfferTerms
 import org.web3j.abi.FunctionEncoder
 import org.web3j.abi.FunctionReturnDecoder
 import org.web3j.abi.TypeReference
@@ -77,7 +79,7 @@ class KlippelGoClient(
                 "ride",
                 listOf(Uint256(id)),
                 listOf(addressRef, addressRef, addressRef, uint8Ref, uint64Ref, uint64Ref) +
-                    List(4) { uint256Ref } + listOf(bytes32Ref, bytes32Ref),
+                    List(4) { uint256Ref } + listOf(bytes32Ref, bytes32Ref, bytes32Ref, uint64Ref),
             ),
         )
         return Ride(
@@ -93,6 +95,8 @@ class KlippelGoClient(
             riderBond = uint(out[8]),
             driverBond = uint(out[9]),
             quoteHash = Numeric.toHexString((out[10] as Bytes32).value),
+            receiptHash = Numeric.toHexString((out[12] as Bytes32).value),
+            receiptAt = uint(out[13]).toLong(),
         )
     }
 
@@ -203,20 +207,38 @@ class KlippelGoClient(
     // ---------------------------------------------------------------- quotes
 
     /**
-     * The hash a driver signs when quoting and the rider locks in the escrow. It names the request, both parties,
-     * the token, the fare, the chain, the escrow and an expiry, so a quote cannot be replayed anywhere else.
+     * The hash a driver signs when quoting and the rider locks in the escrow. It names the escrow and chain, the
+     * rider's commitment to the route, both parties, the token, the fare and an expiry, so a quote cannot be
+     * replayed anywhere else or moved to another route. The Rust core computes it, the same way the verifier
+     * does when a juror checks the quote (docs/maps-and-routing.md).
      */
-    fun quoteHash(request: RideRequest, driver: String, fare: BigInteger, expiresAt: Long): ByteArray = abiHash(
-        Bytes32(QUOTE_DOMAIN),
-        Uint256(deployment.chainId),
-        Address(deployment.escrow),
-        Uint256(request.id),
-        Address(request.rider),
-        Address(driver),
-        Address(request.token),
-        Uint256(fare),
-        Uint64(expiresAt),
-    )
+    fun quoteHash(request: RideRequest, driver: String, fare: BigInteger, expiresAt: Long): ByteArray =
+        org.klippelgo.core.quoteHash(
+            EscrowRef(deployment.chainId.toULong(), deployment.escrow),
+            Numeric.hexStringToByteArray(request.route.routeHash),
+            OfferTerms(fare.toString(), request.token, request.rider, driver, expiresAt.toULong()),
+        )
+
+    // ---------------------------------------------------------------- map packs
+
+    /**
+     * The proof root governance activated for a map pack, or null for a pack MapRegistry does not know. A phone
+     * compares it with the root in the pack it downloaded before trusting the pack.
+     */
+    fun packProofRoot(packId: ByteArray): ByteArray? =
+        (call(deployment.maps, fn("proofRootOf", listOf(Bytes32(packId)), listOf(bytes32Ref)))[0] as Bytes32).value
+            .takeIf { root -> root.any { it != 0.toByte() } }
+
+    /** Whether quotes may be made on the pack now, by the chain's clock: activated, and not retired by a newer one. */
+    fun packIsActive(packId: ByteArray): Boolean {
+        val now = web3.ethGetBlockByNumber(DefaultBlockParameterName.LATEST, false).send().block.timestamp
+        return (call(deployment.maps, fn("isActive", listOf(Bytes32(packId), Uint64(now)), listOf(boolRef)))[0] as Bool).value
+    }
+
+    /** Id of the newest pack governance activated for a region such as `br-pr-cascavel`, or null. */
+    fun latestPack(region: String): ByteArray? =
+        (call(deployment.maps, fn("latest", listOf(Bytes32(Hash.sha3(region.toByteArray()))), listOf(bytes32Ref)))[0] as Bytes32)
+            .value.takeIf { id -> id.any { it != 0.toByte() } }
 
     /** Signs a 32-byte hash with this account's key, as an Ethereum signed message. Returns r, s, v (65 bytes). */
     fun sign(hash: ByteArray): ByteArray {
@@ -255,8 +277,19 @@ class KlippelGoClient(
     fun start(rideId: BigInteger, pickupProofHash: ByteArray) =
         send(deployment.escrow, fn("start", listOf(Uint256(rideId), Bytes32(pickupProofHash)), emptyList()))
 
-    /** Rider confirms arrival; the driver is paid and R$ 1,00 goes to Instituto Klippel. */
-    fun complete(rideId: BigInteger) = send(deployment.escrow, fn("complete", listOf(Uint256(rideId)), emptyList()))
+    /**
+     * Rider confirms arrival with the hash of the trip receipt; the driver is paid and R$ 1,00 goes to Instituto
+     * Klippel. If the driver already put a receipt on record, it must be the same one.
+     */
+    fun complete(rideId: BigInteger, receiptHash: ByteArray) =
+        send(deployment.escrow, fn("complete", listOf(Uint256(rideId), Bytes32(receiptHash)), emptyList()))
+
+    /** Driver puts their trip receipt on record when the rider does not confirm. Starts the clock for [timeout]. */
+    fun submitReceipt(rideId: BigInteger, receiptHash: ByteArray) =
+        send(deployment.escrow, fn("submitReceipt", listOf(Uint256(rideId), Bytes32(receiptHash)), emptyList()))
+
+    /** Settles a ride whose driver's receipt has stood for the completion timeout with no dispute. */
+    fun timeout(rideId: BigInteger) = send(deployment.escrow, fn("timeout", listOf(Uint256(rideId)), emptyList()))
 
     fun cancel(rideId: BigInteger) = send(deployment.escrow, fn("cancel", listOf(Uint256(rideId)), emptyList()))
 
@@ -331,9 +364,6 @@ class KlippelGoClient(
         val RIDE_OPENED_TOPIC: String = Hash.sha3String("RideOpened(uint256,address,address,address,uint256,bytes32)")
         val REGISTERED_TOPIC: String = Hash.sha3String("Registered(address,uint8)")
 
-
-        private val QUOTE_DOMAIN: ByteArray = Hash.sha3("KlippelGo quote v1".toByteArray())
-
         private val CREDENTIAL_CNH = Numeric.hexStringToByteArray(Hash.sha3String("klippelgo.credential.CNH"))
         private val uint256Ref = object : TypeReference<Uint256>() {}
         private val uint64Ref = object : TypeReference<Uint64>() {}
@@ -347,7 +377,7 @@ class KlippelGoClient(
         /** Contract errors, so a revert reads as `NotPermitted` rather than raw bytes. */
         private val ERRORS: Map<String, String> = listOf(
             "TokenNotAllowed()", "FareTooLow()", "WrongStatus(uint8)", "NotRider()", "NotDriver()", "NotParty()",
-            "TooEarly()", "NotPermitted(address,bytes4)", "NotRegistered()", "InvalidRoles()", "AlreadyRated()",
+            "TooEarly()", "NoReceipt()", "ReceiptMismatch()", "NotPermitted(address,bytes4)", "NotRegistered()", "InvalidRoles()", "AlreadyRated()",
             "InvalidStars()", "ERC20InsufficientBalance(address,uint256,uint256)",
             "ERC20InsufficientAllowance(address,uint256,uint256)",
         ).associate { selectorHex(it) to it.substringBefore('(') }

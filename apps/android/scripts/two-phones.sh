@@ -11,6 +11,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 CORE="$HERE/../../core"
 API="${API:-35}"
+# The app compiles against a newer platform than the emulators run (see app/build.gradle.kts).
+COMPILE_API="${COMPILE_API:-36}"
 NDK="${NDK:-27.3.13750724}"
 GOSSIP_PORT=4001
 RPC_HOST_URL="${RPC_HOST_URL:-http://127.0.0.1:8545}"
@@ -63,8 +65,8 @@ curl -sf -X POST -H 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' "$RPC_HOST_URL" >/dev/null \
   || { echo "No testnet at $RPC_HOST_URL. Run 'make testnet' and 'make deploy' first." >&2; exit 1; }
 
-echo "Installing emulator, platform tools, Android $API, NDK $NDK and $IMAGE if needed"
-yes | "$SDKMANAGER" --install "platform-tools" "emulator" "platforms;android-$API" "ndk;$NDK" "$IMAGE" >/dev/null || true
+echo "Installing emulator, platform tools, Android $API and $COMPILE_API, NDK $NDK and $IMAGE if needed"
+yes | "$SDKMANAGER" --install "platform-tools" "emulator" "platforms;android-$API" "platforms;android-$COMPILE_API" "ndk;$NDK" "$IMAGE" >/dev/null || true
 [ -x "$EMULATOR" ] && [ -x "$ADB" ] || { echo "sdkmanager could not install the emulator. Run it by hand: $SDKMANAGER --install emulator" >&2; exit 1; }
 
 # The app's gossip network is Rust (core/), built for Android with cargo-ndk.

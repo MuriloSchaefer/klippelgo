@@ -11,6 +11,7 @@ data class Deployment(
     val feeVault: String,
     val escrow: String,
     val court: String,
+    val maps: String,
     val brla: String,
     val brz: String,
 ) {
@@ -26,6 +27,7 @@ data class Deployment(
                 feeVault = a("FeeVault"),
                 escrow = a("RideEscrow"),
                 court = a("DisputeCourt"),
+                maps = a("MapRegistry"),
                 brla = a("BRLA"),
                 brz = a("BRZ"),
             )
@@ -43,6 +45,7 @@ data class Deployment(
             feeVault = "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
             escrow = "0x0165878A594ca255338adfa4d48449f69242Eb8F",
             court = "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+            maps = "0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6",
             brla = "0x5FbDB2315678afecb367f032d93F642f64180aa3",
             brz = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
         )
