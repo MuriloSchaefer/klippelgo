@@ -1,7 +1,9 @@
 package org.klippelgo.chain
 
+import org.klippelgo.core.Coordinate
 import org.klippelgo.core.GossipConfig
 import org.klippelgo.core.GossipNode
+import org.klippelgo.core.regionCell
 import org.web3j.crypto.Hash
 import org.web3j.utils.Numeric
 import java.io.File
@@ -44,6 +46,9 @@ class TwoPhonesRideTest {
             routeHash = Numeric.toHexString(ByteArray(32).also { SecureRandom().nextBytes(it) }),
             distanceM = 8_500,
             durationS = 1_320,
+            // The regions the trip starts and ends in: drivers see these, never the points themselves.
+            pickupCell = regionCell(PICKUP),
+            dropoffCell = regionCell(DROPOFF),
         )
         val driverPhone = KlippelGoClient(rpc, DevAccount.DRIVER.privateKey, deployment)
         val coin = riderPhone.brz
@@ -51,6 +56,9 @@ class TwoPhonesRideTest {
         val fare = coin.toBaseUnits(BigDecimal("23.40"))
 
         assertTrue(riderPhone.drivers().any { it.address == driverPhone.address && it.canAccept })
+        // 8,5 km and 22 min are recommended at R$ 25,50; the rider may ask 10% either side, so R$ 25,00 is fine.
+        assertEquals(2550L, riderPhone.tariff.recommended(8_500, 1_320))
+        assertEquals(2295L..2805L, riderPhone.tariff.riderRange(8_500, 1_320))
         val driverBefore = driverPhone.balanceOf(coin)
         val seenBefore = driverPhone.ridesAsDriver().toSet()
 
@@ -62,9 +70,12 @@ class TwoPhonesRideTest {
 
         val pool = Executors.newFixedThreadPool(2)
         // Stands in for the quote with the exact route, which only the chosen driver may read.
-        val routeForDriver = "{\"pickup\":[-249555000,-534552000]}"
+        val routeForDriver = "{\"pickup\":[${PICKUP.latE7},${PICKUP.lonE7}],\"dropoff\":[${DROPOFF.latE7},${DROPOFF.lonE7}]}"
         // Stands in for the hash of the trip receipt both phones sign at arrival.
         val receipt = Hash.sha3("trip receipt".toByteArray())
+
+        // Nor may a rider ask a price far from the recommended one.
+        assertTrue(runCatching { riderMatch.requestRide(coin, coin.toBaseUnits(BigDecimal("15.00")), route) }.isFailure)
 
         // A request for a route on a map nobody activated reaches no driver.
         val unknownPack = route.copy(packId = Numeric.toHexString(Hash.sha3("no such pack".toByteArray())))
@@ -84,6 +95,11 @@ class TwoPhonesRideTest {
             }
             assertEquals(maxFare, request.maxFare)
             assertEquals(route, request.route) // 8,5 km and 22 min, and nothing about where
+            // A driver may go 20% under the rider's price and no further, or above it up to 10% over the
+            // recommended R$ 25,50, which is R$ 28,05.
+            assertTrue(runCatching { driverMatch.sendOffer(request, coin.toBaseUnits(BigDecimal("19.50"))) }.isFailure)
+            assertTrue(runCatching { driverMatch.sendOffer(request, coin.toBaseUnits(BigDecimal("28.50"))) }.isFailure)
+            driverMatch.sendOffer(request, coin.toBaseUnits(BigDecimal("28.00")))
             driverMatch.sendOffer(request, coin.toBaseUnits(BigDecimal("24.00")))
             val quote = driverMatch.sendOffer(request, fare) // a newer quote replaces the earlier one
             val id = poll("a new ride for the driver", driverMatch) {
@@ -136,6 +152,10 @@ class TwoPhonesRideTest {
     private companion object {
         /** Region of `testnet/fixtures/test-pack`, a manifest that stands in for a map pack. */
         const val TEST_REGION = "test-no-map"
+
+        /** Two points in Cascavel, about 8 km apart. */
+        val PICKUP = Coordinate(-249_555_000, -534_552_000)
+        val DROPOFF = Coordinate(-249_900_000, -534_000_000)
     }
 
     /** Waits for `check`, running the phone's gossip the way the app's two-second loop does. */

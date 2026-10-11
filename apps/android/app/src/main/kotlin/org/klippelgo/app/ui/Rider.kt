@@ -56,6 +56,8 @@ import org.klippelgo.chain.Offer
 import org.klippelgo.chain.Ride
 import org.klippelgo.chain.RideRequest
 import org.klippelgo.chain.RideStatus
+import org.klippelgo.chain.Tariff
+import org.klippelgo.core.coarseRoute
 import org.klippelgo.core.Coordinate
 import java.math.BigDecimal
 import java.math.BigInteger
@@ -223,7 +225,9 @@ private fun WhereTo(state: UiState, vm: AppViewModel, onAsk: () -> Unit, onProfi
 @Composable
 fun sceneOf(state: UiState, underWay: Boolean = false, onCentre: ((Coordinate) -> Unit)? = null): MapScene? {
     val map = state.map as? MapState.Ready ?: return null
-    val route = state.route?.line.orEmpty()
+    // The route just measured, or after a restart the one saved with the ride under way.
+    val active = state.rides.firstOrNull { it.status.isActive }
+    val route = state.route?.line ?: active?.let { state.rideRoutes[it.id]?.line }.orEmpty()
     return MapScene(
         basemap = map.basemap,
         centre = state.pickup ?: map.centre,
@@ -486,6 +490,40 @@ private fun Rules(state: UiState) {
             Muted(stringResource(R.string.rules_body))
         }
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // How the recommended price is worked out, read from the fare guide on chain.
+            state.tariff?.let { tariff ->
+                val reais = { centavos: Long -> brl(BigDecimal(centavos).movePointLeft(2)) }
+                KCard {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(stringResource(R.string.tariff_title), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Muted(stringResource(R.string.tariff_body), size = 13.sp)
+                        Column {
+                            KeyValue(stringResource(R.string.tariff_base), reais(tariff.baseCentavos))
+                            KeyValue(stringResource(R.string.tariff_per_km), reais(tariff.perKmCentavos))
+                            KeyValue(stringResource(R.string.tariff_per_minute), reais(tariff.perMinuteCentavos))
+                            KeyValue(stringResource(R.string.tariff_minimum), reais(tariff.minimumCentavos))
+                            KeyValue(stringResource(R.string.tariff_rider_range), stringResource(R.string.tariff_percent_either_way, tariff.riderRangeBps / 100))
+                            KeyValue(
+                                stringResource(R.string.tariff_driver_discount),
+                                stringResource(R.string.tariff_percent_under, tariff.driverDiscountBps / 100, tariff.riderRangeBps / 100),
+                                divider = false,
+                            )
+                        }
+                        // A worked example with today's numbers: 5 km in 12 minutes.
+                        Muted(
+                            stringResource(
+                                R.string.tariff_example,
+                                reais(tariff.baseCentavos),
+                                reais(tariff.perKmCentavos * 5),
+                                reais(tariff.perMinuteCentavos * 12),
+                                reais(tariff.recommended(5_000, 720)),
+                            ),
+                            size = 13.sp,
+                        )
+                        Muted(stringResource(R.string.tariff_notes), size = 12.sp)
+                    }
+                }
+            }
             state.fees.forEach { (coin, fee) ->
                 val (riderBond, driverBond) = state.bonds[coin] ?: return@forEach
                 KCard {
@@ -559,7 +597,8 @@ private fun Profile(state: UiState, vm: AppViewModel) {
 @Composable
 private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick: (Offer) -> Unit) {
     val request = state.request
-    var maxFare by rememberSaveable { mutableFloatStateOf(30f) }
+    // The rider's price as steps of R$ 0,50 away from the recommended one.
+    var steps by rememberSaveable(state.route?.distanceM, state.route?.durationS) { mutableIntStateOf(0) }
     var coinSymbol by rememberSaveable { mutableStateOf("BRZ") }
     val coins = state.balances.keys.toList()
     val coin = request?.let { coinOf(state, it.token) } ?: coins.firstOrNull { it.symbol == coinSymbol } ?: coins.firstOrNull()
@@ -575,7 +614,14 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
             )
         }
         if (request == null) {
-            val fare = BigDecimal(maxFare.roundToInt())
+            // Recommended from the distance and duration the request will state, so drivers work out the same.
+            val tariff = state.tariff
+            val trip = state.route?.let { coarseRoute(it.distanceM, it.durationS) }
+            val recommended = if (tariff != null && trip != null) tariff.recommended(trip.distanceM.toInt(), trip.durationS.toInt()) else null
+            val range = if (tariff != null && trip != null) tariff.riderRange(trip.distanceM.toInt(), trip.durationS.toInt()) else null
+            val step = Tariff.STEP_CENTAVOS
+            val centavos = recommended?.let { it + steps * step }
+            val fare = BigDecimal(centavos ?: 0).movePointLeft(2)
             val needed = coin?.let { it.toBaseUnits(fare) + (state.bonds[it]?.first ?: BigInteger.ZERO) }
             val enough = coin != null && needed != null && (state.balances[coin] ?: BigInteger.ZERO) >= needed
             if (state.map is MapState.Ready) {
@@ -584,11 +630,27 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                 MapNotice(state, vm::downloadMap, Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp))
             }
             Column(Modifier.padding(start = 20.dp, top = 20.dp, end = 20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.pay_at_most), Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Text(brl(fare), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.pay_at_most), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                if (centavos == null || recommended == null || range == null || tariff == null) {
+                    Muted(stringResource(R.string.price_needs_route), size = 13.sp)
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        StepButton("−", stringResource(R.string.lower_price), enabled = centavos - step >= range.first) { steps -= 1 }
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(brl(fare), fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                            Muted(
+                                stringResource(R.string.price_recommended, brl(BigDecimal(recommended).movePointLeft(2))),
+                                size = 12.sp,
+                                align = TextAlign.Center,
+                            )
+                        }
+                        StepButton("+", stringResource(R.string.raise_price), enabled = centavos + step <= range.last) { steps += 1 }
+                    }
+                    Muted(
+                        stringResource(R.string.price_range_hint, tariff.riderRangeBps / 100, tariff.driverDiscountBps / 100, tariff.riderRangeBps / 100),
+                        size = 13.sp,
+                    )
                 }
-                Slider(value = maxFare, onValueChange = { maxFare = it.roundToInt().toFloat() }, valueRange = 5f..100f)
                 Muted(stringResource(R.string.max_fare_hint), size = 13.sp)
             }
             CoinChoice(coins, coin, onPick = { coinSymbol = it.symbol }, Modifier.padding(start = 20.dp, top = 20.dp, end = 20.dp))
@@ -605,7 +667,7 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                 PrimaryButton(
                     stringResource(R.string.ask_for_offers),
                     onClick = { coin?.let { vm.requestRide(it, fare) } },
-                    enabled = enough && state.route != null,
+                    enabled = enough && state.route != null && centavos != null,
                     busy = state.busy,
                 )
                 Muted(stringResource(R.string.no_surge), size = 12.sp, align = TextAlign.Center)
@@ -638,6 +700,42 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                 Muted(stringResource(if (offers.isEmpty()) R.string.waiting_offers else R.string.offers_arriving))
             }
             NetworkNotice(state, Modifier.padding(start = 20.dp, end = 20.dp, bottom = 8.dp))
+            // Nobody quoting: the rider can ask again at another price, inside the fare guide's range.
+            val tariff = state.tariff
+            if (offers.isEmpty() && tariff != null) {
+                val range = tariff.riderRange(request.route.distanceM, request.route.durationS)
+                val (lowest, highest) = asked.fromCentavos(range.first) to asked.fromCentavos(range.last)
+                val step = asked.fromCentavos(Tariff.STEP_CENTAVOS)
+                var price by remember(request.id) { mutableStateOf(request.maxFare) }
+                KCard(Modifier.padding(horizontal = 20.dp), padding = 14.dp) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(stringResource(R.string.reprice_title), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            StepButton("−", stringResource(R.string.lower_price), enabled = price - step >= lowest) { price -= step }
+                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(brl(asked, price), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                                Muted(
+                                    stringResource(
+                                        R.string.price_recommended,
+                                        brl(asked, asked.fromCentavos(tariff.recommended(request.route.distanceM, request.route.durationS))),
+                                    ),
+                                    size = 12.sp,
+                                    align = TextAlign.Center,
+                                )
+                            }
+                            StepButton("+", stringResource(R.string.raise_price), enabled = price + step <= highest) { price += step }
+                        }
+                        val needed = price + (state.bonds[asked]?.first ?: BigInteger.ZERO)
+                        PrimaryButton(
+                            stringResource(R.string.reprice_action),
+                            onClick = { vm.changePrice(request, price) },
+                            enabled = price != request.maxFare && (state.balances[asked] ?: BigInteger.ZERO) >= needed,
+                            busy = state.busy,
+                        )
+                        Muted(stringResource(R.string.reprice_hint), size = 12.sp)
+                    }
+                }
+            }
             Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 offers.forEachIndexed { i, offer ->
                     val d = drivers.getValue(offer.driver)

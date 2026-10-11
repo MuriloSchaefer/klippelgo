@@ -37,7 +37,8 @@ data class Ride(
 
 /**
  * What a request tells drivers about the trip, computed on the rider's phone from its map pack: enough to price
- * it, and nothing that places it. The exact route stays on the rider's phone behind `routeHash`.
+ * it, and nothing that points at a door. It says how far and how long, and in which region of about a square
+ * kilometre the trip starts and ends. The exact route stays on the rider's phone behind `routeHash`.
  */
 data class RouteSummary(
     /** Id of the map pack the route was computed on (`manifestHash` in MapRegistry), as 0x hex. */
@@ -48,7 +49,53 @@ data class RouteSummary(
     val distanceM: Int,
     /** Seconds, rounded to a minute. No traffic is known. */
     val durationS: Int,
+    /** The region the pickup is in: a geohash cell of about 1.2 km by 0.6 km (`regionCell` in the core). */
+    val pickupCell: String,
+    /** The region the drop-off is in. */
+    val dropoffCell: String,
 )
+
+/**
+ * The price guide governance set in `FareGuide`: what a trip is recommended to cost and how far riders and
+ * drivers may move from it. The escrow never learns a trip's length, so the phones keep these limits: a driver's
+ * phone ignores a request priced outside the rider's range, and a rider's phone ignores a quote under the
+ * driver's floor. Amounts are in centavos.
+ */
+data class Tariff(
+    val baseCentavos: Long,
+    val perKmCentavos: Long,
+    val perMinuteCentavos: Long,
+    val minimumCentavos: Long,
+    /** How far above or below the recommendation a rider may ask, and a driver quote above it, in basis points. */
+    val riderRangeBps: Int,
+    /** How far below the rider's price a driver may quote, in basis points. */
+    val driverDiscountBps: Int,
+) {
+    /** The recommended price for a trip, from the distance and duration its request states. Mirrors `FareGuide.recommended`. */
+    fun recommended(distanceM: Int, durationS: Int): Long {
+        val price = maxOf(minimumCentavos, baseCentavos + perKmCentavos * distanceM / 1000 + perMinuteCentavos * durationS / 60)
+        return (price + STEP_CENTAVOS / 2) / STEP_CENTAVOS * STEP_CENTAVOS
+    }
+
+    /** The lowest and highest price a rider may ask for the trip. */
+    fun riderRange(distanceM: Int, durationS: Int): LongRange {
+        val price = recommended(distanceM, durationS)
+        val range = price * riderRangeBps / 10_000
+        return (price - range)..(price + range)
+    }
+
+    /** The highest quote a driver may make for the trip, whatever the rider asked: the top of the rider's range. */
+    fun driverCeiling(distanceM: Int, durationS: Int): Long = riderRange(distanceM, durationS).last
+
+    /** The lowest quote a driver may make against a rider's price, in the same units as the price. */
+    fun driverFloor(riderPrice: BigInteger): BigInteger =
+        riderPrice - riderPrice * BigInteger.valueOf(driverDiscountBps.toLong()) / BigInteger.valueOf(10_000)
+
+    companion object {
+        /** Recommendations are whole multiples of R$ 0,50. */
+        const val STEP_CENTAVOS = 50L
+    }
+}
 
 /** A rider's request for a ride, as gossiped to nearby drivers. */
 data class RideRequest(
@@ -56,7 +103,10 @@ data class RideRequest(
     val id: BigInteger,
     val rider: String,
     val token: String,
-    /** The most the rider will pay. Drivers quote at or below it. */
+    /**
+     * The rider's price. Drivers quote around it: down to the guide's floor under it, or above it up to the
+     * guide's ceiling for the trip, which the rider is free to turn down.
+     */
     val maxFare: BigInteger,
     /** Unix seconds, by the phones' clocks. */
     val expiresAt: Long,
@@ -107,6 +157,8 @@ sealed interface Blocker {
 }
 
 data class Coin(val symbol: String, val address: String, val decimals: Int) {
+    fun fromCentavos(centavos: Long): BigInteger = BigInteger.valueOf(centavos) * BigInteger.TEN.pow(decimals - 2)
+
     fun toBaseUnits(reais: BigDecimal): BigInteger = reais.movePointRight(decimals).toBigIntegerExact()
     fun toReais(units: BigInteger): BigDecimal = BigDecimal(units, decimals)
 }

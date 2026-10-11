@@ -76,11 +76,12 @@ Then play a ride:
 1. **Rider** (emulator-5554): tap **Baixar mapa** the first time. The app fetches the pack and checks it
    against `MapRegistry`. Move the map so the pin sits where the car should come, then tap **Para onde?**, type
    an address or a place, and pick a result. The route is worked out on the phone and shown as distance and
-   time. Leave R$ 30,00 in BRZ as the most you will pay and tap **Pedir ofertas**. The request goes out over
-   gossip with the trip's distance and duration, rounded, and a salted hash of the route. Nothing is locked yet.
+   time, with the recommended price under it. Adjust the price if you like and tap **Pedir ofertas**. The request goes out over
+   gossip with the trip's distance and duration, rounded, the region of about a square kilometre that the pickup
+   and the destination are each in, and a salted hash of the route. Nothing is locked yet.
 2. **Driver** (emulator-5556): tap **Ficar online**. The request appears as **Nova solicitação** within a few
-   seconds, with the trip's length. Set your price with − and +, at or below the rider's max, and tap **Enviar
-   oferta**. You can change it and send again.
+   seconds, with the trip's length and its two regions shaded on the map and named by neighbourhood. Set your price with − and +, from 20% under the rider's price to 10% over the recommended
+   one, and tap **Enviar oferta**. You can change it and send again.
 3. **Rider**: the offer appears under **Escolha um motorista**, cheapest first. Tap it, check the route, the
    price per km and the breakdown, and tap **Bloquear**. The offered fare and a R$ 2,00 bond are locked in the
    escrow, with the hash of the quote the driver signed. The quote itself, with the exact route, is saved on
@@ -124,6 +125,19 @@ other's log, and the trip receipt at arrival. They need messages both ways throu
 encrypted ride channel proper. Until it exists the app sends a stand-in hash where the trip receipt's hash
 belongs, as it already does for the pickup proof.
 
+### Prices and the driver's rules
+
+The rider does not type a price. The app shows the price `FareGuide` recommends for the trip and the rider
+moves it with − and +, up to 10% either way. A driver quotes at the rider's price, under it down to 20% less,
+or above it up to 10% over the recommended price; the rider sees every quote and picks. Phones drop requests and quotes outside those limits, so they cannot be worked around from a modified
+app without every other phone ignoring the result.
+
+On the driver's home screen, **Ignorar solicitações automaticamente** hides requests the driver does not want
+to see: those under a price per km the driver sets, and those whose rider went further under the recommended
+price than the driver accepts. A driver who gives a ride up, by declining or cancelling, is also not shown that
+rider's requests for three minutes, so the request the rider's phone sends again goes to the other drivers.
+The card says how many open requests are hidden at the moment.
+
 ### The driver's map
 
 The driver's screens show the phone's own position (the app asks for the location permission; the position is
@@ -161,10 +175,12 @@ running for the two phones to find each other.
 
 ## Accounts
 
-The rider and driver use seeded accounts #3 and #4 from anvil's public test mnemonic, so both phones are funded
-and the driver already has stake and a CNH credential. The second rider and driver of `make android-four-phones`
-are accounts #8 and #9, set up the same way by `contracts/script/SeedSecondPair.s.sol`; `make deploy` runs it,
-and so does the four-phones script on a chain deployed before it existed. These keys are public: the app only uses them on the
+Each phone has one account and keeps it in passenger mode and in driver mode. The phones use four seeded
+accounts from anvil's public test mnemonic: #3 and #4 for the phones that start as rider and driver, and #8
+and #9 for the second pair of `make android-four-phones`. `contracts/script/SeedPhones.s.sol` gives each of
+them R$ 1.000 in each coin, both roles, R$ 100 staked and a CNH credential, so any phone can ride or drive.
+`make deploy` runs it, and so do the emulator scripts on a chain deployed before it existed. Which account a
+phone has is decided the first time it is opened and when a script launches it. These keys are public: the app only uses them on the
 local testnet. Real phones will sign with a Secure Enclave or StrongBox key through a smart account, which is
 not built yet.
 

@@ -309,6 +309,12 @@ impl MapPack {
             .map(|hit| hit.map(place))
     }
 
+    /// The neighbourhood or town nearest a point, to name a region of the map. `None` when the pack knows
+    /// none within about 3 km.
+    pub fn locality(&self, at: Coordinate) -> Result<Option<String>, MapError> {
+        self.with_search(|s| s.locality(at.into()))
+    }
+
     /// Turns Valhalla's route into a path on this pack and measures it with the verifier.
     ///
     /// `route_json` is Valhalla's answer to [`route_request`] and `attributes_json` its answer to
@@ -558,6 +564,37 @@ fn filters() -> serde_json::Value {
     serde_json::json!({
         "attributes": ["edge.way_id", "edge.begin_shape_index", "edge.end_shape_index", "shape"],
         "action": "include",
+    })
+}
+
+/// The region a point falls in, as a request names it to drivers: a geohash cell of about 1.2 km by 0.6 km.
+/// It tells a driver roughly where a trip starts and ends without pointing at an address.
+#[uniffi::export]
+pub fn region_cell(at: Coordinate) -> String {
+    crate::geo::encode(
+        degrees(at.lat_e7),
+        degrees(at.lon_e7),
+        crate::geo::REGION_PRECISION,
+    )
+}
+
+/// The corners of a region, for drawing it. `None` for text that is not a region cell.
+#[uniffi::export]
+pub fn region_bounds(cell: String) -> Option<Bounds> {
+    if cell.len() != crate::geo::REGION_PRECISION {
+        return None;
+    }
+    let ((south, west), (north, east)) = crate::geo::bounds(&cell)?;
+    let e7 = |degrees: f64| (degrees * 1e7).round() as i32;
+    Some(Bounds {
+        south_west: Coordinate {
+            lat_e7: e7(south),
+            lon_e7: e7(west),
+        },
+        north_east: Coordinate {
+            lat_e7: e7(north),
+            lon_e7: e7(east),
+        },
     })
 }
 

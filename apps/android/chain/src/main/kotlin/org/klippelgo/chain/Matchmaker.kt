@@ -2,7 +2,10 @@ package org.klippelgo.chain
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.klippelgo.core.Coordinate
 import org.klippelgo.core.GossipNode
+import org.klippelgo.core.regionBounds
+import org.klippelgo.core.regionCell
 import org.klippelgo.core.OfferKey
 import org.klippelgo.core.newOfferKey
 import org.klippelgo.core.openRoute
@@ -18,13 +21,13 @@ import java.security.SecureRandom
 import java.util.Base64
 
 /**
- * Matches riders and drivers over gossip, as in the architecture plan: the rider gossips a request with a max
- * fare and the route's distance and duration, drivers answer with signed quotes, and the rider locks the quote
+ * Matches riders and drivers over gossip, as in the architecture plan: the rider gossips a request with a price
+ * and the route's distance and duration, drivers answer with signed quotes, and the rider locks the quote
  * it picks in the escrow. Nothing here touches the chain until that lock.
  *
  * The request says how far and how long the trip is, rounded, and on which map pack it was computed. Where it
- * starts and ends stays on the rider's phone: the request carries only a salted hash of the route, which every
- * quote signs over. Once the rider has locked an offer, their phone seals the route to a key in that offer and
+ * starts and ends stays on the rider's phone: the request names only the two regions, about a square kilometre
+ * each, and carries a salted hash of the route, which every quote signs over. Once the rider has locked an offer, their phone seals the route to a key in that offer and
  * gossips it, so the chosen driver, and nobody else in the cell, learns where the ride goes.
  *
  * Gossip is open: anyone can join a topic, publish to it and replay what they heard. So every message is signed
@@ -128,6 +131,7 @@ class Matchmaker(
     /** Asks the drivers in the cell for quotes up to `maxFare` for a trip of this length. */
     @Synchronized
     fun requestRide(coin: Coin, maxFare: BigInteger, route: RouteSummary, ttlSeconds: Long = REQUEST_TTL): RideRequest {
+        if (!client.riderMayAsk(coin, maxFare, route)) throw ChainException("The price is outside the range the fare guide allows for this trip")
         val expiresAt = now() + ttlSeconds
         val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
         val id = requestId(client.address, coin.address, maxFare, expiresAt, nonce, route)
@@ -142,6 +146,8 @@ class Matchmaker(
             "route" to route.routeHash,
             "distanceM" to route.distanceM,
             "durationS" to route.durationS,
+            "from" to route.pickupCell,
+            "to" to route.dropoffCell,
             "sig" to Numeric.toHexString(client.sign(id)),
         )
         val request = RideRequest(BigInteger(1, id), client.address, coin.address.lowercase(), maxFare, expiresAt, route)
@@ -204,7 +210,7 @@ class Matchmaker(
     @Synchronized
     fun sendOffer(request: RideRequest, fare: BigInteger, ttlSeconds: Long = OFFER_TTL): Offer {
         val fee = client.tokenConfig(client.coinFor(request.token)).first
-        if (fare > request.maxFare) throw ChainException("The quote is above the rider's max fare")
+        if (!client.driverMayQuote(request, fare)) throw ChainException("The quote is outside what the fare guide lets a driver ask for this trip")
         if (fare <= fee) throw ChainException("FareTooLow")
         val expiresAt = minOf(now() + ttlSeconds, request.expiresAt)
         val seq = maxOf(System.currentTimeMillis(), (quotes[request.id]?.get(client.address)?.seq ?: 0) + 1)
@@ -251,6 +257,8 @@ class Matchmaker(
             routeHash = Numeric.toHexString(m.bytes("route", 32)),
             distanceM = m.get("distanceM").asInt(),
             durationS = m.get("durationS").asInt(),
+            pickupCell = m.text("from"),
+            dropoffCell = m.text("to"),
         )
         val id = requestId(rider, token, maxFare, expiresAt, m.bytes("nonce", 32), route)
         val key = BigInteger(1, id)
@@ -262,6 +270,9 @@ class Matchmaker(
         if (requests.size >= MAX_REQUESTS || expiresAt <= now || expiresAt > now + MAX_TTL) return
         if (maxFare.signum() <= 0 || client.coins.none { it.address.equals(token, ignoreCase = true) }) return
         if (route.distanceM <= 0 || route.durationS <= 0) return
+        if (regionBounds(route.pickupCell) == null || regionBounds(route.dropoffCell) == null) return
+        // The rider's price must be within the fare guide's range for a trip of the stated length.
+        if (!client.riderMayAsk(client.coinFor(token), maxFare, route)) return
         if (KlippelGoClient.signerOf(id, m.bytes("sig", 65)) != rider) return
         if (!riders.getOrPut(rider) { client.rolesOf(rider) and KlippelGoClient.ROLE_RIDER != 0 }) return
         // A route means something only on a map governance activated: anyone can check it against that pack.
@@ -279,7 +290,8 @@ class Matchmaker(
         val known = forRequest[driver]
         if (known != null && known.seq >= seq) return
         if (known == null && forRequest.size >= MAX_OFFERS_PER_REQUEST) return
-        if (expiresAt <= now() || expiresAt > request.expiresAt || fare > request.maxFare) return
+        if (expiresAt <= now() || expiresAt > request.expiresAt) return
+        if (!client.driverMayQuote(request, fare)) return
         if (fare <= client.tokenConfig(client.coinFor(request.token)).first) return
         val quoteHash = client.quoteHash(request, driver, fare, expiresAt)
         val routeKey = m.bytes("routeKey", 32)
@@ -306,10 +318,19 @@ class Matchmaker(
         for (quoteHash in myQuotes[request.id].orEmpty()) {
             if (quoteHash in revealed) return
             val quote = runCatching { openRoute(secret, Numeric.hexStringToByteArray(quoteHash), sealed) }.getOrNull() ?: continue
+            // The route must start and end in the regions the request showed everyone, or the driver priced a
+            // different trip from the one being revealed.
+            if (!startsAndEndsIn(quote, request.route)) return
             revealed[quoteHash] = quote
             return
         }
     }
+
+    private fun startsAndEndsIn(quote: String, route: RouteSummary): Boolean = runCatching {
+        val q = json.readTree(quote)
+        fun cell(key: String) = regionCell(Coordinate(q.get(key).get(0).asInt(), q.get(key).get(1).asInt()))
+        cell("pickup") == route.pickupCell && cell("dropoff") == route.dropoffCell
+    }.getOrDefault(false)
 
     // ---------------------------------------------------------------- encoding
 
@@ -333,6 +354,8 @@ class Matchmaker(
         Bytes32(Numeric.hexStringToByteArray(route.routeHash)),
         Uint256(route.distanceM.toLong()),
         Uint256(route.durationS.toLong()),
+        Bytes32(Hash.sha3(route.pickupCell.toByteArray())),
+        Bytes32(Hash.sha3(route.dropoffCell.toByteArray())),
     )
 
     private fun offerHash(quoteHash: ByteArray, seq: Long, routeKey: ByteArray) =
@@ -369,7 +392,7 @@ class Matchmaker(
         private const val MAX_REQUESTS = 200
         private const val MAX_OFFERS_PER_REQUEST = 50
 
-        private val REQUEST_DOMAIN: ByteArray = Hash.sha3("KlippelGo request v2".toByteArray())
+        private val REQUEST_DOMAIN: ByteArray = Hash.sha3("KlippelGo request v3".toByteArray())
         private val OFFER_DOMAIN: ByteArray = Hash.sha3("KlippelGo offer v2".toByteArray())
         private val CLOSE_DOMAIN: ByteArray = Hash.sha3("KlippelGo close v1".toByteArray())
         private val ROUTE_DOMAIN: ByteArray = Hash.sha3("KlippelGo sealed route v1".toByteArray())

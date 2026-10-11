@@ -58,8 +58,8 @@
     <string name="sign_out">Salir</string>
     <string name="request_ride">Pedir viaje</string>
     <string name="choose_driver">Elige un conductor</string>
-    <string name="pay_at_most">Pago como máximo</string>
-    <string name="max_fare_hint">Los conductores responden con ofertas hasta ese valor. Nada se bloquea hasta que elijas una.</string>
+    <string name="pay_at_most">Mi precio</string>
+    <string name="max_fare_hint">Los conductores responden con ofertas en torno a ese valor. Nada se bloquea hasta que elijas una.</string>
     <string name="not_enough_balance">Saldo insuficiente para ese valor más la garantía.</string>
     <string name="ask_for_offers">Pedir ofertas</string>
     <string name="no_surge">Sin precio dinámico. Los conductores ofertan, tú eliges.</string>
@@ -116,7 +116,7 @@
     <string name="blocked_role">Esta cuenta no está registrada como conductor.</string>
     <string name="blocked_age">Tu cuenta es demasiado nueva para aceptar viajes.</string>
     <string name="new_request">Nueva solicitud</string>
-    <string name="pays_at_most">Paga como máximo</string>
+    <string name="pays_at_most">El pasajero propone</string>
     <string name="lower_offer">Bajar oferta</string>
     <string name="raise_offer">Subir oferta</string>
     <string name="you_receive">Recibes %1$s · %2$s va al Instituto Klippel</string>
@@ -146,7 +146,7 @@
     <string name="per_km">%1$s por km</string>
     <string name="routing">Calculando la ruta en este teléfono…</string>
     <string name="route_failed">No se pudo trazar la ruta: %1$s</string>
-    <string name="route_private">La búsqueda y la ruta se calculan en este teléfono. Los conductores solo ven la distancia y la duración del trayecto.</string>
+    <string name="route_private">La búsqueda y la ruta se calculan en este teléfono. Los conductores ven la distancia, la duración y la zona aproximada de la recogida y del destino, de cerca de 1 km, nunca la dirección.</string>
     <string name="map_title">Mapa de la región</string>
     <string name="map_checking">Verificando el mapa…</string>
     <string name="map_not_published">Todavía no se publicó ningún mapa en esta red.</string>
@@ -165,4 +165,41 @@
     <string name="decline_ride">Rechazar viaje</string>
     <string name="decline_hint">Rechazar no cuesta nada: el pasajero recibe todo de vuelta.</string>
     <string name="asked_again">El conductor desistió del viaje y recuperaste todo. El mismo pedido se envió de nuevo a los demás conductores.</string>
+
+    <!-- Price guide and the driver's rules -->
+    <string name="price_needs_route">Elige el destino para ver el precio recomendado.</string>
+    <string name="price_recommended">Recomendado para este trayecto: %1$s</string>
+    <string name="price_range_hint">Puedes ajustarlo hasta %1$d%% hacia arriba o hacia abajo. Los conductores pueden ofertar desde %2$d%% por debajo de tu precio hasta %3$d%% por encima del recomendado.</string>
+    <string name="lower_price">Bajar</string>
+    <string name="raise_price">Subir</string>
+    <string name="recommended_short">recomendado %1$s</string>
+    <string name="auto_skip_title">Ignorar solicitudes automáticamente</string>
+    <string name="auto_skip_per_km">Mínimo por km</string>
+    <string name="auto_skip_below">Por debajo del precio recomendado</string>
+    <string name="auto_skip_off">Desactivado</string>
+    <string name="auto_skip_percent">Acepto hasta %1$d%% por debajo</string>
+    <plurals name="auto_skipped">
+        <item quantity="one">%1$d solicitud ignorada ahora por tus reglas o por un rechazo reciente.</item>
+        <item quantity="other">%1$d solicitudes ignoradas ahora por tus reglas o por un rechazo reciente.</item>
+    </plurals>
+
+    <!-- The tariff on the rules page -->
+    <string name="tariff_title">Precio recomendado</string>
+    <string name="tariff_body">La app sugiere un precio para cada trayecto según la distancia y la duración. Tú lo ajustas dentro de un límite y los conductores responden con ofertas.</string>
+    <string name="tariff_base">Monto fijo por viaje</string>
+    <string name="tariff_per_km">Por kilómetro</string>
+    <string name="tariff_per_minute">Por minuto</string>
+    <string name="tariff_minimum">Precio mínimo recomendado</string>
+    <string name="tariff_rider_range">Ajuste del pasajero</string>
+    <string name="tariff_percent_either_way">hasta %1$d%% hacia arriba o hacia abajo</string>
+    <string name="tariff_driver_discount">Oferta del conductor</string>
+    <string name="tariff_percent_under">desde %1$d%% por debajo de tu precio hasta %2$d%% por encima del recomendado</string>
+    <string name="tariff_example">Ejemplo: 5 km en 12 minutos da %1$s + %2$s + %3$s, redondeado a %4$s.</string>
+    <string name="tariff_notes">La distancia y la duración usadas son las del pedido, redondeadas a 500 m y 1 minuto, y el precio se redondea a R$ 0,50. No hay precio dinámico: el cálculo es el mismo a cualquier hora.</string>
+    <string name="reprice_title">¿Aún sin ofertas? Ajusta el precio</string>
+    <string name="reprice_action">Pedir de nuevo con este precio</string>
+    <string name="reprice_hint">El pedido actual se retira y el mismo trayecto se pide de nuevo con el precio nuevo.</string>
+    <string name="region_pickup">Recogida en la zona de</string>
+    <string name="region_dropoff">Destino en la zona de</string>
+    <string name="region_on_map">zona marcada en el mapa</string>
 </resources>

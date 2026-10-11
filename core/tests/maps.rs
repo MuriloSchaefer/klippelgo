@@ -158,6 +158,16 @@ fn opens_a_pack_and_searches_it() {
     assert_eq!(hits[0].name, "Padaria São Bento");
     assert_eq!(hits[0].kind, PlaceKind::PointOfInterest);
     assert!(hits[0].distance_m.unwrap() > 300);
+
+    // A region names roughly where a point is without saying where exactly.
+    let cell = region_cell(dois(2).into());
+    let region = region_bounds(cell.clone()).unwrap();
+    assert_eq!(cell.len(), 6);
+    assert!(region.south_west.lat_e7 <= dois(2).lat && dois(2).lat < region.north_east.lat_e7);
+    assert!(region.north_east.lon_e7 - region.south_west.lon_e7 > 100_000);
+    assert_eq!(region_bounds("not a cell".into()), None);
+    assert_eq!(pack.locality(dois(2).into()).unwrap(), None); // this invented pack has no neighbourhoods
+
     let here = pack
         .reverse(
             Point {

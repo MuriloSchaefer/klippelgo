@@ -219,6 +219,32 @@ class KlippelGoClient(
             OfferTerms(fare.toString(), request.token, request.rider, driver, expiresAt.toULong()),
         )
 
+    // ---------------------------------------------------------------- price guide
+
+    /** The price guide in force. Read once per client: it changes only through a governance proposal. */
+    val tariff: Tariff by lazy {
+        val t = call(
+            deployment.fares,
+            fn("tariff", emptyList(), listOf(uint32Ref, uint32Ref, uint32Ref, uint32Ref, uint16Ref, uint16Ref)),
+        )
+        Tariff(uint(t[0]).toLong(), uint(t[1]).toLong(), uint(t[2]).toLong(), uint(t[3]).toLong(), uint(t[4]).toInt(), uint(t[5]).toInt())
+    }
+
+    /** Whether `price` is one a rider may ask for a trip of this length. */
+    fun riderMayAsk(coin: Coin, price: BigInteger, route: RouteSummary): Boolean {
+        val range = tariff.riderRange(route.distanceM, route.durationS)
+        return price >= coin.fromCentavos(range.first) && price <= coin.fromCentavos(range.last)
+    }
+
+    /**
+     * Whether a driver may quote `fare` against a request: no more than 20% under the rider's price, and no
+     * higher than the top of the fare guide's range for the trip, even if that is more than the rider asked.
+     */
+    fun driverMayQuote(request: RideRequest, fare: BigInteger): Boolean {
+        val ceiling = coinFor(request.token).fromCentavos(tariff.driverCeiling(request.route.distanceM, request.route.durationS))
+        return fare >= tariff.driverFloor(request.maxFare) && fare <= ceiling
+    }
+
     // ---------------------------------------------------------------- map packs
 
     /**

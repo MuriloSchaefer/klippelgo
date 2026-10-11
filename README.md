@@ -12,7 +12,7 @@ How maps, routes and trip proofs are computed on the phone is in [docs/maps-and-
 
 | Path | What it is |
 | --- | --- |
-| `contracts/` | Solidity contracts (Foundry): `PBACGovernor`, `IdentityRegistry`, `RideEscrow`, `FeeVault`, `Reputation`, `DisputeCourt`, `MapRegistry`, plus mock BRLA and BRZ for local use |
+| `contracts/` | Solidity contracts (Foundry): `PBACGovernor`, `IdentityRegistry`, `RideEscrow`, `FeeVault`, `Reputation`, `DisputeCourt`, `MapRegistry`, `FareGuide`, plus mock BRLA and BRZ for local use |
 | `testnet/` | Scripts to run a local chain, deploy, run a demo ride and activate a map pack |
 | `deployments/` | Contract addresses per network (`local.json` is written by the deploy script) |
 | `core/` | Shared Rust core for the apps: the libp2p gossip network phones match through and its bootstrap node, map packs with on-device search, routes and trip proofs, money and fee maths, geohash discovery cells, network settings |
@@ -61,11 +61,10 @@ All accounts come from anvil's public test mnemonic (`test test ... junk`). Neve
 | 0 | Deployer | Deploys, then holds no privileges once bootstrap ends |
 | 1 | Instituto Klippel | Receives the R$ 1,00 per ride from `FeeVault.sweep` |
 | 2 | Attester | Trusted mock KYC/CNH attester |
-| 3 | Rider | Registered rider, R$ 1.000 in each mock coin |
-| 4 | Driver | Registered driver, R$ 100 stake, CNH credential hash |
+| 3 | First phone, starts as rider | R$ 1.000 in each mock coin, both roles, R$ 100 stake, CNH credential hash |
+| 4 | Second phone, starts as driver | The same |
 | 5-7 | Validators | R$ 500 stake each, can judge disputes |
-| 8 | Second rider | As #3, for trying four phones at once |
-| 9 | Second driver | As #4 |
+| 8, 9 | Third and fourth phone | The same, for trying four phones at once |
 
 ### Local governance settings
 
@@ -85,6 +84,16 @@ Voting lasts 2 minutes, the timelock is 1 minute and quorum is 3 votes. A vote c
 Every policy, the BRL allow-list, fees, timeouts, trusted attesters, the active map packs and the tolerances of
 the proof verifier change only through a governance proposal. A map pack can be activated only once three
 validators have rebuilt its proof index and attested the same root.
+
+## Prices
+
+Fares are a market inside a band the community sets in `FareGuide`. The app recommends a price for the trip
+from its distance and duration, starting at R$ 3,00 plus R$ 2,00 per km and R$ 0,25 per minute, never under
+R$ 8,00. The rider may ask up to 10% above or below that. A driver may quote from 20% under the rider's price
+up to 10% above the recommended one, so a driver can ask for more than the rider offered and the rider decides.
+The escrow never learns how long a trip is, so the phones keep the band: a driver's phone ignores a request
+priced outside it, and a rider's phone ignores a quote outside the driver's limits. The tariff and both limits
+change only through a governance proposal.
 
 ## Tests
 

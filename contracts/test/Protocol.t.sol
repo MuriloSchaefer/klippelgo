@@ -8,6 +8,7 @@ import {PBACGovernor} from "../src/PBACGovernor.sol";
 import {RideEscrow} from "../src/RideEscrow.sol";
 import {DisputeCourt} from "../src/DisputeCourt.sol";
 import {MapRegistry} from "../src/MapRegistry.sol";
+import {FareGuide} from "../src/FareGuide.sol";
 import {Governed} from "../src/Governed.sol";
 import {MockBRL} from "../src/mocks/MockBRL.sol";
 
@@ -494,5 +495,34 @@ contract ProtocolTest is Test, ProtocolDeployer {
         _govern(address(p.maps), abi.encodeCall(p.maps.setVerifierParams, (looser)));
         (, bps,,,,,,) = p.maps.verifierParams();
         assertEq(bps, 300);
+    }
+
+    // ---------------------------------------------------------------- fare guide
+
+    function test_RecommendsAPriceFromDistanceAndTime() public view {
+        // 8,5 km and 22 min: R$ 3,00 + R$ 17,00 + R$ 5,50.
+        assertEq(p.fares.recommended(8_500, 1_320), 25_50);
+        // Rounded to the nearest R$ 0,50: 1,5 km and 2 min is R$ 6,50, under the R$ 8,00 minimum.
+        assertEq(p.fares.recommended(1_500, 120), 8_00);
+        assertEq(p.fares.recommended(4_000, 300), 12_50); // 3,00 + 8,00 + 1,25 = 12,25
+        (uint256 lowest, uint256 highest) = p.fares.riderRange(8_500, 1_320);
+        assertEq(lowest, 22_95);
+        assertEq(highest, 28_05);
+        assertEq(p.fares.driverFloor(25_00), 20_00);
+        assertEq(p.fares.driverCeiling(8_500, 1_320), 28_05);
+    }
+
+    function test_GovernanceSetsTheTariff() public {
+        FareGuide.Tariff memory dearer = _launchTariff();
+        dearer.perKmCentavos = 250;
+        vm.expectRevert(Governed.NotGovernor.selector);
+        p.fares.setTariff(dearer);
+        _govern(address(p.fares), abi.encodeCall(p.fares.setTariff, (dearer)));
+        assertEq(p.fares.recommended(8_500, 1_320), 30_00); // 3,00 + 21,25 + 5,50 = 29,75
+
+        dearer.riderRangeBps = 10_000;
+        vm.prank(address(p.governor));
+        vm.expectRevert(FareGuide.InvalidTariff.selector);
+        p.fares.setTariff(dearer);
     }
 }

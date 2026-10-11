@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -127,7 +128,7 @@ fun DriverApp(state: UiState, vm: AppViewModel) {
  * this phone's map pack.
  */
 @Composable
-fun driverScene(state: UiState): MapScene? {
+fun driverScene(state: UiState, request: RideRequest? = null): MapScene? {
     val map = state.map as? MapState.Ready ?: return null
     val mine = state.rides.filter { it.status.isActive }.sortedBy { it.id }
     val current = mine.firstOrNull { it.status != RideStatus.Open }
@@ -140,7 +141,51 @@ fun driverScene(state: UiState): MapScene? {
         }
         MapLine(route.line, kind)
     }
-    return MapScene(basemap = map.basemap, centre = state.location ?: map.centre, lines = lines, me = state.location)
+    // A request being looked at shows as two shaded regions: roughly where it starts and ends, and no more.
+    val areas = request?.let { state.regions[it.id] }?.let { listOf(MapArea(it.pickup, pickup = true), MapArea(it.dropoff, pickup = false)) }
+    return MapScene(basemap = map.basemap, centre = state.location ?: map.centre, lines = lines, areas = areas.orEmpty(), me = state.location)
+}
+
+/**
+ * The driver's own rules for requests not worth looking at: a floor per km, and how far under the recommended
+ * price a rider may have gone. Requests that fail them never reach the screen.
+ */
+@Composable
+private fun AutoSkipRules(state: UiState, vm: AppViewModel) {
+    val quarter = BigDecimal("0.25")
+    KCard(padding = 14.dp) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(stringResource(R.string.auto_skip_title), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Muted(stringResource(R.string.auto_skip_per_km), size = 13.sp)
+                    Text(
+                        if (state.minPerKm.signum() == 0) stringResource(R.string.auto_skip_off) else brl(state.minPerKm),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                StepButton("−", stringResource(R.string.lower_price), enabled = state.minPerKm.signum() > 0) { vm.setMinPerKm(state.minPerKm - quarter) }
+                StepButton("+", stringResource(R.string.raise_price), enabled = true) { vm.setMinPerKm(state.minPerKm + quarter) }
+            }
+            val limit = (state.tariff?.riderRangeBps ?: 1_000) / 100
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Muted(stringResource(R.string.auto_skip_below), size = 13.sp)
+                    Text(
+                        if (state.maxBelowPercent >= limit) stringResource(R.string.auto_skip_off) else stringResource(R.string.auto_skip_percent, state.maxBelowPercent),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                StepButton("−", stringResource(R.string.lower_price), enabled = state.maxBelowPercent > 0) { vm.setMaxBelowPercent(state.maxBelowPercent - 1) }
+                StepButton("+", stringResource(R.string.raise_price), enabled = state.maxBelowPercent < limit) { vm.setMaxBelowPercent(state.maxBelowPercent + 1) }
+            }
+            if (state.skippedRequests > 0) {
+                Muted(pluralStringResource(R.plurals.auto_skipped, state.skippedRequests, state.skippedRequests), size = 12.sp)
+            }
+        }
+    }
 }
 
 @Composable
@@ -185,6 +230,7 @@ private fun GoOnline(state: UiState, vm: AppViewModel, online: Boolean, onToggle
                     }
                     else -> Muted(stringResource(R.string.go_online_body), size = 13.sp)
                 }
+                AutoSkipRules(state, vm)
                 // Quoting needs no map: the request says how long the trip is. The map is for seeing the streets.
                 if (state.map is MapState.NotDownloaded || state.map is MapState.Downloading || state.map is MapState.Failed) {
                     MapNotice(state, vm::downloadMap)
@@ -252,7 +298,7 @@ private fun earnedToday(state: UiState): String {
     return brl(total)
 }
 
-/** A rider's request. The price starts at the rider's max and moves in steps of R$ 0,50. */
+/** A rider's request. The quote starts at the rider's price and moves in steps of R$ 0,50, down or up. */
 @Composable
 private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> Unit, onSend: (BigDecimal) -> Unit) {
     val coin = coinOf(state, request.token)
@@ -260,10 +306,15 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
     var price by rememberSaveable(request.id.toString()) { mutableStateOf(mine?.fare ?: request.maxFare) }
     val fee = state.fees[coin]
     val step = coin.toBaseUnits(BigDecimal("0.50"))
-    val valid = fee != null && price > fee && price <= request.maxFare
+    // The fare guide lets a driver go a set share under the rider's price, or above it up to the top of the
+    // range for the trip. Without the guide the rider's price is the most that can be asked.
+    val floor = state.tariff?.driverFloor(request.maxFare) ?: BigInteger.ZERO
+    val ceiling = state.tariff?.let { coin.fromCentavos(it.driverCeiling(request.route.distanceM, request.route.durationS)) } ?: request.maxFare
+    val recommended = state.tariff?.let { coin.fromCentavos(it.recommended(request.route.distanceM, request.route.durationS)) }
+    val valid = fee != null && price > fee && price <= ceiling && price >= floor
 
     MapScreen(
-        scene = driverScene(state),
+        scene = driverScene(state, request),
         map = {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OnlinePill(online = true)
@@ -274,15 +325,25 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
         Text(stringResource(R.string.new_request), fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Column {
             KeyValue(stringResource(R.string.role_rider_short), shortAddress(request.rider), strong = true)
+            // Roughly where the trip starts and ends: the regions shaded on the map, by neighbourhood name.
+            state.regions[request.id]?.let { regions ->
+                // On the map the pickup region is the filled one and the drop-off the dashed one.
+                KeyValue(stringResource(R.string.region_pickup), regions.pickupName ?: stringResource(R.string.region_on_map), strong = true)
+                KeyValue(stringResource(R.string.region_dropoff), regions.dropoffName ?: stringResource(R.string.region_on_map), strong = true)
+            }
             // The rider's phone measured the route. Where it runs stays there; the length is what gets priced.
             KeyValue(stringResource(R.string.trip), routeLabel(request.route.distanceM, request.route.durationS), strong = true)
             KeyValue(stringResource(R.string.pays_at_most), brl(coin, request.maxFare), divider = false, strong = true)
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StepButton("−", stringResource(R.string.lower_offer), enabled = fee != null && price - step > fee) { price -= step }
+            StepButton("−", stringResource(R.string.lower_offer), enabled = fee != null && price - step > fee && price - step >= floor) { price -= step }
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(brl(coin, price), fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                Muted(stringResource(R.string.per_km, brl(perKm(coin, price, request.route.distanceM))), size = 12.sp)
+                Muted(
+                    stringResource(R.string.per_km, brl(perKm(coin, price, request.route.distanceM))) +
+                        (recommended?.let { " · " + stringResource(R.string.recommended_short, brl(coin, it)) } ?: ""),
+                    size = 12.sp,
+                )
                 if (fee != null) {
                     Muted(stringResource(R.string.you_receive, brl(coin, price - fee), brl(coin, fee)), size = 12.sp, align = TextAlign.Center)
                 }
@@ -290,8 +351,8 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
                     Text(stringResource(R.string.your_offer, brl(coin, mine.fare)), fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
                 }
             }
-            StepButton("+", stringResource(R.string.raise_offer), enabled = price < request.maxFare) {
-                price = (price + step).min(request.maxFare)
+            StepButton("+", stringResource(R.string.raise_offer), enabled = price + step <= ceiling) {
+                price += step
             }
         }
         if (state.connected == true && !state.canAccept) BlockedNotice(state)
@@ -309,7 +370,7 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
 }
 
 @Composable
-private fun StepButton(symbol: String, description: String, enabled: Boolean, onClick: () -> Unit) {
+fun StepButton(symbol: String, description: String, enabled: Boolean, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         enabled = enabled,
@@ -376,6 +437,11 @@ private fun DriverRide(state: UiState, current: Ride?, chosen: Ride?, request: R
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(stringResource(R.string.new_request), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        state.regions[request.id]?.let { regions ->
+                            if (regions.pickupName != null && regions.dropoffName != null) {
+                                Muted(regions.pickupName + " → " + regions.dropoffName, size = 13.sp)
+                            }
+                        }
                         Muted(
                             routeLabel(request.route.distanceM, request.route.durationS) + " · " +
                                 stringResource(R.string.pays_at_most) + " " + brl(asked, request.maxFare),

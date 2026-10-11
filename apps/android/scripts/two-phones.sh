@@ -118,13 +118,13 @@ wait_boot() { # serial
 PHONES=("KlippelGo_Rider 5554 rider 1" "KlippelGo_Driver 5556 driver 1")
 [ "$PAIRS" = 2 ] && PHONES+=("KlippelGo_Rider2 5558 rider 2" "KlippelGo_Driver2 5560 driver 2")
 
-if [ "$PAIRS" = 2 ]; then
-  # The second rider and driver are accounts #8 and #9. Fund, register, stake and license them if this chain
-  # was deployed before they existed. It skips whatever is already done.
-  command -v forge >/dev/null || { echo "Install Foundry: the second rider and driver are seeded with forge." >&2; exit 1; }
-  echo "Seeding the second rider and driver on the testnet"
-  (cd "$HERE/../../contracts" && forge script script/SeedSecondPair.s.sol --rpc-url "$RPC_HOST_URL" --broadcast --slow >/dev/null) \
-    || { echo "Could not seed the second pair. Is the chain deployed? Run 'make deploy'." >&2; exit 1; }
+# Each phone has one account and keeps it in passenger and in driver mode, so all four accounts need funds,
+# both roles, stake and a licence. `make deploy` sets that up; this covers a chain deployed before it did, and
+# skips whatever is already done.
+if command -v forge >/dev/null; then
+  echo "Checking the phones' accounts on the testnet"
+  (cd "$HERE/../../contracts" && forge script script/SeedPhones.s.sol --rpc-url "$RPC_HOST_URL" --broadcast --slow >/dev/null) \
+    || { echo "Could not set up the phones' accounts. Is the chain deployed? Run 'make deploy'." >&2; exit 1; }
 fi
 
 for phone in "${PHONES[@]}"; do

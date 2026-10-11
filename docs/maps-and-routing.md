@@ -119,8 +119,11 @@ sequenceDiagram
 2. The rider's phone asks Valhalla for the route from pickup to destination and gets distance, duration and the
    path.
 3. The gossip request that drivers see gains the route's distance and duration, rounded (0.5 km, 1 min), and
-   the pack id. It still carries only coarse cells, no addresses. Drivers can now price a known distance instead
-   of the rider typing a maximum fare blind.
+   the pack id. It names the region the pickup is in and the region the drop-off is in, and no address: each
+   region is a geohash-6 cell, about 1.2 km by 0.6 km, large enough to hold hundreds of addresses in a city and
+   small enough for a driver to judge the trip. Drivers can now price a known distance between known areas
+   instead of the rider typing a maximum fare blind. When the route is later revealed to the chosen driver, their
+   phone checks that it starts and ends inside those two regions.
 4. Drivers reply with signed offers, as they do in the current Android app.
 5. After the rider picks an offer, the exact points cross the encrypted channel. The driver's phone computes the
    same route on the same pack and runs the verifier on the rider's path. The phones must agree on distance

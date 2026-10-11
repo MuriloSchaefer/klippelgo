@@ -38,6 +38,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import org.klippelgo.core.Bounds
 import org.klippelgo.core.Coordinate
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
@@ -49,6 +50,7 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
@@ -72,6 +74,9 @@ enum class LineKind {
 
 data class MapLine(val points: List<Coordinate>, val kind: LineKind)
 
+/** A region shaded on the map: where a requested trip starts or ends, to about a square kilometre. */
+data class MapArea(val bounds: Bounds, val pickup: Boolean)
+
 /**
  * What a map shows. The tiles, the style, the fonts and the icons all come from this phone: the pack's
  * `basemap.pmtiles` and the style bundled in the app's assets. No tile, font or sprite server is asked.
@@ -83,6 +88,8 @@ data class MapScene(
     val centre: Coordinate,
     /** Routes to draw and frame. A ride's route has its ends marked; a link has none. */
     val lines: List<MapLine> = emptyList(),
+    /** Regions to shade and frame. */
+    val areas: List<MapArea> = emptyList(),
     /** This phone's own position. */
     val me: Coordinate? = null,
     /** Called with the point under the middle of the map each time the rider stops moving it. */
@@ -99,8 +106,19 @@ private fun Color.hex() = String.format(Locale.ROOT, "#%06X", toArgb() and 0xFFF
 private fun styleJson(context: Context, basemap: String): String =
     context.assets.open("map/style.json").bufferedReader().use { it.readText() }.replace("{basemap}", basemap)
 
-private fun sceneGeoJson(lines: List<MapLine>, me: Coordinate?): String {
+private fun Bounds.corners() = listOf(
+    southWest,
+    Coordinate(southWest.latE7, northEast.lonE7),
+    northEast,
+    Coordinate(northEast.latE7, southWest.lonE7),
+)
+
+private fun sceneGeoJson(lines: List<MapLine>, areas: List<MapArea>, me: Coordinate?): String {
     val features = mutableListOf<String>()
+    for (area in areas) {
+        val ring = (area.bounds.corners() + area.bounds.southWest).joinToString(",") { it.json() }
+        features += """{"type":"Feature","properties":{"area":"${if (area.pickup) "pickup" else "dropoff"}"},"geometry":{"type":"Polygon","coordinates":[[$ring]]}}"""
+    }
     fun point(at: Coordinate, kind: String) =
         """{"type":"Feature","properties":{"point":"$kind"},"geometry":{"type":"Point","coordinates":${at.json()}}}"""
     for (line in lines.filter { it.points.size >= 2 }) {
@@ -169,7 +187,24 @@ fun PackMap(scene: MapScene, ink: Color, accent: Color, ring: Color, muted: Colo
                     onCentre?.invoke(Coordinate((target.latitude * 1e7).toInt(), (target.longitude * 1e7).toInt()))
                 }
                 map.setStyle(Style.Builder().fromJson(styleJson(context, scene.basemap))) { style ->
-                    style.addSource(GeoJsonSource(SOURCE, sceneGeoJson(emptyList(), null)))
+                    style.addSource(GeoJsonSource(SOURCE, sceneGeoJson(emptyList(), emptyList(), null)))
+                    // Regions under everything else, in the colour of a ride not yet taken so they are not read as
+                    // part of the trip being driven: the pickup filled and solid, the drop-off lighter and dashed.
+                    for ((area, opacity, dash) in listOf(Triple("pickup", 0.28f, arrayOf(1f, 0f)), Triple("dropoff", 0.10f, arrayOf(2f, 2f)))) {
+                        style.addLayer(
+                            FillLayer("klippelgo-area-$area", SOURCE).withProperties(
+                                PropertyFactory.fillColor(NextRide.hex()),
+                                PropertyFactory.fillOpacity(opacity),
+                            ).withFilter(only("area", area)),
+                        )
+                        style.addLayer(
+                            LineLayer("klippelgo-area-$area-edge", SOURCE).withProperties(
+                                PropertyFactory.lineColor(NextRide.hex()),
+                                PropertyFactory.lineWidth(2.5f),
+                                PropertyFactory.lineDasharray(dash),
+                            ).withFilter(only("area", area)),
+                        )
+                    }
                     val solid = arrayOf(1f, 0f)
                     val dotted = arrayOf(0.2f, 2f)
                     // Links first, so the rides they join are drawn over them.
@@ -243,16 +278,16 @@ fun PackMap(scene: MapScene, ink: Color, accent: Color, ring: Color, muted: Colo
         }
     }
 
-    LaunchedEffect(ready, scene.lines, scene.me) {
+    LaunchedEffect(ready, scene.lines, scene.areas, scene.me) {
         val (_, style) = ready ?: return@LaunchedEffect
-        style.getSourceAs<GeoJsonSource>(SOURCE)?.setGeoJson(sceneGeoJson(scene.lines, scene.me))
+        style.getSourceAs<GeoJsonSource>(SOURCE)?.setGeoJson(sceneGeoJson(scene.lines, scene.areas, scene.me))
     }
     // Frame the routes when they change, and the driver with them. Following every move of the driver would
     // fight the hand that is moving the map.
     val located = scene.me != null
-    LaunchedEffect(ready, scene.lines, located) {
+    LaunchedEffect(ready, scene.lines, scene.areas, located) {
         val (map, _) = ready ?: return@LaunchedEffect
-        val points = scene.lines.flatMap { it.points } + listOfNotNull(scene.me)
+        val points = scene.lines.flatMap { it.points } + scene.areas.flatMap { it.bounds.corners() } + listOfNotNull(scene.me)
         when {
             points.size >= 2 -> {
                 val bounds = LatLngBounds.Builder().includes(points.map { it.latLng() }).build()

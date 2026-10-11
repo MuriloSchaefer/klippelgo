@@ -358,6 +358,45 @@ impl Search {
         Ok(scored.into_iter().take(limit).map(|(hit, _)| hit).collect())
     }
 
+    /// The neighbourhood, town or city nearest to a point, within about 3 km. Used to give a region a name a
+    /// person recognises.
+    pub fn locality(&self, at: Point) -> Result<Option<String>, Error> {
+        const REACH: i32 = 270_000;
+        let mut statement = self.db.prepare_cached(
+            "SELECT p.name, p.lat, p.lon FROM place_box b JOIN place p ON p.id = b.place
+             WHERE b.max_lat >= ?1 AND b.min_lat <= ?2 AND b.max_lon >= ?3 AND b.min_lon <= ?4 AND p.kind = 2",
+        )?;
+        let rows = statement.query_map(
+            params![
+                at.lat - REACH,
+                at.lat + REACH,
+                at.lon - REACH,
+                at.lon + REACH
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    Point {
+                        lat: row.get(1)?,
+                        lon: row.get(2)?,
+                    },
+                ))
+            },
+        )?;
+        let mut nearest: Option<(u64, String)> = None;
+        for row in rows {
+            let (name, place) = row?;
+            let distance = distance_mm(at, place);
+            if nearest
+                .as_ref()
+                .is_none_or(|(d, n)| (distance, &name) < (*d, n))
+            {
+                nearest = Some((distance, name));
+            }
+        }
+        Ok(nearest.map(|(_, name)| name))
+    }
+
     /// Names a point: the address within 30 m if there is one, otherwise the nearest street within 150 m.
     pub fn reverse(&self, at: Point) -> Result<Option<Hit>, Error> {
         // 150 m in degrees of latitude; longitude degrees are shorter, so the box is generous there.
@@ -564,5 +603,16 @@ mod tests {
             (Kind::Street, "Rua Augusta")
         );
         assert_eq!(search.reverse(p(-230_000_000, -460_000_000)).unwrap(), None);
+        assert_eq!(
+            search
+                .locality(p(-235_450_000, -466_400_000))
+                .unwrap()
+                .as_deref(),
+            Some("República")
+        );
+        assert_eq!(
+            search.locality(p(-230_000_000, -460_000_000)).unwrap(),
+            None
+        );
     }
 }

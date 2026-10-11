@@ -58,8 +58,8 @@
     <string name="sign_out">Sign out</string>
     <string name="request_ride">Request ride</string>
     <string name="choose_driver">Choose a driver</string>
-    <string name="pay_at_most">I pay at most</string>
-    <string name="max_fare_hint">Drivers reply with offers up to this amount. Nothing is locked until you pick one.</string>
+    <string name="pay_at_most">My price</string>
+    <string name="max_fare_hint">Drivers reply with offers around this amount. Nothing is locked until you pick one.</string>
     <string name="not_enough_balance">Not enough balance for this amount plus the bond.</string>
     <string name="ask_for_offers">Ask for offers</string>
     <string name="no_surge">No surge pricing. Drivers make the offer, you choose.</string>
@@ -116,7 +116,7 @@
     <string name="blocked_role">This account is not registered as a driver.</string>
     <string name="blocked_age">Your account is too new to accept rides.</string>
     <string name="new_request">New request</string>
-    <string name="pays_at_most">Pays at most</string>
+    <string name="pays_at_most">Rider proposes</string>
     <string name="lower_offer">Lower offer</string>
     <string name="raise_offer">Raise offer</string>
     <string name="you_receive">You get %1$s · %2$s goes to Instituto Klippel</string>
@@ -146,7 +146,7 @@
     <string name="per_km">%1$s per km</string>
     <string name="routing">Working out the route on this phone…</string>
     <string name="route_failed">Could not find a route: %1$s</string>
-    <string name="route_private">Search and routing run on this phone. Drivers see only how far and how long the trip is.</string>
+    <string name="route_private">Search and routing run on this phone. Drivers see the distance, the duration and the rough area of the pickup and the destination, about 1 km across, never the address.</string>
     <string name="map_title">Map of the region</string>
     <string name="map_checking">Checking the map…</string>
     <string name="map_not_published">No map has been published on this network yet.</string>
@@ -165,4 +165,41 @@
     <string name="decline_ride">Decline ride</string>
     <string name="decline_hint">Declining costs nothing: the rider gets everything back.</string>
     <string name="asked_again">The driver gave up the ride and you have everything back. The same request went out again to the other drivers.</string>
+
+    <!-- Price guide and the driver's rules -->
+    <string name="price_needs_route">Pick a destination to see the recommended price.</string>
+    <string name="price_recommended">Recommended for this trip: %1$s</string>
+    <string name="price_range_hint">You can move it up to %1$d%% up or down. Drivers can offer from %2$d%% under your price up to %3$d%% over the recommended one.</string>
+    <string name="lower_price">Lower</string>
+    <string name="raise_price">Raise</string>
+    <string name="recommended_short">recommended %1$s</string>
+    <string name="auto_skip_title">Skip requests automatically</string>
+    <string name="auto_skip_per_km">Minimum per km</string>
+    <string name="auto_skip_below">Under the recommended price</string>
+    <string name="auto_skip_off">Off</string>
+    <string name="auto_skip_percent">I take up to %1$d%% under</string>
+    <plurals name="auto_skipped">
+        <item quantity="one">%1$d request skipped right now by your rules or a recent refusal.</item>
+        <item quantity="other">%1$d requests skipped right now by your rules or a recent refusal.</item>
+    </plurals>
+
+    <!-- The tariff on the rules page -->
+    <string name="tariff_title">Recommended price</string>
+    <string name="tariff_body">The app suggests a price for each trip from its distance and duration. You adjust it within a limit and drivers answer with offers.</string>
+    <string name="tariff_base">Fixed amount per ride</string>
+    <string name="tariff_per_km">Per kilometre</string>
+    <string name="tariff_per_minute">Per minute</string>
+    <string name="tariff_minimum">Lowest recommended price</string>
+    <string name="tariff_rider_range">Rider\'s adjustment</string>
+    <string name="tariff_percent_either_way">up to %1$d%% up or down</string>
+    <string name="tariff_driver_discount">Driver\'s offer</string>
+    <string name="tariff_percent_under">from %1$d%% under your price up to %2$d%% over the recommended one</string>
+    <string name="tariff_example">Example: 5 km in 12 minutes comes to %1$s + %2$s + %3$s, rounded to %4$s.</string>
+    <string name="tariff_notes">The distance and duration used are the ones in the request, rounded to 500 m and 1 minute, and the price is rounded to R$ 0,50. There is no surge pricing: the sum is the same at any hour.</string>
+    <string name="reprice_title">No offers yet? Adjust the price</string>
+    <string name="reprice_action">Ask again at this price</string>
+    <string name="reprice_hint">The current request is withdrawn and the same trip is asked again at the new price.</string>
+    <string name="region_pickup">Pickup in the area of</string>
+    <string name="region_dropoff">Destination in the area of</string>
+    <string name="region_on_map">area marked on the map</string>
 </resources>

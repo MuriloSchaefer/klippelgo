@@ -31,6 +31,8 @@ import org.klippelgo.chain.Ride
 import org.klippelgo.chain.RideStatus
 import org.klippelgo.chain.RideRequest
 import org.klippelgo.chain.RouteSummary
+import org.klippelgo.chain.Tariff
+import org.klippelgo.core.Bounds
 import org.klippelgo.core.CheckedQuote
 import org.klippelgo.core.Coordinate
 import org.klippelgo.core.EscrowRef
@@ -42,6 +44,8 @@ import org.klippelgo.core.Place
 import org.klippelgo.core.VehicleKind
 import org.klippelgo.core.coarseRoute
 import org.klippelgo.core.quoteJson
+import org.klippelgo.core.regionBounds
+import org.klippelgo.core.regionCell
 import org.klippelgo.core.routeHash
 import org.web3j.crypto.Hash
 import org.web3j.utils.Numeric
@@ -54,6 +58,12 @@ import java.net.URI
 import java.security.SecureRandom
 
 enum class Role { RIDER, DRIVER }
+
+/**
+ * Where a request's trip starts and ends, as far as a driver is told: two regions of about a square kilometre,
+ * with the name of the neighbourhood each is in when this phone's map pack knows one.
+ */
+data class TripRegions(val pickup: Bounds, val dropoff: Bounds, val pickupName: String?, val dropoffName: String?)
 
 data class UiState(
     val role: Role? = null,
@@ -99,6 +109,16 @@ data class UiState(
     val routeError: String? = null,
     /** Rider: the driver gave the ride up, so the same request went out again for other drivers. */
     val askedAgain: Boolean = false,
+    /** The price guide governance set: what a trip is recommended to cost and how far anyone may move from it. */
+    val tariff: Tariff? = null,
+    /** Driver: requests under this many reais per km are skipped. Zero switches the rule off. */
+    val minPerKm: BigDecimal = BigDecimal.ZERO,
+    /** Driver: requests priced more than this many percent under the recommendation are skipped. */
+    val maxBelowPercent: Int = 10,
+    /** Driver: how many open requests those rules and a recent refusal are hiding right now. */
+    val skippedRequests: Int = 0,
+    /** Driver: the pickup and drop-off regions of each open request, by request id. */
+    val regions: Map<BigInteger, TripRegions> = emptyMap(),
     /** Driver: where this phone is, once the driver has allowed reading it. */
     val location: Coordinate? = null,
     /** Driver: the checked route of each ride the driver was chosen for, by ride id. */
@@ -123,6 +143,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             role = prefs.getString("role", null)?.let { runCatching { Role.valueOf(it) }.getOrNull() },
             rpcUrl = prefs.getString("rpc", DEFAULT_RPC) ?: DEFAULT_RPC,
             name = prefs.getString("name", "") ?: "",
+            minPerKm = BigDecimal(prefs.getString("minPerKm", "0") ?: "0"),
+            maxBelowPercent = prefs.getInt("maxBelowPercent", 10),
         ),
     )
     val state: StateFlow<UiState> = _state
@@ -148,19 +170,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Pick the role for this device. Each role uses a seeded test account: the first rider or driver, or the
-     * second when `pair` is 2, so that four phones can play two riders and two drivers. The pair sticks to the
-     * phone until another is given.
+     * Pick the role for this device.
+     *
+     * A phone is one person with one account, whichever mode it is in: switching between passenger and driver
+     * changes what the phone does, not who it is. The account is one of four seeded test accounts. It is chosen
+     * the first time, from the role the phone starts in and `pair` (1 or 2, so that four phones can play two
+     * riders and two drivers), and kept from then on. A launch that names a `pair` chooses again.
      */
-    fun connect(role: Role, rpcUrl: String, pair: Int = prefs.getInt("pair", 1)) {
-        prefs.edit().putString("role", role.name).putString("rpc", rpcUrl).putInt("pair", pair).apply()
-        val key = when (role) {
-            Role.RIDER -> if (pair == 2) DevAccount.RIDER_2 else DevAccount.RIDER
-            Role.DRIVER -> if (pair == 2) DevAccount.DRIVER_2 else DevAccount.DRIVER
+    fun connect(role: Role, rpcUrl: String, pair: Int? = null) {
+        val kept = prefs.getString("account", null)?.let { name -> DevAccount.entries.firstOrNull { it.name == name } }
+        // A phone set up before accounts were tied to phones remembers only its pair.
+        val second = (pair ?: prefs.getInt("pair", 1)) == 2
+        val key = if (pair == null && kept != null) kept else when (role) {
+            Role.RIDER -> if (second) DevAccount.RIDER_2 else DevAccount.RIDER
+            Role.DRIVER -> if (second) DevAccount.DRIVER_2 else DevAccount.DRIVER
         }
+        prefs.edit().putString("role", role.name).putString("rpc", rpcUrl).putString("account", key.name).apply()
         val c = KlippelGoClient(rpcUrl.trim(), key.privateKey, deployment)
         client = c
-        _state.value = UiState(role = role, rpcUrl = rpcUrl, address = c.address, name = _state.value.name)
+        _state.value = _state.value.let {
+            UiState(role = role, rpcUrl = rpcUrl, address = c.address, name = it.name, minPerKm = it.minPerKm, maxBelowPercent = it.maxBelowPercent)
+        }
         leaveGossip()
         prepareMap()
         val mySession = session
@@ -249,6 +279,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             routeHash = Numeric.toHexString(routeHash(id, route, salt)),
             distanceM = coarse.distanceM.toInt(),
             durationS = coarse.durationS.toInt(),
+            // Roughly where the trip starts and ends, so a driver can judge it. Never the points themselves.
+            pickupCell = regionCell(route.pickup),
+            dropoffCell = regionCell(route.dropoff),
         )
         pending = route to salt
         lastAsk = coin to maxFare
@@ -271,6 +304,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         val asked = runCatching { announce(m, ask.first, ask.second) }
         _state.update { it.copy(askedAgain = asked.isSuccess, error = asked.exceptionOrNull()?.let(::message)) }
+    }
+
+    /**
+     * Rider: asks again at another price when no driver is biting. The request out there is withdrawn and the
+     * same trip goes out at the new price, which the fare guide's range still bounds.
+     */
+    fun changePrice(request: RideRequest, price: BigInteger) = act {
+        val coin = it.coinFor(request.token)
+        _state.update { s -> s.copy(askedAgain = false) }
+        match?.closeRequest(request)
+        announce(match, coin, price)
     }
 
     fun cancelRequest(request: RideRequest) = act {
@@ -485,6 +529,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Rider: the route of each ride under way, read back from the quote this phone saved when it locked the fare,
+     * so the map still shows it after the app was closed.
+     */
+    private fun ownRoutes(c: KlippelGoClient, rides: List<Ride>): Map<BigInteger, CheckedQuote> {
+        val open = pack?.pack ?: return emptyMap()
+        val escrow = EscrowRef(c.deployment.chainId.toULong(), c.deployment.escrow)
+        val known = _state.value.rideRoutes
+        return rides.filter { it.status.isActive }.mapNotNull { ride ->
+            known[ride.id]?.let { return@mapNotNull ride.id to it }
+            val file = File(getApplication<Application>().filesDir, "rides/${ride.id}.quote.json").takeIf { it.exists() } ?: return@mapNotNull null
+            val checked = runCatching { open.checkQuote(escrow, file.readText()) }.getOrNull() ?: return@mapNotNull null
+            ride.id to checked
+        }.toMap()
+    }
+
+    /**
      * Driver: the stretches between rides, routed on this phone. From where the driver is to the first pickup
      * while that ride has not started, and from each ride's drop-off to the pickup of the one after.
      */
@@ -510,7 +570,68 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun cancel(id: BigInteger) = act {
         cancelledHere += id
+        // A driver who gives a ride up does not want the same rider's request straight back.
+        val ride = _state.value.rides.firstOrNull { r -> r.id == id }
+        if (ride != null && ride.driver == it.address) refused[ride.rider] = System.currentTimeMillis()
         it.cancel(id)
+    }
+
+    // ---------------------------------------------------------------- driver's rules
+
+    /** Riders whose ride this driver just gave up, and when. Their requests are skipped for a short while. */
+    private val refused = HashMap<String, Long>()
+
+    /** Skip requests under this many reais per km. Zero switches the rule off. */
+    fun setMinPerKm(reais: BigDecimal) {
+        val value = reais.max(BigDecimal.ZERO)
+        prefs.edit().putString("minPerKm", value.toPlainString()).apply()
+        _state.update { it.copy(minPerKm = value) }
+    }
+
+    /** Skip requests priced more than this many percent under the recommendation. */
+    fun setMaxBelowPercent(percent: Int) {
+        val limit = (_state.value.tariff?.riderRangeBps ?: 1_000) / 100
+        val value = percent.coerceIn(0, limit)
+        prefs.edit().putInt("maxBelowPercent", value).apply()
+        _state.update { it.copy(maxBelowPercent = value) }
+    }
+
+    private val regionCache = HashMap<BigInteger, TripRegions>()
+
+    /** The two regions of a request, named from this phone's map pack when it has one. */
+    private fun regionsOf(request: RideRequest): TripRegions? = regionCache[request.id] ?: run {
+        val pickup = regionBounds(request.route.pickupCell) ?: return null
+        val dropoff = regionBounds(request.route.dropoffCell) ?: return null
+        fun name(b: Bounds): String? {
+            val middle = Coordinate((b.southWest.latE7 + b.northEast.latE7) / 2, (b.southWest.lonE7 + b.northEast.lonE7) / 2)
+            return runCatching { pack?.pack?.locality(middle) }.getOrNull()
+        }
+        val known = pack != null
+        TripRegions(pickup, dropoff, name(pickup), name(dropoff)).also {
+            // Without the map pack there are no names yet: look again once it is there.
+            if (known) regionCache[request.id] = it
+            if (regionCache.size > 256) regionCache.clear()
+        }
+    }
+
+    /**
+     * Whether a request gets past this driver's rules: it pays enough per km, it is not too far under the
+     * recommended price, and it is not from a rider whose ride this driver gave up in the last few minutes.
+     */
+    private fun wanted(c: KlippelGoClient, tariff: Tariff?, request: RideRequest): Boolean {
+        val s = _state.value
+        val since = refused[request.rider]
+        if (since != null && System.currentTimeMillis() - since < SKIP_AFTER_REFUSAL_MS) return false
+        val coin = runCatching { c.coinFor(request.token) }.getOrNull() ?: return true
+        val price = coin.toReais(request.maxFare)
+        val perKm = price.multiply(BigDecimal(1000)).divide(BigDecimal(maxOf(request.route.distanceM, 1)), 2, java.math.RoundingMode.HALF_UP)
+        if (perKm < s.minPerKm) return false
+        if (tariff != null) {
+            val recommended = coin.fromCentavos(tariff.recommended(request.route.distanceM, request.route.durationS))
+            val lowest = recommended - recommended * BigInteger.valueOf(s.maxBelowPercent.toLong()) / BigInteger.valueOf(100)
+            if (request.maxFare < lowest) return false
+        }
+        return true
     }
 
     fun rate(id: BigInteger, stars: Int) = act { it.rate(id, stars) }
@@ -532,11 +653,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val open = m?.openRequests().orEmpty()
         val request = if (role == Role.RIDER) open.firstOrNull { it.rider == c.address } else null
         val offers = request?.let { m?.offers(it) }.orEmpty()
-        val requests = if (role == Role.DRIVER) open else emptyList()
+        // The tariff comes from the chain once; until it has, only the rules that need no tariff apply.
+        val tariff = _state.value.tariff ?: runCatching { c.tariff }.getOrNull()
+        val asked = if (role == Role.DRIVER) open else emptyList()
+        val requests = asked.filter { wanted(c, tariff, it) }
         val myOffers = requests.mapNotNull { r -> m?.offers(r, c.address)?.firstOrNull()?.let { r.id to it } }.toMap()
         _state.update {
             if (it.role != role) it else it.copy(
                 request = request, offers = offers, requests = requests, myOffers = myOffers,
+                tariff = tariff, skippedRequests = asked.size - requests.size,
+                regions = requests.mapNotNull { r -> regionsOf(r)?.let { r.id to it } }.toMap(),
                 gossipConnected = m?.let { g -> g.peers() > 0 },
             )
         }
@@ -559,7 +685,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val before = _state.value.rides.firstOrNull { it.status.isActive }
                 rides.firstOrNull { it.id == before?.id && it.status == RideStatus.Cancelled }?.let { afterCancelled(m, it) }
             }
-            val rideRoutes = if (role == Role.DRIVER) rideRoutes(c, m, rides) else emptyMap()
+            val rideRoutes = if (role == Role.DRIVER) rideRoutes(c, m, rides) else ownRoutes(c, rides)
             val links = if (role == Role.DRIVER) links(rides, rideRoutes) else emptyList()
             _state.update {
                 if (it.role != role) it else it.copy(
@@ -582,6 +708,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val MAX_RIDES = 10
+
+        /** How long a driver who gave a ride up is not shown that rider's requests. */
+        private const val SKIP_AFTER_REFUSAL_MS = 3 * 60_000L
 
         /** Prefers the addresses from the last deploy (bundled at build time), else a fresh testnet's. */
         private fun loadDeployment(app: Application): Deployment = runCatching {
