@@ -244,9 +244,20 @@ fn a_ride_from_route_to_receipt() {
     let offered = quote_hash(escrow.clone(), commitment.clone(), terms.clone()).unwrap();
     let quote = quote_json(pack.id(), route.clone(), salt, terms.clone()).unwrap();
     // Driver, once the rider reveals the route: the same hash comes out of checking it on the driver's pack.
+    let checked = pack.check_quote(escrow.clone(), quote.clone()).unwrap();
+    assert_eq!(checked.quote_hash, offered);
     assert_eq!(
-        pack.check_quote(escrow.clone(), quote.clone()).unwrap(),
-        offered
+        (checked.distance_m, checked.line.len()),
+        (route.distance_m, 6)
+    );
+    // The same route, sealed to the key in the driver's offer, is how it reaches the driver.
+    let offer_key = klippelgo_core::sealed::new_offer_key().unwrap();
+    let sealed =
+        klippelgo_core::sealed::seal_route(offer_key.public, offered.clone(), quote.clone())
+            .unwrap();
+    assert_eq!(
+        klippelgo_core::sealed::open_route(offer_key.secret, offered.clone(), sealed).unwrap(),
+        quote
     );
     let padded = quote.replace(
         &format!(r#""distanceM":{}"#, route.distance_m),

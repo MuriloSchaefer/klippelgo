@@ -158,4 +158,12 @@
     <string name="map_failed">O mapa não pôde ser usado: %1$s</string>
     <string name="zoom_in">Aproximar o mapa</string>
     <string name="zoom_out">Afastar o mapa</string>
+    <string name="make_offer">Fazer oferta</string>
+    <string name="route_checked">rota conferida no seu mapa</string>
+    <string name="route_waiting">Aguardando a rota do passageiro…</string>
+    <string name="route_needs_map">Baixe o mapa para ver a rota desta corrida.</string>
+    <string name="map_needed_driver">Baixe o mapa da região para ver as ruas e a rota de cada corrida. Sem ele você ainda recebe solicitações e faz ofertas.</string>
+    <string name="decline_ride">Recusar corrida</string>
+    <string name="decline_hint">Recusar não custa nada: o passageiro recebe tudo de volta.</string>
+    <string name="asked_again">O motorista desistiu da corrida e você recebeu tudo de volta. O mesmo pedido foi enviado de novo aos outros motoristas.</string>
 </resources>

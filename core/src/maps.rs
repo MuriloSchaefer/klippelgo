@@ -146,6 +146,18 @@ pub struct MeasuredRoute {
     pub line: Vec<Coordinate>,
 }
 
+/// A quote that held on this phone's pack.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CheckedQuote {
+    pub quote_hash: Vec<u8>,
+    pub pickup: Coordinate,
+    pub dropoff: Coordinate,
+    pub distance_m: u32,
+    pub duration_s: u32,
+    /// The route for drawing: from the pickup, through the nodes it passes, to the drop-off.
+    pub line: Vec<Coordinate>,
+}
+
 /// The escrow a quote or receipt is for.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct EscrowRef {
@@ -342,20 +354,37 @@ impl MapPack {
     }
 
     /// Checks a quote the other phone sent, on this phone's own copy of the pack: the route is drivable, starts
-    /// and ends where it says, and is as long as it says. Returns the quote hash to sign. `quote_json` is the
-    /// `quote` part of an evidence file.
-    pub fn check_quote(&self, escrow: EscrowRef, quote_json: String) -> Result<Vec<u8>, MapError> {
+    /// and ends where it says, and is as long as it says. Returns the quote hash, which must be the one this
+    /// phone signed or finds locked in the escrow, and the route to draw. `quote_json` is the `quote` part of
+    /// an evidence file.
+    pub fn check_quote(
+        &self,
+        escrow: EscrowRef,
+        quote_json: String,
+    ) -> Result<CheckedQuote, MapError> {
         let file: QuoteFile =
             serde_json::from_str(&quote_json).map_err(|e| MapError::Invalid(e.to_string()))?;
         let route_quote = RouteQuote::try_from(&file)?;
         let witness = self.pack.witness(route_quote.path.iter().map(|s| s.way))?;
-        quote::check(
-            &route_quote,
-            &witness,
-            &self.pack.pack(),
-            &Params::default(),
+        let pack = self.pack.pack();
+        quote::check(&route_quote, &witness, &pack, &Params::default())?;
+        let mut line = klippelgo_verify::path::resolve(
+            &route_quote.path,
+            &witness.ways(&pack.proof_root)?,
+            route_quote.vehicle,
         )?;
-        Ok(route_quote.hash(&escrow.domain()?).to_vec())
+        // The path runs corner to corner; the ride starts and ends part-way along its first and last blocks.
+        if let [first, .., last] = line.as_mut_slice() {
+            (*first, *last) = (route_quote.pickup, route_quote.dropoff);
+        }
+        Ok(CheckedQuote {
+            quote_hash: route_quote.hash(&escrow.domain()?).to_vec(),
+            pickup: route_quote.pickup.into(),
+            dropoff: route_quote.dropoff.into(),
+            distance_m: route_quote.distance_m,
+            duration_s: route_quote.duration_s,
+            line: line.into_iter().map(Coordinate::from).collect(),
+        })
     }
 
     /// Writes the trip receipt for a finished ride. `evidence_json` holds the quote and the logs so far (one

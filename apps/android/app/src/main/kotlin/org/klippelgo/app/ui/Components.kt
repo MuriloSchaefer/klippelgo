@@ -273,6 +273,7 @@ fun MapSurface(modifier: Modifier = Modifier, scene: MapScene? = null, content: 
                 ink = MaterialTheme.colorScheme.primary,
                 accent = MaterialTheme.colorScheme.tertiary,
                 ring = MaterialTheme.colorScheme.surface,
+                muted = MaterialTheme.colorScheme.outline,
                 modifier = Modifier.fillMaxSize(),
             )
             // The map data's licence asks for this credit wherever the map is shown.

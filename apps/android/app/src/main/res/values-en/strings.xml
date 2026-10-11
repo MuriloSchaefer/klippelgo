@@ -157,4 +157,12 @@
     <string name="map_failed">The map could not be used: %1$s</string>
     <string name="zoom_in">Zoom in</string>
     <string name="zoom_out">Zoom out</string>
+    <string name="make_offer">Make an offer</string>
+    <string name="route_checked">route checked on your map</string>
+    <string name="route_waiting">Waiting for the rider\'s route…</string>
+    <string name="route_needs_map">Download the map to see this ride\'s route.</string>
+    <string name="map_needed_driver">Download the map of the region to see the streets and each ride\'s route. Without it you still get requests and can make offers.</string>
+    <string name="decline_ride">Decline ride</string>
+    <string name="decline_hint">Declining costs nothing: the rider gets everything back.</string>
+    <string name="asked_again">The driver gave up the ride and you have everything back. The same request went out again to the other drivers.</string>
 </resources>

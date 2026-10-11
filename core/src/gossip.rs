@@ -23,8 +23,9 @@ pub const DEFAULT_PORT: u16 = 4001;
 /// Every KlippelGo topic starts with this. Routers forward nothing else.
 pub const TOPIC_PREFIX: &str = "/klippelgo/";
 
-/// Largest message a peer accepts. Matching messages are a few hundred bytes.
-const MAX_MESSAGE_BYTES: usize = 4096;
+/// Largest message a peer accepts. Matching messages are a few hundred bytes; a route sealed for the chosen
+/// driver is a few kilobytes, and tens for a trip across a large city.
+const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
 /// Messages kept for the caller between two `drain` calls. Older ones are dropped first.
 const MAX_INBOX: usize = 4096;

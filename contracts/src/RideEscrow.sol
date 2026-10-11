@@ -195,12 +195,12 @@ contract RideEscrow is Governed, ReentrancyGuard {
         _settle(rideId, r);
     }
 
-    /// @notice Before acceptance the rider gets everything back. After acceptance the canceller's bond goes to
-    /// the other party.
+    /// @notice Before acceptance the rider can withdraw and the chosen driver can decline; either way the rider
+    /// gets everything back and nobody pays. After acceptance the canceller's bond goes to the other party.
     function cancel(uint256 rideId) external nonReentrant {
         Ride storage r = _rides[rideId];
         if (r.status == Status.Open) {
-            if (msg.sender != r.rider) revert NotRider();
+            if (msg.sender != r.rider && msg.sender != r.driver) revert NotParty();
             r.status = Status.Cancelled;
             r.token.safeTransfer(r.rider, r.fare + r.riderBond);
         } else if (r.status == Status.Accepted) {

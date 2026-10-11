@@ -157,4 +157,12 @@
     <string name="map_failed">No se pudo usar el mapa: %1$s</string>
     <string name="zoom_in">Acercar el mapa</string>
     <string name="zoom_out">Alejar el mapa</string>
+    <string name="make_offer">Hacer oferta</string>
+    <string name="route_checked">ruta verificada en tu mapa</string>
+    <string name="route_waiting">Esperando la ruta del pasajero…</string>
+    <string name="route_needs_map">Descarga el mapa para ver la ruta de este viaje.</string>
+    <string name="map_needed_driver">Descarga el mapa de la región para ver las calles y la ruta de cada viaje. Sin él igual recibes solicitudes y puedes hacer ofertas.</string>
+    <string name="decline_ride">Rechazar viaje</string>
+    <string name="decline_hint">Rechazar no cuesta nada: el pasajero recibe todo de vuelta.</string>
+    <string name="asked_again">El conductor desistió del viaje y recuperaste todo. El mismo pedido se envió de nuevo a los demás conductores.</string>
 </resources>

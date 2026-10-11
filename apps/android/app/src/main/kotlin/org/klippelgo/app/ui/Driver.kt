@@ -1,5 +1,10 @@
 package org.klippelgo.app.ui
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -57,19 +62,47 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.util.Locale
 
-/** Picks the driver's screen: a ride in progress first, then a rating owed, then requests while online. */
+/**
+ * Picks the driver's screen: rides in hand first, then a rating owed, then requests while online. A driver with
+ * a ride in hand still sees new requests and can quote on them, to line the next ride up behind this one.
+ */
 @Composable
 fun DriverApp(state: UiState, vm: AppViewModel) {
-    val active = state.rides.firstOrNull { it.status.isActive }
+    // Oldest first: the ride being driven, then the ones taken after it.
+    val mine = state.rides.filter { it.status.isActive }.sortedBy { it.id }
+    val current = mine.firstOrNull { it.status != RideStatus.Open }
+    val chosen = mine.firstOrNull { it.status == RideStatus.Open }
     var online by rememberSaveable { mutableStateOf(false) }
+    var quoting by rememberSaveable { mutableStateOf(false) }
     var passed by remember { mutableStateOf(emptySet<BigInteger>()) }
     var skipped by remember { mutableStateOf(emptySet<BigInteger>()) }
     val toRate = state.rides.firstOrNull()
         ?.takeIf { it.status == RideStatus.Completed && it.id !in state.rated && it.id !in skipped }
     val request = state.requests.firstOrNull { it.id !in passed }
 
+    // The driver's own position, for their own map. Asked once; without it the map simply has no blue dot.
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { vm.startLocation() }
+    LaunchedEffect(Unit) {
+        permission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+    }
+
     when {
-        active != null -> DriverRide(state, active, vm)
+        mine.isNotEmpty() && quoting && request != null -> {
+            val back = { quoting = false }
+            BackHandler(onBack = back)
+            IncomingRequest(
+                state, request,
+                onPass = {
+                    passed = passed + request.id
+                    quoting = false
+                },
+                onSend = {
+                    vm.sendOffer(request, it)
+                    quoting = false
+                },
+            )
+        }
+        mine.isNotEmpty() -> DriverRide(state, current, chosen, request, onQuote = { quoting = true }, vm)
         toRate != null -> RideEndScreen(
             state, toRate,
             onBack = null,
@@ -88,6 +121,28 @@ fun DriverApp(state: UiState, vm: AppViewModel) {
     }
 }
 
+/**
+ * The driver's map: where this phone is, the ride being driven, the rides taken after it in another colour, and
+ * the way between them. A ride's route is drawn once the rider's sealed route has arrived and checked out on
+ * this phone's map pack.
+ */
+@Composable
+fun driverScene(state: UiState): MapScene? {
+    val map = state.map as? MapState.Ready ?: return null
+    val mine = state.rides.filter { it.status.isActive }.sortedBy { it.id }
+    val current = mine.firstOrNull { it.status != RideStatus.Open }
+    val lines = state.links.map { MapLine(it, LineKind.LINK) } + mine.mapNotNull { ride ->
+        val route = state.rideRoutes[ride.id] ?: return@mapNotNull null
+        val kind = when {
+            ride.id != current?.id -> LineKind.NEXT
+            ride.status == RideStatus.Started -> LineKind.UNDER_WAY
+            else -> LineKind.PLANNED
+        }
+        MapLine(route.line, kind)
+    }
+    return MapScene(basemap = map.basemap, centre = state.location ?: map.centre, lines = lines, me = state.location)
+}
+
 @Composable
 private fun OnlinePill(online: Boolean) {
     Pill {
@@ -103,7 +158,7 @@ private fun GoOnline(state: UiState, vm: AppViewModel, online: Boolean, onToggle
     val lift = with(LocalDensity.current) { (button / 2).roundToPx() }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
         Column(Modifier.fillMaxSize()) {
-            MapSurface(Modifier.weight(1f).fillMaxWidth(), sceneOf(state)) {
+            MapSurface(Modifier.weight(1f).fillMaxWidth(), driverScene(state)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OnlinePill(online)
@@ -208,7 +263,7 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
     val valid = fee != null && price > fee && price <= request.maxFare
 
     MapScreen(
-        scene = sceneOf(state),
+        scene = driverScene(state),
         map = {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OnlinePill(online = true)
@@ -272,54 +327,96 @@ private fun StepButton(symbol: String, description: String, enabled: Boolean, on
  * QR code and Bluetooth; until that exists the driver starts it with a button.
  */
 @Composable
-private fun DriverRide(state: UiState, ride: Ride, vm: AppViewModel) {
-    val coin = coinOf(state, ride.token)
-    val bond = brl(coin, ride.driverBond)
-    Column(Modifier.fillMaxSize()) {
+private fun DriverRide(state: UiState, current: Ride?, chosen: Ride?, request: RideRequest?, onQuote: () -> Unit, vm: AppViewModel) {
+    val lead = current ?: chosen ?: return
+    val coin = coinOf(state, lead.token)
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
         Surface(color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.fillMaxWidth()) {
             Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(KIcons.Lock, contentDescription = null)
                 Column {
-                    Text(stringResource(R.string.guaranteed, brl(coin, ride.driverPayout)), fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.guaranteed, brl(coin, lead.driverPayout)), fontSize = 17.sp, fontWeight = FontWeight.Bold)
                     Text(stringResource(R.string.paid_at_end), fontSize = 13.sp)
                 }
             }
         }
-        NetworkNotice(state, Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp))
-        KCard(Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp)) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    when (ride.status) {
-                        RideStatus.Open -> stringResource(R.string.driver_open_title)
-                        RideStatus.Accepted -> stringResource(R.string.pickup_title)
-                        else -> statusLabel(ride.status)
-                    },
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
+        MapSurface(Modifier.weight(1f).fillMaxWidth(), driverScene(state)) {
+            NetworkNotice(state, Modifier.padding(20.dp))
+        }
+        Sheet {
+            if (current != null) {
+                val bond = brl(coinOf(state, current.token), current.driverBond)
+                RideSummary(state, current, next = false)
+                when (current.status) {
+                    RideStatus.Accepted -> {
+                        PrimaryButton(stringResource(R.string.action_start), { vm.start(current.id) }, busy = state.busy)
+                        SecondaryButton(stringResource(R.string.cancel_ride), { vm.cancel(current.id) }, Modifier.fillMaxWidth(), enabled = !state.busy)
+                        Muted(stringResource(R.string.driver_cancel_hint, bond), size = 12.sp, align = TextAlign.Center)
+                    }
+                    RideStatus.Started -> Muted(stringResource(R.string.driver_trip_hint), size = 13.sp)
+                    else -> {}
+                }
+            }
+            if (chosen != null) {
+                val bond = brl(coinOf(state, chosen.token), chosen.driverBond)
+                if (current != null) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                // With a ride already in hand, this one is drawn in the other colour and comes after it.
+                RideSummary(state, chosen, next = current != null)
+                PrimaryButton(stringResource(R.string.action_accept), { vm.accept(chosen.id) }, enabled = state.canAccept, busy = state.busy)
+                SecondaryButton(stringResource(R.string.decline_ride), { vm.cancel(chosen.id) }, Modifier.fillMaxWidth(), enabled = !state.busy)
+                Muted(
+                    stringResource(R.string.accept_hint, bond) + " " + stringResource(R.string.decline_hint),
+                    size = 12.sp,
+                    align = TextAlign.Center,
                 )
-                Text(shortAddress(ride.rider), fontFamily = PlexMono, fontSize = 15.sp)
-                Muted(stringResource(R.string.ride_number, ride.id.toString()) + " · " + brl(coin, ride.fare), size = 13.sp)
+            }
+            if (request != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                val asked = coinOf(state, request.token)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(stringResource(R.string.new_request), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Muted(
+                            routeLabel(request.route.distanceM, request.route.durationS) + " · " +
+                                stringResource(R.string.pays_at_most) + " " + brl(asked, request.maxFare),
+                            size = 13.sp,
+                        )
+                    }
+                    SecondaryButton(stringResource(R.string.make_offer), onQuote)
+                }
             }
         }
-        Spacer(Modifier.weight(1f))
-        Column(
-            Modifier.padding(start = 20.dp, end = 20.dp, bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            when (ride.status) {
-                RideStatus.Open -> {
-                    PrimaryButton(stringResource(R.string.action_accept), { vm.accept(ride.id) }, enabled = state.canAccept, busy = state.busy)
-                    Muted(stringResource(R.string.accept_hint, bond), size = 12.sp, align = TextAlign.Center)
-                }
-                RideStatus.Accepted -> {
-                    PrimaryButton(stringResource(R.string.action_start), { vm.start(ride.id) }, busy = state.busy)
-                    SecondaryButton(stringResource(R.string.cancel_ride), { vm.cancel(ride.id) }, Modifier.fillMaxWidth(), enabled = !state.busy)
-                    Muted(stringResource(R.string.driver_cancel_hint, bond), size = 12.sp, align = TextAlign.Center)
-                }
-                RideStatus.Started -> Muted(stringResource(R.string.driver_trip_hint), size = 13.sp, align = TextAlign.Center)
-                else -> {}
-            }
+    }
+}
+
+/** One ride in the driver's sheet: what it is, who, how much, and its route once the rider's phone sent it. */
+@Composable
+private fun RideSummary(state: UiState, ride: Ride, next: Boolean) {
+    val coin = coinOf(state, ride.token)
+    val route = state.rideRoutes[ride.id]
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (next) Dot(NextRide, 10.dp)
+            Text(
+                when (ride.status) {
+                    RideStatus.Open -> stringResource(R.string.driver_open_title)
+                    RideStatus.Accepted -> stringResource(R.string.pickup_title)
+                    else -> statusLabel(ride.status)
+                },
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Text(shortAddress(ride.rider), fontFamily = PlexMono, fontSize = 15.sp)
+        Muted(stringResource(R.string.ride_number, ride.id.toString()) + " · " + brl(coin, ride.fare), size = 13.sp)
+        when {
+            route != null -> Text(
+                routeLabel(route.distanceM.toInt(), route.durationS.toInt()) + " · " + stringResource(R.string.route_checked),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            state.map !is MapState.Ready -> Muted(stringResource(R.string.route_needs_map), size = 13.sp)
+            else -> Muted(stringResource(R.string.route_waiting), size = 13.sp)
         }
     }
 }

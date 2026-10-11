@@ -189,6 +189,24 @@ contract ProtocolTest is Test, ProtocolDeployer {
         assertEq(brz.balanceOf(rider), before + 5_0000); // driver bond R$ 5,00
     }
 
+    function test_ChosenDriverCanDeclineBeforeAccepting() public {
+        uint256 riderBefore = brz.balanceOf(rider);
+        uint256 driverBefore = brz.balanceOf(driver);
+        vm.prank(rider);
+        uint256 id = p.escrow.open(driver, brz, FARE, keccak256("quote"));
+
+        vm.prank(jurors[0]);
+        vm.expectRevert(RideEscrow.NotParty.selector);
+        p.escrow.cancel(id);
+        vm.prank(driver);
+        p.escrow.cancel(id);
+
+        // The rider has the fare and bond back; declining cost the driver nothing.
+        assertEq(brz.balanceOf(rider), riderBefore);
+        assertEq(brz.balanceOf(driver), driverBefore);
+        assertEq(uint8(p.escrow.ride(id).status), uint8(RideEscrow.Status.Cancelled));
+    }
+
     function test_RejectsTokenNotOnAllowList() public {
         MockBRL other = new MockBRL("X", "X", 18);
         vm.prank(rider);

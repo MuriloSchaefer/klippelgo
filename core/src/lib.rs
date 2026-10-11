@@ -13,5 +13,6 @@ pub mod geo;
 pub mod gossip;
 pub mod maps;
 pub mod money;
+pub mod sealed;
 
 uniffi::setup_scaffolding!();

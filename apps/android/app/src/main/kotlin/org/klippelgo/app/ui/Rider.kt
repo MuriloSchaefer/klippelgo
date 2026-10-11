@@ -85,6 +85,7 @@ fun RiderApp(state: UiState, vm: AppViewModel) {
         }
     }
 
+
     when {
         state.showFunding -> WalletScreen(state, vm, onboarding = true, onDone = vm::fundingDone)
         active != null && active.status == RideStatus.Started && arrived -> {
@@ -218,15 +219,15 @@ private fun WhereTo(state: UiState, vm: AppViewModel, onAsk: () -> Unit, onProfi
     }
 }
 
-/** The map for a ride screen when the phone has a map pack; `null` leaves the grey grid. */
+/** The rider's map when the phone has a map pack; `null` leaves the grey grid. */
 @Composable
 fun sceneOf(state: UiState, underWay: Boolean = false, onCentre: ((Coordinate) -> Unit)? = null): MapScene? {
     val map = state.map as? MapState.Ready ?: return null
+    val route = state.route?.line.orEmpty()
     return MapScene(
         basemap = map.basemap,
         centre = state.pickup ?: map.centre,
-        route = state.route?.line.orEmpty(),
-        underWay = underWay,
+        lines = if (route.size < 2) emptyList() else listOf(MapLine(route, if (underWay) LineKind.UNDER_WAY else LineKind.PLANNED)),
         onCentre = onCentre,
     )
 }
@@ -243,7 +244,7 @@ fun MapNotice(state: UiState, onDownload: () -> Unit, modifier: Modifier = Modif
                 MapState.Checking -> Muted(stringResource(R.string.map_checking), size = 13.sp)
                 MapState.NotPublished -> Muted(stringResource(R.string.map_not_published), size = 13.sp)
                 is MapState.NotDownloaded -> {
-                    Muted(stringResource(R.string.map_needed), size = 13.sp)
+                    Muted(stringResource(if (state.role == Role.DRIVER) R.string.map_needed_driver else R.string.map_needed), size = 13.sp)
                     val megabytes = (map.bytes / 1_000_000).toInt()
                     PrimaryButton(
                         if (megabytes > 0) stringResource(R.string.map_download_size, megabytes) else stringResource(R.string.map_download),
@@ -618,6 +619,15 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                 state.destination?.let { KeyValue(stringResource(R.string.destination), it.name) }
                 KeyValue(stringResource(R.string.trip), routeLabel(request.route.distanceM, request.route.durationS))
                 KeyValue(stringResource(R.string.pay_at_most), brl(asked, request.maxFare), divider = false)
+            }
+            if (state.askedAgain) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    modifier = Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp),
+                ) {
+                    Text(stringResource(R.string.asked_again), Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 13.sp, lineHeight = 18.sp)
+                }
             }
             Row(
                 Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp, bottom = 8.dp),

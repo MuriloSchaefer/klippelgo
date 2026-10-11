@@ -3,6 +3,10 @@ package org.klippelgo.chain
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.klippelgo.core.GossipNode
+import org.klippelgo.core.OfferKey
+import org.klippelgo.core.newOfferKey
+import org.klippelgo.core.openRoute
+import org.klippelgo.core.sealRoute
 import org.web3j.abi.datatypes.Address
 import org.web3j.abi.datatypes.generated.Bytes32
 import org.web3j.abi.datatypes.generated.Uint256
@@ -11,6 +15,7 @@ import org.web3j.crypto.Hash
 import org.web3j.utils.Numeric
 import java.math.BigInteger
 import java.security.SecureRandom
+import java.util.Base64
 
 /**
  * Matches riders and drivers over gossip, as in the architecture plan: the rider gossips a request with a max
@@ -19,7 +24,8 @@ import java.security.SecureRandom
  *
  * The request says how far and how long the trip is, rounded, and on which map pack it was computed. Where it
  * starts and ends stays on the rider's phone: the request carries only a salted hash of the route, which every
- * quote signs over.
+ * quote signs over. Once the rider has locked an offer, their phone seals the route to a key in that offer and
+ * gossips it, so the chosen driver, and nobody else in the cell, learns where the ride goes.
  *
  * Gossip is open: anyone can join a topic, publish to it and replay what they heard. So every message is signed
  * by the account it speaks for and checked here before it is believed. Gossip also keeps no history, so the
@@ -48,6 +54,16 @@ class Matchmaker(
     private val closed = HashMap<BigInteger, ByteArray?>()
     private val riders = HashMap<String, Boolean>()
     private val packs = HashMap<String, Boolean>()
+
+    /** Driver: the key in this phone's offers for each request, and the hash of every quote it sent for it. */
+    private val routeKeys = HashMap<BigInteger, OfferKey>()
+    private val myQuotes = HashMap<BigInteger, MutableList<String>>()
+
+    /** Rider: the sealed route announced for each request whose offer this phone took. */
+    private val reveals = HashMap<BigInteger, ByteArray>()
+
+    /** Driver: routes riders sealed to this phone's offers, opened, by quote hash. Not yet checked on the map. */
+    private val revealed = HashMap<String, String>()
     private var announcedAt = 0L
 
     init {
@@ -67,6 +83,9 @@ class Matchmaker(
         requests.values.removeIf { it.request.expiresAt <= now }
         quotes.keys.retainAll(requests.keys)
         closed.keys.retainAll(requests.keys)
+        routeKeys.keys.retainAll(requests.keys)
+        myQuotes.keys.retainAll(requests.keys)
+        reveals.keys.retainAll(requests.keys)
 
         if (System.currentTimeMillis() - announcedAt < ANNOUNCE_EVERY_MS) return
         announcedAt = System.currentTimeMillis()
@@ -76,6 +95,7 @@ class Matchmaker(
             if (mine) {
                 seen.at = announcedAt
                 node.publish(topic, close ?: seen.message)
+                reveals[id]?.let { node.publish(topic, it) }
             }
             if (close == null) quotes[id]?.get(client.address)?.let { node.publish(topic, it.message) }
         }
@@ -143,12 +163,40 @@ class Matchmaker(
         node.publish(topic, message)
     }
 
-    /** Takes a quote: locks its fare and hash in the escrow, then withdraws the request. Returns the ride id. */
-    fun acceptOffer(request: RideRequest, offer: Offer): BigInteger {
-        val id = client.openRide(offer.driver, client.coinFor(request.token), offer.fare, Numeric.hexStringToByteArray(offer.quoteHash))
+    /**
+     * Takes a quote: locks its fare and hash in the escrow, withdraws the request, and sends the chosen driver
+     * the route. `quoteJson` is the quote the locked hash commits to; it goes out sealed to the key in the
+     * driver's offer and is announced until the request expires, since gossip keeps no history. Returns the
+     * ride id.
+     */
+    fun acceptOffer(request: RideRequest, offer: Offer, quoteJson: String? = null): BigInteger {
+        val quoteHash = Numeric.hexStringToByteArray(offer.quoteHash)
+        val id = client.openRide(offer.driver, client.coinFor(request.token), offer.fare, quoteHash)
         closeRequest(request)
+        if (quoteJson != null) revealRoute(request, offer, quoteJson)
         return id
     }
+
+    @Synchronized
+    private fun revealRoute(request: RideRequest, offer: Offer, quoteJson: String) {
+        val sealed = sealRoute(Numeric.hexStringToByteArray(offer.routeKey), Numeric.hexStringToByteArray(offer.quoteHash), quoteJson)
+        val message = encode(
+            "t" to "route",
+            "request" to hex(request.id),
+            "driver" to offer.driver,
+            "sealed" to Base64.getEncoder().encodeToString(sealed),
+            "sig" to Numeric.toHexString(client.sign(routeHash(request.id, offer.driver, sealed))),
+        )
+        reveals[request.id] = message
+        node.publish(topic, message)
+    }
+
+    /**
+     * Driver: the route a rider sealed to this phone's offer with this quote hash, or null if none arrived. It is
+     * the rider's claim until checked against the map pack and the hash locked in the escrow.
+     */
+    @Synchronized
+    fun revealedQuote(quoteHash: String): String? = revealed[quoteHash.lowercase()]
 
     // ---------------------------------------------------------------- driver
 
@@ -161,7 +209,10 @@ class Matchmaker(
         val expiresAt = minOf(now() + ttlSeconds, request.expiresAt)
         val seq = maxOf(System.currentTimeMillis(), (quotes[request.id]?.get(client.address)?.seq ?: 0) + 1)
         val quoteHash = client.quoteHash(request, client.address, fare, expiresAt)
-        val sig = Numeric.toHexString(client.sign(offerHash(quoteHash, seq)))
+        // One key per request, kept across re-quotes, for the rider to seal the route to.
+        val public = routeKeys.getOrPut(request.id) { newOfferKey() }.public
+        myQuotes.getOrPut(request.id) { mutableListOf() } += Numeric.toHexString(quoteHash)
+        val sig = Numeric.toHexString(client.sign(offerHash(quoteHash, seq, public)))
         val message = encode(
             "t" to "offer",
             "request" to hex(request.id),
@@ -169,9 +220,10 @@ class Matchmaker(
             "fare" to fare.toString(),
             "expiresAt" to expiresAt,
             "seq" to seq,
+            "routeKey" to Numeric.toHexString(public),
             "sig" to sig,
         )
-        val offer = Offer(request.id, client.address, fare, expiresAt, Numeric.toHexString(quoteHash), sig)
+        val offer = Offer(request.id, client.address, fare, expiresAt, Numeric.toHexString(quoteHash), sig, Numeric.toHexString(public))
         quotes.getOrPut(request.id) { LinkedHashMap() }[client.address] = Quote(offer, seq, message)
         node.publish(topic, message)
         return offer
@@ -185,6 +237,7 @@ class Matchmaker(
             "request" -> receiveRequest(m, data)
             "offer" -> receiveOffer(m, data)
             "close" -> receiveClose(m, data)
+            "route" -> receiveRoute(m)
         }
     }
 
@@ -229,8 +282,9 @@ class Matchmaker(
         if (expiresAt <= now() || expiresAt > request.expiresAt || fare > request.maxFare) return
         if (fare <= client.tokenConfig(client.coinFor(request.token)).first) return
         val quoteHash = client.quoteHash(request, driver, fare, expiresAt)
-        if (KlippelGoClient.signerOf(offerHash(quoteHash, seq), m.bytes("sig", 65)) != driver) return
-        val offer = Offer(request.id, driver, fare, expiresAt, Numeric.toHexString(quoteHash), m.text("sig"))
+        val routeKey = m.bytes("routeKey", 32)
+        if (KlippelGoClient.signerOf(offerHash(quoteHash, seq, routeKey), m.bytes("sig", 65)) != driver) return
+        val offer = Offer(request.id, driver, fare, expiresAt, Numeric.toHexString(quoteHash), m.text("sig"), Numeric.toHexString(routeKey))
         forRequest[driver] = Quote(offer, seq, data)
     }
 
@@ -239,6 +293,22 @@ class Matchmaker(
         if (request.id in closed) return
         if (KlippelGoClient.signerOf(closeHash(request.id), m.bytes("sig", 65)) != request.rider) return
         closed[request.id] = if (request.rider == client.address) data else null
+    }
+
+    /** A route sealed for one driver. Everyone in the cell receives it; only that driver can open it. */
+    private fun receiveRoute(m: JsonNode) {
+        if (m.address("driver") != client.address) return
+        val request = requests[BigInteger(1, m.bytes("request", 32))]?.request ?: return
+        val secret = routeKeys[request.id]?.secret ?: return
+        val sealed = Base64.getDecoder().decode(m.text("sealed"))
+        if (KlippelGoClient.signerOf(routeHash(request.id, client.address, sealed), m.bytes("sig", 65)) != request.rider) return
+        // The rider took one of this phone's quotes for the request, not necessarily the last: it opens for that one.
+        for (quoteHash in myQuotes[request.id].orEmpty()) {
+            if (quoteHash in revealed) return
+            val quote = runCatching { openRoute(secret, Numeric.hexStringToByteArray(quoteHash), sealed) }.getOrNull() ?: continue
+            revealed[quoteHash] = quote
+            return
+        }
     }
 
     // ---------------------------------------------------------------- encoding
@@ -265,8 +335,11 @@ class Matchmaker(
         Uint256(route.durationS.toLong()),
     )
 
-    private fun offerHash(quoteHash: ByteArray, seq: Long) =
-        KlippelGoClient.abiHash(Bytes32(OFFER_DOMAIN), Bytes32(quoteHash), Uint64(seq))
+    private fun offerHash(quoteHash: ByteArray, seq: Long, routeKey: ByteArray) =
+        KlippelGoClient.abiHash(Bytes32(OFFER_DOMAIN), Bytes32(quoteHash), Uint64(seq), Bytes32(routeKey))
+
+    private fun routeHash(requestId: BigInteger, driver: String, sealed: ByteArray) =
+        KlippelGoClient.abiHash(Bytes32(ROUTE_DOMAIN), Uint256(requestId), Address(driver), Bytes32(Hash.sha3(sealed)))
 
     private fun closeHash(requestId: BigInteger) = KlippelGoClient.abiHash(Bytes32(CLOSE_DOMAIN), Uint256(requestId))
 
@@ -297,8 +370,9 @@ class Matchmaker(
         private const val MAX_OFFERS_PER_REQUEST = 50
 
         private val REQUEST_DOMAIN: ByteArray = Hash.sha3("KlippelGo request v2".toByteArray())
-        private val OFFER_DOMAIN: ByteArray = Hash.sha3("KlippelGo offer v1".toByteArray())
+        private val OFFER_DOMAIN: ByteArray = Hash.sha3("KlippelGo offer v2".toByteArray())
         private val CLOSE_DOMAIN: ByteArray = Hash.sha3("KlippelGo close v1".toByteArray())
+        private val ROUTE_DOMAIN: ByteArray = Hash.sha3("KlippelGo sealed route v1".toByteArray())
 
         /** Gossip topic for matching in one geohash-5 cell. */
         fun topicFor(cell: String) = "/klippelgo/match/1/$cell"

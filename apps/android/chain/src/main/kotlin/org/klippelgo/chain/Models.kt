@@ -72,6 +72,8 @@ data class Offer(
     val quoteHash: String,
     /** The driver's signature over the quote, kept as proof of what was offered. */
     val signature: String,
+    /** The key the rider seals the route to if they take this offer, as 0x hex. Made for this offer alone. */
+    val routeKey: String,
 )
 
 data class DriverInfo(

@@ -1,4 +1,4 @@
-.PHONY: test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-apk android-test-chain
+.PHONY: test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-four-phones android-apk android-test-chain
 
 test: test-contracts test-core test-mappack
 
@@ -49,6 +49,10 @@ serve-packs:
 ## Android: rider and driver on two emulators against the local testnet (see apps/android/README.md).
 android-two-phones:
 	apps/android/scripts/two-phones.sh
+
+## Android: two riders and two drivers on four emulators. Needs about 16 GB of free RAM.
+android-four-phones:
+	PAIRS=2 apps/android/scripts/two-phones.sh
 
 android-apk:
 	cd apps/android && ./gradlew :app:assembleDebug

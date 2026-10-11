@@ -60,4 +60,8 @@ data class Deployment(
 enum class DevAccount(val privateKey: String) {
     RIDER("0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"),
     DRIVER("0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a"),
+
+    /** A second rider and driver (accounts #8 and #9), seeded by `contracts/script/SeedSecondPair.s.sol`. */
+    RIDER_2("0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97"),
+    DRIVER_2("0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6"),
 }

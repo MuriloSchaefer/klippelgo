@@ -61,6 +61,8 @@ class TwoPhonesRideTest {
         val driverMatch = Matchmaker(driverPhone, gossip())
 
         val pool = Executors.newFixedThreadPool(2)
+        // Stands in for the quote with the exact route, which only the chosen driver may read.
+        val routeForDriver = "{\"pickup\":[-249555000,-534552000]}"
         // Stands in for the hash of the trip receipt both phones sign at arrival.
         val receipt = Hash.sha3("trip receipt".toByteArray())
 
@@ -92,6 +94,8 @@ class TwoPhonesRideTest {
             assertEquals(fare, ride.fare)
             assertEquals(quote.quoteHash, ride.quoteHash) // the rider locked exactly what the driver signed
             poll("the rider's request to close", driverMatch) { true.takeIf { driverMatch.openRequests().isEmpty() } }
+            // The route arrives sealed to the key in the driver's offer: this driver can read it.
+            assertEquals(routeForDriver, poll("the sealed route", driverMatch) { driverMatch.revealedQuote(quote.quoteHash) })
             driverPhone.accept(id)
             driverPhone.start(id, Hash.sha3("pickup proof $id".toByteArray()))
             poll("the rider to confirm arrival") { id.takeIf { driverPhone.ride(id).status == RideStatus.Completed } }
@@ -109,7 +113,7 @@ class TwoPhonesRideTest {
             }
             assertEquals(driverPhone.address, offer.driver)
             assertEquals(1, riderMatch.offers(request).size)
-            val id = riderMatch.acceptOffer(request, offer)
+            val id = riderMatch.acceptOffer(request, offer, routeForDriver)
             assertTrue(riderMatch.openRequests().isEmpty())
             poll("the driver to start the ride", riderMatch) { id.takeIf { riderPhone.ride(id).status == RideStatus.Started } }
             riderPhone.complete(id, receipt)

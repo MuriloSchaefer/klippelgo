@@ -328,14 +328,16 @@ benchmark on-device proving once the verifier exists.**
 | --- | --- |
 | 1. Pilot pack and a real map | Built. `mappack/` builds the Cascavel pack; the Android app downloads it, checks it against `MapRegistry`, draws it with MapLibre and searches it offline. |
 | 2. On-device routing | Built on Android, for cars: Valhalla routes on the phone and the request carries distance and duration. Driver navigation with Ferrostar is not started. |
-| 3. Route quote proof | Built: proof index, verifier, `MapRegistry` with rebuild attestations, and the rider's phone locking the real quote hash. The driver checking the rider's route before accepting is in the core (`MapPack.check_quote`) but not in the app. |
+| 3. Route quote proof | Built: proof index, verifier, `MapRegistry` with rebuild attestations, the rider's phone locking the real quote hash, and the chosen driver's phone checking the route on its own pack before the driver accepts. The route reaches the driver sealed to a key in their offer, over gossip, in place of the encrypted channel. |
 | 4. Trip proof | Built and tested in the core and on chain: logs with countersigned heads, map-matching, the receipt, `receiptHash` in `complete`, `submitReceipt` and `timeout`. Not in the app, which sends a stand-in receipt hash. |
 | 5. Dispute tooling | `klippelgo-juror` checks revealed evidence against a pack. Default rules for small fares are not started. |
 | 6. Zero-knowledge study | Not started. The verifier is `no_std` and integer-only, as that study needs. |
 
-What keeps steps 3 and 4 out of the app is the encrypted ride channel: the exact route, the trace keys and the
-log heads all cross it, and it is not built. The app also places the pickup with a pin instead of reading the
-phone's location, and has no way to choose a motorcycle.
+What keeps step 4 out of the app is the encrypted ride channel: the trace keys and the log heads cross it in
+both directions throughout the ride, and it is not built. The one message step 3 needs, the route for the chosen
+driver, travels sealed over gossip instead (`core/src/sealed.rs`): X25519 to a key the driver put in their
+signed offer, then ChaCha20-Poly1305, bound to the quote hash. The rider's app places the pickup with a pin
+instead of reading the phone's location, and has no way to choose a motorcycle.
 
 **Where the build departed from the design above**
 

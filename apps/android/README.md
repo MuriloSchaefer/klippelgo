@@ -58,6 +58,11 @@ make serve-packs              # 3. serve the pack to the phones on port 4002 (le
 make android-two-phones       # 4. gossip node, two emulators, app installed, rider on one and driver on the other
 ```
 
+For two riders and two drivers at once, run `make android-four-phones` instead of step 4. It adds the
+emulators `KlippelGo_Rider2` and `KlippelGo_Driver2`, which use a second seeded rider and driver (accounts #8
+and #9), and puts each driver's emulator at a spot in the centre of Cascavel. Four emulators take about 16 GB of
+RAM between them.
+
 `make publish-pack` is needed again after every `make testnet-reset`. It moves the chain's clock three minutes
 ahead to get through the vote and the timelock.
 
@@ -80,8 +85,9 @@ Then play a ride:
    price per km and the breakdown, and tap **Bloquear**. The offered fare and a R$ 2,00 bond are locked in the
    escrow, with the hash of the quote the driver signed. The quote itself, with the exact route, is saved on
    the rider's phone under `files/rides/`.
-4. **Driver**: the screen changes to **O passageiro escolheu você**. Tap **Aceitar corrida** (posts a R$ 5,00
-   bond), then **Passageiro embarcou: iniciar**.
+4. **Driver**: the screen changes to **O passageiro escolheu você**, with the ride's route on the map once the
+   rider's sealed route has arrived and checked out. Tap **Aceitar corrida** (posts a R$ 5,00 bond), then
+   **Passageiro embarcou: iniciar**.
 5. **Rider**: the status changes to **Em viagem**. Tap **Cheguei ao destino**, pick the stars and tap
    **Confirmar e pagar**.
 6. **Driver**: the screen shows what you received, the fare minus R$ 1,00 that went to Instituto Klippel. Rate
@@ -107,11 +113,27 @@ The rider's phone computes the route with Valhalla, turns it into a path on the 
 verifier measure it, and locks the hash of the resulting quote. `klippelgo-juror` confirms a saved quote against
 the pack and the hash on chain.
 
-Not wired into the app, though built and tested in the core: the driver checking the rider's route before
-accepting, both phones logging GPS and countersigning each other's log, and the trip receipt at arrival. All
-three travel over the encrypted ride channel, which does not exist yet. Until it does, the driver prices the
-distance the rider's phone reports without being able to check it, and the app sends a stand-in hash where the
-trip receipt's hash belongs, as it already does for the pickup proof.
+Once the rider has locked an offer, their phone seals the quote, with the exact route, to a key the driver put
+in that offer, and gossips it. Everyone in the cell receives it and only the chosen driver can open it. The
+driver's phone checks the route on its own copy of the map pack and against the hash locked in the escrow, and
+only then draws it, before the driver accepts. This one sealed message stands in for the encrypted ride
+channel. A driver without the map pack cannot check a route and is shown none.
+
+Not wired into the app, though built and tested in the core: both phones logging GPS and countersigning each
+other's log, and the trip receipt at arrival. They need messages both ways throughout the ride, which is the
+encrypted ride channel proper. Until it exists the app sends a stand-in hash where the trip receipt's hash
+belongs, as it already does for the pickup proof.
+
+### The driver's map
+
+The driver's screens show the phone's own position (the app asks for the location permission; the position is
+not sent anywhere), the ride being driven, and the way to its pickup. A driver with a ride in hand still sees
+new requests and can quote on them. When a rider picks that quote, the new ride appears in orange with its
+route and the way from the current drop-off to its pickup, to accept or leave.
+
+On an emulator, set the position in the emulator's location panel or with
+`adb -s emulator-5556 emu geo fix -53.4590 -24.9520` (longitude first): it starts in California, outside the
+pack.
 
 ### What the gossip layer does and does not do yet
 
@@ -140,7 +162,9 @@ running for the two phones to find each other.
 ## Accounts
 
 The rider and driver use seeded accounts #3 and #4 from anvil's public test mnemonic, so both phones are funded
-and the driver already has stake and a CNH credential. These keys are public: the app only uses them on the
+and the driver already has stake and a CNH credential. The second rider and driver of `make android-four-phones`
+are accounts #8 and #9, set up the same way by `contracts/script/SeedSecondPair.s.sol`; `make deploy` runs it,
+and so does the four-phones script on a chain deployed before it existed. These keys are public: the app only uses them on the
 local testnet. Real phones will sign with a Secure Enclave or StrongBox key through a smart account, which is
 not built yet.
 
@@ -157,6 +181,11 @@ not built yet.
   `make publish-pack`.
 - **O mapa não pôde ser usado / The map could not be used.** `make serve-packs` must be running. The app looks
   for the mirror on port 4002 of the same host as the node address.
+- **Aguardando a rota do passageiro… and it never comes.** The gossip node is older than the app and drops the
+  sealed route. `make android-two-phones` rebuilds it; by hand, `docker compose -f testnet/docker-compose.yml up
+  -d --build gossip`. A driver whose app restarted after quoting cannot open that ride's route either.
+- **The driver emulator closes by itself.** The emulator's graphics can crash when the app is killed while
+  the map is on screen (`adb install`, force-stop). Press Home first, or just start the emulator again.
 - **A real phone on Wi-Fi.** Start the chain with `ANVIL_HOST=0.0.0.0 make testnet` and enter
   `http://<your computer's LAN IP>:8545` as the node address. Debug builds allow plain HTTP to any host. The
   gossip node's port 4001 is already published on every interface.

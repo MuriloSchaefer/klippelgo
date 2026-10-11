@@ -64,6 +64,8 @@ All accounts come from anvil's public test mnemonic (`test test ... junk`). Neve
 | 3 | Rider | Registered rider, R$ 1.000 in each mock coin |
 | 4 | Driver | Registered driver, R$ 100 stake, CNH credential hash |
 | 5-7 | Validators | R$ 500 stake each, can judge disputes |
+| 8 | Second rider | As #3, for trying four phones at once |
+| 9 | Second driver | As #4 |
 
 ### Local governance settings
 
@@ -110,8 +112,9 @@ signed requests and offers, but not yet session certificates, encrypted offers, 
 relays or the encrypted ride channel (see [apps/android](apps/android/README.md)). The pickup proof is recorded as a hash the driver submits; checking both phones' signatures comes
 with the smart accounts.
 
-Of the trip proofs, the Android app does the first half: it computes and verifies the route and locks the real
-quote hash. GPS logging, the signed trip receipt and the driver's own check of the route are built and tested
-in the core but not wired into the app, because the phones exchange them over the encrypted ride channel. Until
+Of the trip proofs, the Android app does the first half: the rider's phone computes and verifies the route and
+locks the real quote hash, and the chosen driver's phone receives the route sealed to it and checks it before
+the driver accepts. GPS logging and the signed trip receipt are built and tested in the core but not wired into
+the app, because the phones exchange them over the encrypted ride channel. Until
 then the app submits a stand-in receipt hash. See
 [docs/maps-and-routing.md](docs/maps-and-routing.md#what-is-built).
