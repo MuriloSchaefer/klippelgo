@@ -117,6 +117,10 @@ data class UiState(
     val maxBelowPercent: Int = 10,
     /** Driver: how many open requests those rules and a recent refusal are hiding right now. */
     val skippedRequests: Int = 0,
+    /** Rider: how many rides the driver has to finish before this phone's ride. Zero when it is their current one. */
+    val ridesAhead: Int = 0,
+    /** Rider: where the driver is, while this phone's ride is the one they are on and they are saying so. */
+    val driverAt: Coordinate? = null,
     /** Driver: the pickup and drop-off regions of each open request, by request id. */
     val regions: Map<BigInteger, TripRegions> = emptyMap(),
     /** Driver: where this phone is, once the driver has allowed reading it. */
@@ -545,6 +549,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Driver: lets the rider of the ride this phone is on see where it is. Only that rider: the position is
+     * sealed to a key they sent with their route, and riders whose turn has not come get nothing. The key is kept
+     * next to the saved route, so it survives the app being closed.
+     */
+    private fun sharePosition(m: Matchmaker?, rides: List<Ride>) {
+        val here = _state.value.location ?: return
+        val current = rides.filter { it.status == RideStatus.Accepted || it.status == RideStatus.Started }.minByOrNull { it.id } ?: return
+        val file = File(getApplication<Application>().filesDir, "rides").apply { mkdirs() }.resolve("${current.quoteHash.lowercase()}.riderkey")
+        val key = m?.riderKey(current.quoteHash)?.also { if (!file.exists()) file.writeBytes(it) }
+            ?: file.takeIf { it.exists() }?.readBytes() ?: return
+        runCatching { m?.sharePosition(current.quoteHash, key, here.latE7, here.lonE7) }
+    }
+
+    /**
      * Driver: the stretches between rides, routed on this phone. From where the driver is to the first pickup
      * while that ride has not started, and from each ride's drop-off to the pickup of the one after.
      */
@@ -686,12 +704,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 rides.firstOrNull { it.id == before?.id && it.status == RideStatus.Cancelled }?.let { afterCancelled(m, it) }
             }
             val rideRoutes = if (role == Role.DRIVER) rideRoutes(c, m, rides) else ownRoutes(c, rides)
+            // Rider: is the driver still busy with someone else, and if not, where are they.
+            val mine = rides.firstOrNull { it.status.isActive }.takeIf { role == Role.RIDER }
+            val ridesAhead = mine?.let { runCatching { c.ridesAhead(it) }.getOrDefault(0) } ?: 0
+            val driverAt = mine?.takeIf { ridesAhead == 0 }?.let { m?.driverPosition(it.quoteHash) }?.let { Coordinate(it.latE7, it.lonE7) }
+            if (role == Role.DRIVER) sharePosition(m, rides)
             val links = if (role == Role.DRIVER) links(rides, rideRoutes) else emptyList()
             _state.update {
                 if (it.role != role) it else it.copy(
                     connected = true, balances = balances, fees = fees, bonds = bonds, rides = rides, rated = rated,
                     drivers = drivers, canAccept = canAccept, blockers = blockers, me = me,
-                    rideRoutes = rideRoutes, links = links,
+                    rideRoutes = rideRoutes, links = links, ridesAhead = ridesAhead, driverAt = driverAt,
                 )
             }
         }

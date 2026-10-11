@@ -69,6 +69,7 @@ class TwoPhonesRideTest {
         val driverMatch = Matchmaker(driverPhone, gossip())
 
         val pool = Executors.newFixedThreadPool(2)
+        val riderSaw = java.util.concurrent.atomic.AtomicBoolean(false)
         // Stands in for the quote with the exact route, which only the chosen driver may read.
         val routeForDriver = "{\"pickup\":[${PICKUP.latE7},${PICKUP.lonE7}],\"dropoff\":[${DROPOFF.latE7},${DROPOFF.lonE7}]}"
         // Stands in for the hash of the trip receipt both phones sign at arrival.
@@ -113,6 +114,12 @@ class TwoPhonesRideTest {
             // The route arrives sealed to the key in the driver's offer: this driver can read it.
             assertEquals(routeForDriver, poll("the sealed route", driverMatch) { driverMatch.revealedQuote(quote.quoteHash) })
             driverPhone.accept(id)
+            // Now on this rider's ride, the driver lets them see where the car is. Only the rider can read it.
+            val riderKey = driverMatch.riderKey(quote.quoteHash) ?: error("the rider's position key did not arrive")
+            poll("the rider to see the driver's position", driverMatch) {
+                driverMatch.sharePosition(quote.quoteHash, riderKey, PICKUP.latE7 + 5_000, PICKUP.lonE7)
+                riderSaw.takeIf { it.get() }
+            }
             driverPhone.start(id, Hash.sha3("pickup proof $id".toByteArray()))
             poll("the rider to confirm arrival") { id.takeIf { driverPhone.ride(id).status == RideStatus.Completed } }
             assertEquals(Numeric.toHexString(receipt), driverPhone.ride(id).receiptHash)
@@ -131,6 +138,10 @@ class TwoPhonesRideTest {
             assertEquals(1, riderMatch.offers(request).size)
             val id = riderMatch.acceptOffer(request, offer, routeForDriver)
             assertTrue(riderMatch.openRequests().isEmpty())
+            assertEquals(0, riderPhone.ridesAhead(riderPhone.ride(id))) // this driver has no ride before this one
+            val seen = poll("the driver's position", riderMatch) { riderMatch.driverPosition(offer.quoteHash) }
+            assertEquals(PICKUP.latE7 + 5_000 to PICKUP.lonE7, seen.latE7 to seen.lonE7)
+            riderSaw.set(true)
             poll("the driver to start the ride", riderMatch) { id.takeIf { riderPhone.ride(id).status == RideStatus.Started } }
             riderPhone.complete(id, receipt)
             riderPhone.rate(id, 5)

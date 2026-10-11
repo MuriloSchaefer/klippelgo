@@ -202,4 +202,10 @@
     <string name="region_pickup">Recogida en la zona de</string>
     <string name="region_dropoff">Destino en la zona de</string>
     <string name="region_on_map">zona marcada en el mapa</string>
+    <plurals name="driver_busy_title">
+        <item quantity="one">El conductor está terminando otro viaje. El tuyo es el siguiente.</item>
+        <item quantity="other">El conductor tiene %1$d viajes antes del tuyo.</item>
+    </plurals>
+    <string name="driver_busy_body">Verás su posición en el mapa en cuanto tu viaje sea el que está haciendo. Cancelar mientras esperas sigue las mismas reglas.</string>
+    <string name="driver_live">Posición del conductor en vivo en el mapa.</string>
 </resources>

@@ -67,6 +67,14 @@ class Matchmaker(
 
     /** Driver: routes riders sealed to this phone's offers, opened, by quote hash. Not yet checked on the map. */
     private val revealed = HashMap<String, String>()
+
+    /** Driver: the key each rider gave for sealing this driver's position to them, by quote hash. */
+    private val riderKeys = HashMap<String, ByteArray>()
+    private var positionSentAt = 0L
+
+    /** Rider: for each ride this phone locked, by quote hash, the key positions are sealed to and whose they are. */
+    private class Watch(val key: OfferKey, val driver: String, var last: DriverPosition? = null)
+    private val watching = HashMap<String, Watch>()
     private var announcedAt = 0L
 
     init {
@@ -186,12 +194,16 @@ class Matchmaker(
     @Synchronized
     private fun revealRoute(request: RideRequest, offer: Offer, quoteJson: String) {
         val sealed = sealRoute(Numeric.hexStringToByteArray(offer.routeKey), Numeric.hexStringToByteArray(offer.quoteHash), quoteJson)
+        // A key of the rider's own goes with the route, for the driver to seal their position to once this ride
+        // is the one they are on.
+        val watch = watching.getOrPut(offer.quoteHash.lowercase()) { Watch(newOfferKey(), offer.driver) }
         val message = encode(
             "t" to "route",
             "request" to hex(request.id),
             "driver" to offer.driver,
             "sealed" to Base64.getEncoder().encodeToString(sealed),
-            "sig" to Numeric.toHexString(client.sign(routeHash(request.id, offer.driver, sealed))),
+            "key" to Numeric.toHexString(watch.key.public),
+            "sig" to Numeric.toHexString(client.sign(routeHash(request.id, offer.driver, sealed, watch.key.public))),
         )
         reveals[request.id] = message
         node.publish(topic, message)
@@ -203,6 +215,41 @@ class Matchmaker(
      */
     @Synchronized
     fun revealedQuote(quoteHash: String): String? = revealed[quoteHash.lowercase()]
+
+    /** Driver: the key the rider of this quote gave for positions, or null if their route never arrived. */
+    @Synchronized
+    fun riderKey(quoteHash: String): ByteArray? = riderKeys[quoteHash.lowercase()]
+
+    /**
+     * Driver: tells the rider of the ride this phone is on where it is. The position is sealed to the rider's
+     * key, so the cell sees that this driver is sending something for some ride and nothing else. Sent at most
+     * every few seconds; call it as often as fixes arrive.
+     */
+    @Synchronized
+    fun sharePosition(quoteHash: String, riderKey: ByteArray, latE7: Int, lonE7: Int) {
+        val now = System.currentTimeMillis()
+        if (now - positionSentAt < POSITION_EVERY_MS) return
+        positionSentAt = now
+        val quote = Numeric.hexStringToByteArray(quoteHash)
+        val sealed = sealRoute(riderKey, quote, "$latE7,$lonE7,$now")
+        node.publish(
+            topic,
+            encode(
+                "t" to "position",
+                "quote" to quoteHash.lowercase(),
+                "sealed" to Base64.getEncoder().encodeToString(sealed),
+                "sig" to Numeric.toHexString(client.sign(positionHash(quote, sealed))),
+            ),
+        )
+    }
+
+    /**
+     * Rider: where the driver of the ride locked with this quote last said they were, or null when they have
+     * said nothing in the last half minute. A driver only says so while this ride is the one they are on.
+     */
+    @Synchronized
+    fun driverPosition(quoteHash: String): DriverPosition? =
+        watching[quoteHash.lowercase()]?.last?.takeIf { System.currentTimeMillis() - it.atMs < POSITION_FRESH_MS }
 
     // ---------------------------------------------------------------- driver
 
@@ -244,6 +291,7 @@ class Matchmaker(
             "offer" -> receiveOffer(m, data)
             "close" -> receiveClose(m, data)
             "route" -> receiveRoute(m)
+            "position" -> receivePosition(m)
         }
     }
 
@@ -313,7 +361,8 @@ class Matchmaker(
         val request = requests[BigInteger(1, m.bytes("request", 32))]?.request ?: return
         val secret = routeKeys[request.id]?.secret ?: return
         val sealed = Base64.getDecoder().decode(m.text("sealed"))
-        if (KlippelGoClient.signerOf(routeHash(request.id, client.address, sealed), m.bytes("sig", 65)) != request.rider) return
+        val riderKey = m.bytes("key", 32)
+        if (KlippelGoClient.signerOf(routeHash(request.id, client.address, sealed, riderKey), m.bytes("sig", 65)) != request.rider) return
         // The rider took one of this phone's quotes for the request, not necessarily the last: it opens for that one.
         for (quoteHash in myQuotes[request.id].orEmpty()) {
             if (quoteHash in revealed) return
@@ -322,8 +371,23 @@ class Matchmaker(
             // different trip from the one being revealed.
             if (!startsAndEndsIn(quote, request.route)) return
             revealed[quoteHash] = quote
+            riderKeys[quoteHash] = riderKey
             return
         }
+    }
+
+    /** A driver's position, sealed for the rider of one ride. Only that rider's phone can open it. */
+    private fun receivePosition(m: JsonNode) {
+        val quoteHash = m.text("quote").lowercase()
+        val watch = watching[quoteHash] ?: return
+        val quote = Numeric.hexStringToByteArray(quoteHash)
+        val sealed = Base64.getDecoder().decode(m.text("sealed"))
+        if (KlippelGoClient.signerOf(positionHash(quote, sealed), m.bytes("sig", 65)) != watch.driver) return
+        val parts = runCatching { openRoute(watch.key.secret, quote, sealed) }.getOrNull()?.split(',') ?: return
+        if (parts.size != 3) return
+        val position = runCatching { DriverPosition(parts[0].toInt(), parts[1].toInt(), parts[2].toLong()) }.getOrNull() ?: return
+        // Gossip can deliver out of order, and a replayed message is an old one.
+        if (position.atMs > (watch.last?.atMs ?: 0)) watch.last = position.copy(atMs = minOf(position.atMs, System.currentTimeMillis()))
     }
 
     private fun startsAndEndsIn(quote: String, route: RouteSummary): Boolean = runCatching {
@@ -361,8 +425,11 @@ class Matchmaker(
     private fun offerHash(quoteHash: ByteArray, seq: Long, routeKey: ByteArray) =
         KlippelGoClient.abiHash(Bytes32(OFFER_DOMAIN), Bytes32(quoteHash), Uint64(seq), Bytes32(routeKey))
 
-    private fun routeHash(requestId: BigInteger, driver: String, sealed: ByteArray) =
-        KlippelGoClient.abiHash(Bytes32(ROUTE_DOMAIN), Uint256(requestId), Address(driver), Bytes32(Hash.sha3(sealed)))
+    private fun routeHash(requestId: BigInteger, driver: String, sealed: ByteArray, riderKey: ByteArray) =
+        KlippelGoClient.abiHash(Bytes32(ROUTE_DOMAIN), Uint256(requestId), Address(driver), Bytes32(Hash.sha3(sealed)), Bytes32(riderKey))
+
+    private fun positionHash(quoteHash: ByteArray, sealed: ByteArray) =
+        KlippelGoClient.abiHash(Bytes32(POSITION_DOMAIN), Bytes32(quoteHash), Bytes32(Hash.sha3(sealed)))
 
     private fun closeHash(requestId: BigInteger) = KlippelGoClient.abiHash(Bytes32(CLOSE_DOMAIN), Uint256(requestId))
 
@@ -395,7 +462,12 @@ class Matchmaker(
         private val REQUEST_DOMAIN: ByteArray = Hash.sha3("KlippelGo request v3".toByteArray())
         private val OFFER_DOMAIN: ByteArray = Hash.sha3("KlippelGo offer v2".toByteArray())
         private val CLOSE_DOMAIN: ByteArray = Hash.sha3("KlippelGo close v1".toByteArray())
-        private val ROUTE_DOMAIN: ByteArray = Hash.sha3("KlippelGo sealed route v1".toByteArray())
+        private val ROUTE_DOMAIN: ByteArray = Hash.sha3("KlippelGo sealed route v2".toByteArray())
+        private val POSITION_DOMAIN: ByteArray = Hash.sha3("KlippelGo sealed position v1".toByteArray())
+
+        /** How often a driver's position goes out at most, and how long a rider treats the last one as current. */
+        private const val POSITION_EVERY_MS = 4_000L
+        private const val POSITION_FRESH_MS = 30_000L
 
         /** Gossip topic for matching in one geohash-5 cell. */
         fun topicFor(cell: String) = "/klippelgo/match/1/$cell"

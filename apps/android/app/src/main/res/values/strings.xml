@@ -203,4 +203,10 @@
     <string name="region_pickup">Embarque na região de</string>
     <string name="region_dropoff">Destino na região de</string>
     <string name="region_on_map">área marcada no mapa</string>
+    <plurals name="driver_busy_title">
+        <item quantity="one">O motorista está terminando outra corrida. A sua é a próxima.</item>
+        <item quantity="other">O motorista tem %1$d corridas antes da sua.</item>
+    </plurals>
+    <string name="driver_busy_body">Você vê a posição dele no mapa assim que a sua corrida for a da vez. Cancelar enquanto espera segue as mesmas regras.</string>
+    <string name="driver_live">Posição do motorista ao vivo no mapa.</string>
 </resources>

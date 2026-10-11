@@ -202,4 +202,10 @@
     <string name="region_pickup">Pickup in the area of</string>
     <string name="region_dropoff">Destination in the area of</string>
     <string name="region_on_map">area marked on the map</string>
+    <plurals name="driver_busy_title">
+        <item quantity="one">The driver is finishing another ride. Yours is next.</item>
+        <item quantity="other">The driver has %1$d rides before yours.</item>
+    </plurals>
+    <string name="driver_busy_body">You will see their position on the map as soon as your ride is the one they are on. Cancelling while you wait follows the same rules.</string>
+    <string name="driver_live">The driver\'s live position is on the map.</string>
 </resources>

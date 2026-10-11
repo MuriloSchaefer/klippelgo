@@ -40,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -232,6 +233,7 @@ fun sceneOf(state: UiState, underWay: Boolean = false, onCentre: ((Coordinate) -
         basemap = map.basemap,
         centre = state.pickup ?: map.centre,
         lines = if (route.size < 2) emptyList() else listOf(MapLine(route, if (underWay) LineKind.UNDER_WAY else LineKind.PLANNED)),
+        driver = state.driverAt.takeIf { active != null },
         onCentre = onCentre,
     )
 }
@@ -861,6 +863,7 @@ private fun OnTheWay(state: UiState, ride: Ride, onCancel: () -> Unit) {
     ) {
         Text(statusLabel(ride.status), fontSize = 22.sp, fontWeight = FontWeight.Bold)
         DriverRow(state, ride.driver, avatar = 56)
+        DriverWhereabouts(state)
         when (ride.status) {
             RideStatus.Open -> Muted(stringResource(R.string.hint_open), size = 13.sp)
             RideStatus.Accepted -> Muted(
@@ -873,6 +876,34 @@ private fun OnTheWay(state: UiState, ride: Ride, onCancel: () -> Unit) {
             TextButton(onClick = onCancel, enabled = !state.busy, modifier = Modifier.align(Alignment.CenterHorizontally)) {
                 Text(stringResource(R.string.cancel_ride), fontSize = 14.sp, color = MaterialTheme.colorScheme.secondary)
             }
+        }
+    }
+}
+
+/**
+ * What the rider knows about where the driver is: still on someone else's ride, so this one waits its turn, or
+ * on this one and showing on the map.
+ */
+@Composable
+private fun DriverWhereabouts(state: UiState) {
+    when {
+        state.ridesAhead > 0 -> Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.tertiaryContainer,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    pluralStringResource(R.plurals.driver_busy_title, state.ridesAhead, state.ridesAhead),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Muted(stringResource(R.string.driver_busy_body), size = 13.sp)
+            }
+        }
+        state.driverAt != null -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Dot(NextRide, 10.dp)
+            Muted(stringResource(R.string.driver_live), size = 13.sp)
         }
     }
 }
@@ -908,6 +939,7 @@ private fun OnTrip(state: UiState, ride: Ride, onArrived: () -> Unit) {
             )
         }
         DriverRow(state, ride.driver)
+        DriverWhereabouts(state)
         Muted(stringResource(R.string.signal_note), size = 12.sp)
         PrimaryButton(stringResource(R.string.action_complete), onArrived)
     }

@@ -92,6 +92,8 @@ data class MapScene(
     val areas: List<MapArea> = emptyList(),
     /** This phone's own position. */
     val me: Coordinate? = null,
+    /** The driver's position, on the rider's map. */
+    val driver: Coordinate? = null,
     /** Called with the point under the middle of the map each time the rider stops moving it. */
     val onCentre: ((Coordinate) -> Unit)? = null,
 )
@@ -113,7 +115,7 @@ private fun Bounds.corners() = listOf(
     Coordinate(northEast.latE7, southWest.lonE7),
 )
 
-private fun sceneGeoJson(lines: List<MapLine>, areas: List<MapArea>, me: Coordinate?): String {
+private fun sceneGeoJson(lines: List<MapLine>, areas: List<MapArea>, me: Coordinate?, driver: Coordinate? = null): String {
     val features = mutableListOf<String>()
     for (area in areas) {
         val ring = (area.bounds.corners() + area.bounds.southWest).joinToString(",") { it.json() }
@@ -131,6 +133,7 @@ private fun sceneGeoJson(lines: List<MapLine>, areas: List<MapArea>, me: Coordin
         }
     }
     me?.let { features += point(it, "me") }
+    driver?.let { features += point(it, "driver") }
     return """{"type":"FeatureCollection","features":[${features.joinToString(",")}]}"""
 }
 
@@ -234,6 +237,23 @@ fun PackMap(scene: MapScene, ink: Color, accent: Color, ring: Color, muted: Colo
                             ).withFilter(only("point", point)),
                         )
                     }
+                    // The driver, on the rider's map: the colour of a ride on its way, in a halo, so it reads as
+                    // something moving and not as one of the route's ends.
+                    style.addLayer(
+                        CircleLayer("klippelgo-driver-halo", SOURCE).withProperties(
+                            PropertyFactory.circleRadius(20f),
+                            PropertyFactory.circleColor(NextRide.hex()),
+                            PropertyFactory.circleOpacity(0.25f),
+                        ).withFilter(only("point", "driver")),
+                    )
+                    style.addLayer(
+                        CircleLayer("klippelgo-driver", SOURCE).withProperties(
+                            PropertyFactory.circleRadius(9f),
+                            PropertyFactory.circleColor(NextRide.hex()),
+                            PropertyFactory.circleStrokeWidth(3f),
+                            PropertyFactory.circleStrokeColor(ring.hex()),
+                        ).withFilter(only("point", "driver")),
+                    )
                     // This phone: a blue dot in a soft halo, over everything else.
                     style.addLayer(
                         CircleLayer("klippelgo-me-halo", SOURCE).withProperties(
@@ -278,16 +298,16 @@ fun PackMap(scene: MapScene, ink: Color, accent: Color, ring: Color, muted: Colo
         }
     }
 
-    LaunchedEffect(ready, scene.lines, scene.areas, scene.me) {
+    LaunchedEffect(ready, scene.lines, scene.areas, scene.me, scene.driver) {
         val (_, style) = ready ?: return@LaunchedEffect
-        style.getSourceAs<GeoJsonSource>(SOURCE)?.setGeoJson(sceneGeoJson(scene.lines, scene.areas, scene.me))
+        style.getSourceAs<GeoJsonSource>(SOURCE)?.setGeoJson(sceneGeoJson(scene.lines, scene.areas, scene.me, scene.driver))
     }
     // Frame the routes when they change, and the driver with them. Following every move of the driver would
     // fight the hand that is moving the map.
-    val located = scene.me != null
+    val located = scene.me != null || scene.driver != null
     LaunchedEffect(ready, scene.lines, scene.areas, located) {
         val (map, _) = ready ?: return@LaunchedEffect
-        val points = scene.lines.flatMap { it.points } + scene.areas.flatMap { it.bounds.corners() } + listOfNotNull(scene.me)
+        val points = scene.lines.flatMap { it.points } + scene.areas.flatMap { it.bounds.corners() } + listOfNotNull(scene.me, scene.driver)
         when {
             points.size >= 2 -> {
                 val bounds = LatLngBounds.Builder().includes(points.map { it.latLng() }).build()

@@ -126,6 +126,9 @@ data class Offer(
     val routeKey: String,
 )
 
+/** Where a driver's phone said it was, as sent sealed to the rider of the ride it is on. */
+data class DriverPosition(val latE7: Int, val lonE7: Int, val atMs: Long)
+
 data class DriverInfo(
     val address: String,
     /** Average stars x100, 0 when unrated. */

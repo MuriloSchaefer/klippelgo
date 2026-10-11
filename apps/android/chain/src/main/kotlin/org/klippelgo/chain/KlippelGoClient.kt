@@ -189,6 +189,14 @@ class KlippelGoClient(
         return if (rider == address) (out[2] as Bool).value else (out[3] as Bool).value
     }
 
+    /**
+     * How many rides the driver of `ride` has taken before it and not finished: accepted or under way. While it
+     * is above zero the driver is busy with someone else and this ride waits its turn. Anyone can read this off
+     * the chain.
+     */
+    fun ridesAhead(ride: Ride): Int = rideIds(driver = ride.driver).filter { it < ride.id }.take(RECENT_RIDES)
+        .count { ride(it).status.let { s -> s == RideStatus.Accepted || s == RideStatus.Started } }
+
     /** Ride ids where this account is the driver, newest first. */
     fun ridesAsDriver(): List<BigInteger> = rideIds(driver = address)
 
@@ -386,6 +394,9 @@ class KlippelGoClient(
     companion object {
         const val ROLE_RIDER = 1
         const val ROLE_DRIVER = 2
+
+        /** How far back a driver's rides are looked at for ones still under way. */
+        private const val RECENT_RIDES = 10
 
         val RIDE_OPENED_TOPIC: String = Hash.sha3String("RideOpened(uint256,address,address,address,uint256,bytes32)")
         val REGISTERED_TOPIC: String = Hash.sha3String("Registered(address,uint8)")
