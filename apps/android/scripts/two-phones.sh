@@ -2,6 +2,10 @@
 # Starts two Android emulators side by side, installs KlippelGo on both and opens one as the rider and the other
 # as the driver. Both talk to the local testnet on your computer (http://10.0.2.2:8545 from inside an emulator).
 #
+#   PAIRS=2 two-phones.sh     four emulators: two riders and two drivers, each with its own seeded account
+#
+# Each emulator takes about 4 GB of RAM while running.
+#
 # Rider and driver find each other and agree a fare over the gossip network, so this also starts its bootstrap
 # node with Docker Compose (port 4001, `10.0.2.2:4001` from inside an emulator) unless one is already running.
 #
@@ -11,8 +15,15 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 CORE="$HERE/../../core"
 API="${API:-35}"
+# The app compiles against a newer platform than the emulators run (see app/build.gradle.kts).
+COMPILE_API="${COMPILE_API:-36}"
 NDK="${NDK:-27.3.13750724}"
 GOSSIP_PORT=4001
+PAIRS="${PAIRS:-1}"
+case "$PAIRS" in 1|2) ;; *) echo "PAIRS must be 1 or 2" >&2; exit 1 ;; esac
+# Where each driver's emulator says it is: two spots in the centre of Cascavel, the pilot city. Emulators start
+# in California, outside the map pack. Longitude first, as the emulator console wants it.
+DRIVER_SPOTS=("-53.4590 -24.9520" "-53.4480 -24.9585")
 RPC_HOST_URL="${RPC_HOST_URL:-http://127.0.0.1:8545}"
 RPC_IN_EMULATOR="${RPC_IN_EMULATOR:-http://10.0.2.2:8545}"
 
@@ -63,18 +74,19 @@ curl -sf -X POST -H 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' "$RPC_HOST_URL" >/dev/null \
   || { echo "No testnet at $RPC_HOST_URL. Run 'make testnet' and 'make deploy' first." >&2; exit 1; }
 
-echo "Installing emulator, platform tools, Android $API, NDK $NDK and $IMAGE if needed"
-yes | "$SDKMANAGER" --install "platform-tools" "emulator" "platforms;android-$API" "ndk;$NDK" "$IMAGE" >/dev/null || true
+echo "Installing emulator, platform tools, Android $API and $COMPILE_API, NDK $NDK and $IMAGE if needed"
+yes | "$SDKMANAGER" --install "platform-tools" "emulator" "platforms;android-$API" "platforms;android-$COMPILE_API" "ndk;$NDK" "$IMAGE" >/dev/null || true
 [ -x "$EMULATOR" ] && [ -x "$ADB" ] || { echo "sdkmanager could not install the emulator. Run it by hand: $SDKMANAGER --install emulator" >&2; exit 1; }
 
 # The app's gossip network is Rust (core/), built for Android with cargo-ndk.
 command -v cargo >/dev/null || { echo "Install Rust: https://rustup.rs" >&2; exit 1; }
 cargo ndk --version >/dev/null 2>&1 || { echo "Installing cargo-ndk"; (cd "$CORE" && cargo install cargo-ndk); }
 
-if ! (exec 3<>"/dev/tcp/127.0.0.1/$GOSSIP_PORT") 2>/dev/null; then
-  echo "Starting the gossip bootstrap node on port $GOSSIP_PORT with Docker Compose"
-  docker compose -f "$HERE/../../testnet/docker-compose.yml" up -d --build gossip
-fi
+# Always through Compose, even when a node is already running, and before the emulators take the memory: it
+# rebuilds the node when the core changed and does nothing otherwise. A node built from an older core can drop
+# messages the phones now send, such as the route sealed for the chosen driver.
+echo "Starting the gossip bootstrap node on port $GOSSIP_PORT with Docker Compose"
+docker compose -f "$HERE/../../testnet/docker-compose.yml" up -d --build gossip >/dev/null
 
 start_phone() { # name port
   local name=$1 port=$2
@@ -102,22 +114,48 @@ wait_boot() { # serial
   echo "$1 is up"
 }
 
-start_phone KlippelGo_Rider 5554
-start_phone KlippelGo_Driver 5556
-wait_boot emulator-5554
-wait_boot emulator-5556
+# name, emulator port, role, which seeded account of that role
+PHONES=("KlippelGo_Rider 5554 rider 1" "KlippelGo_Driver 5556 driver 1")
+[ "$PAIRS" = 2 ] && PHONES+=("KlippelGo_Rider2 5558 rider 2" "KlippelGo_Driver2 5560 driver 2")
+
+# Each phone has one account and keeps it in passenger and in driver mode, so all four accounts need funds,
+# both roles, stake and a licence. `make deploy` sets that up; this covers a chain deployed before it did, and
+# skips whatever is already done.
+if command -v forge >/dev/null; then
+  echo "Checking the phones' accounts on the testnet"
+  (cd "$HERE/../../contracts" && forge script script/SeedPhones.s.sol --rpc-url "$RPC_HOST_URL" --broadcast --slow >/dev/null) \
+    || { echo "Could not set up the phones' accounts. Is the chain deployed? Run 'make deploy'." >&2; exit 1; }
+fi
+
+for phone in "${PHONES[@]}"; do
+  read -r name port _ _ <<<"$phone"
+  start_phone "$name" "$port"
+done
+for phone in "${PHONES[@]}"; do
+  read -r _ port _ _ <<<"$phone"
+  wait_boot "emulator-$port"
+done
 
 echo "Building the app"
 (cd "$HERE" && ./gradlew -q :app:assembleDebug)
 APK="$HERE/app/build/outputs/apk/debug/app-debug.apk"
 
-for serial in emulator-5554 emulator-5556; do
+for phone in "${PHONES[@]}"; do
+  read -r name port role pair <<<"$phone"
+  serial="emulator-$port"
+  # Leave the app first: the emulator's graphics can crash when the app is replaced with the map on screen.
+  "$ADB" -s "$serial" shell input keyevent KEYCODE_HOME >/dev/null
   "$ADB" -s "$serial" install -r "$APK" >/dev/null
+  if [ "$role" = driver ]; then
+    read -r lon lat <<<"${DRIVER_SPOTS[$((pair - 1))]}"
+    "$ADB" -s "$serial" emu geo fix "$lon" "$lat" >/dev/null
+  fi
+  "$ADB" -s "$serial" shell am start -n org.klippelgo.app/.MainActivity \
+    --es role "$role" --es rpc "$RPC_IN_EMULATOR" --ei pair "$pair" >/dev/null
+  echo "$name ($serial): $role $pair"
 done
 
-"$ADB" -s emulator-5554 shell am start -n org.klippelgo.app/.MainActivity --es role rider --es rpc "$RPC_IN_EMULATOR" >/dev/null
-"$ADB" -s emulator-5556 shell am start -n org.klippelgo.app/.MainActivity --es role driver --es rpc "$RPC_IN_EMULATOR" >/dev/null
-
 echo
-echo "Rider is on emulator-5554 (KlippelGo_Rider), driver on emulator-5556 (KlippelGo_Driver)."
-echo "On the rider: tap 'Para onde?', then 'Pedir ofertas'. On the driver: tap 'Ficar online', set your price and tap 'Enviar oferta'."
+echo "The phones need the map pack: 'make mappack' once, 'make publish-pack' after each 'make deploy', and 'make serve-packs' running."
+echo "On a rider: tap 'Baixar mapa' the first time, then 'Para onde?', pick a place and tap 'Pedir ofertas'."
+echo "On a driver: tap 'Ficar online', set your price and tap 'Enviar oferta'."

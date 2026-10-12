@@ -6,6 +6,9 @@ ENV RUSTUP_TOOLCHAIN=1.99.0
 WORKDIR /core
 COPY Cargo.toml Cargo.lock uniffi.toml ./
 COPY src src
+# The core's own crates for map packs and trip proofs.
+COPY verify verify
+COPY proofs proofs
 RUN cargo build --release --locked --bin klippelgo-node
 
 FROM debian:bookworm-slim

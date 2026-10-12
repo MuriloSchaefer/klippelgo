@@ -11,8 +11,12 @@ data class Deployment(
     val feeVault: String,
     val escrow: String,
     val court: String,
+    val maps: String,
+    val fares: String,
     val brla: String,
     val brz: String,
+    /** The account the government's tax on each ride is paid to, when the deployment file names it. */
+    val taxCollector: String = "",
 ) {
     companion object {
         fun fromJson(json: String): Deployment {
@@ -26,8 +30,11 @@ data class Deployment(
                 feeVault = a("FeeVault"),
                 escrow = a("RideEscrow"),
                 court = a("DisputeCourt"),
+                maps = a("MapRegistry"),
+                fares = a("FareGuide"),
                 brla = a("BRLA"),
                 brz = a("BRZ"),
+                taxCollector = n.get("taxCollector")?.asText().orEmpty(),
             )
         }
 
@@ -43,18 +50,28 @@ data class Deployment(
             feeVault = "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
             escrow = "0x0165878A594ca255338adfa4d48449f69242Eb8F",
             court = "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+            maps = "0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6",
+            fares = "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
             brla = "0x5FbDB2315678afecb367f032d93F642f64180aa3",
             brz = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+            taxCollector = "0xBcd4042DE499D14e55001CcbB24a551F3b954096",
         )
     }
 }
 
 /**
- * Seeded accounts on the local testnet, from anvil's public test mnemonic. These keys are known to everyone: they
+ * Seeded accounts on the local testnet, from anvil's public test mnemonic. A phone has one of them and keeps it
+ * whether it is riding or driving; each is funded, registered in both roles, staked and licensed
+ * (`contracts/script/SeedPhones.s.sol`). The names say which role a phone starts in when a script launches it.
+ * These keys are known to everyone: they
  * exist only so two emulators can play rider and driver. Real phones will sign with a Secure Enclave or StrongBox
  * P-256 key through an ERC-4337 smart account.
  */
 enum class DevAccount(val privateKey: String) {
     RIDER("0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"),
     DRIVER("0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a"),
+
+    /** The second pair of phones (accounts #8 and #9). */
+    RIDER_2("0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97"),
+    DRIVER_2("0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6"),
 }

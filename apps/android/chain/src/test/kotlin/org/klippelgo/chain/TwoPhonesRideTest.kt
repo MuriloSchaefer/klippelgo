@@ -1,11 +1,15 @@
 package org.klippelgo.chain
 
+import org.klippelgo.core.Coordinate
 import org.klippelgo.core.GossipConfig
 import org.klippelgo.core.GossipNode
+import org.klippelgo.core.regionCell
 import org.web3j.crypto.Hash
+import org.web3j.utils.Numeric
 import java.io.File
 import java.math.BigDecimal
 import java.math.BigInteger
+import java.security.SecureRandom
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
@@ -17,7 +21,8 @@ import kotlin.test.assertTrue
  * runs on its own thread with its own key and its own gossip node. They agree a fare over gossip, through a
  * bootstrap node, and from then on only learn what the other did by reading the chain.
  *
- * Runs when KLIPPELGO_RPC is set, e.g.
+ * Runs when KLIPPELGO_RPC is set, against a chain that has the test map pack (`testnet/publish-pack.sh
+ * testnet/fixtures/test-pack`), e.g.
  *   KLIPPELGO_RPC=http://127.0.0.1:8545 KLIPPELGO_DEPLOYMENT=../../../deployments/local.json ./gradlew test
  */
 class TwoPhonesRideTest {
@@ -32,12 +37,28 @@ class TwoPhonesRideTest {
             return
         }
         val riderPhone = KlippelGoClient(rpc, DevAccount.RIDER.privateKey, deployment)
+        // A map pack governance activated on this chain (`make publish-pack`). The route itself stays on the
+        // rider's phone: the request carries its hash, as the phone computes it from the pack, and how long it is.
+        val pack = riderPhone.latestPack(TEST_REGION)
+            ?: error("No map pack on this chain. Run: testnet/publish-pack.sh testnet/fixtures/test-pack")
+        val route = RouteSummary(
+            packId = Numeric.toHexString(pack),
+            routeHash = Numeric.toHexString(ByteArray(32).also { SecureRandom().nextBytes(it) }),
+            distanceM = 8_500,
+            durationS = 1_320,
+            // The regions the trip starts and ends in: drivers see these, never the points themselves.
+            pickupCell = regionCell(PICKUP),
+            dropoffCell = regionCell(DROPOFF),
+        )
         val driverPhone = KlippelGoClient(rpc, DevAccount.DRIVER.privateKey, deployment)
         val coin = riderPhone.brz
         val maxFare = coin.toBaseUnits(BigDecimal("25.00"))
         val fare = coin.toBaseUnits(BigDecimal("23.40"))
 
         assertTrue(riderPhone.drivers().any { it.address == driverPhone.address && it.canAccept })
+        // 8,5 km and 22 min are recommended at R$ 25,50; the rider may ask 10% either side, so R$ 25,00 is fine.
+        assertEquals(2550L, riderPhone.tariff.recommended(8_500, 1_320))
+        assertEquals(2295L..2805L, riderPhone.tariff.riderRange(8_500, 1_320))
         val driverBefore = driverPhone.balanceOf(coin)
         val seenBefore = driverPhone.ridesAsDriver().toSet()
 
@@ -48,6 +69,25 @@ class TwoPhonesRideTest {
         val driverMatch = Matchmaker(driverPhone, gossip())
 
         val pool = Executors.newFixedThreadPool(2)
+        val riderSaw = java.util.concurrent.atomic.AtomicBoolean(false)
+        // Stands in for the quote with the exact route, which only the chosen driver may read.
+        val routeForDriver = "{\"pickup\":[${PICKUP.latE7},${PICKUP.lonE7}],\"dropoff\":[${DROPOFF.latE7},${DROPOFF.lonE7}]}"
+        // Stands in for the hash of the trip receipt both phones sign at arrival.
+        val receipt = Hash.sha3("trip receipt".toByteArray())
+
+        // Nor may a rider ask a price far from the recommended one.
+        assertTrue(runCatching { riderMatch.requestRide(coin, coin.toBaseUnits(BigDecimal("15.00")), route) }.isFailure)
+
+        // A request for a route on a map nobody activated reaches no driver.
+        val unknownPack = route.copy(packId = Numeric.toHexString(Hash.sha3("no such pack".toByteArray())))
+        val ignored = riderMatch.requestRide(coin, maxFare, unknownPack)
+        repeat(6) {
+            riderMatch.tick()
+            driverMatch.tick()
+            Thread.sleep(500)
+        }
+        assertTrue(driverMatch.openRequests().isEmpty())
+        riderMatch.closeRequest(ignored)
 
         // Driver phone: quote R$ 23,40 for the rider's request, then wait for the ride, accept it and start it.
         val driverJob = pool.submit<BigInteger> {
@@ -55,6 +95,12 @@ class TwoPhonesRideTest {
                 driverMatch.openRequests().firstOrNull { it.rider == riderPhone.address }
             }
             assertEquals(maxFare, request.maxFare)
+            assertEquals(route, request.route) // 8,5 km and 22 min, and nothing about where
+            // A driver may go 20% under the rider's price and no further, or above it up to 10% over the
+            // recommended R$ 25,50, which is R$ 28,05.
+            assertTrue(runCatching { driverMatch.sendOffer(request, coin.toBaseUnits(BigDecimal("19.50"))) }.isFailure)
+            assertTrue(runCatching { driverMatch.sendOffer(request, coin.toBaseUnits(BigDecimal("28.50"))) }.isFailure)
+            driverMatch.sendOffer(request, coin.toBaseUnits(BigDecimal("28.00")))
             driverMatch.sendOffer(request, coin.toBaseUnits(BigDecimal("24.00")))
             val quote = driverMatch.sendOffer(request, fare) // a newer quote replaces the earlier one
             val id = poll("a new ride for the driver", driverMatch) {
@@ -65,9 +111,18 @@ class TwoPhonesRideTest {
             assertEquals(fare, ride.fare)
             assertEquals(quote.quoteHash, ride.quoteHash) // the rider locked exactly what the driver signed
             poll("the rider's request to close", driverMatch) { true.takeIf { driverMatch.openRequests().isEmpty() } }
+            // The route arrives sealed to the key in the driver's offer: this driver can read it.
+            assertEquals(routeForDriver, poll("the sealed route", driverMatch) { driverMatch.revealedQuote(quote.quoteHash) })
             driverPhone.accept(id)
+            // Now on this rider's ride, the driver lets them see where the car is. Only the rider can read it.
+            val riderKey = driverMatch.riderKey(quote.quoteHash) ?: error("the rider's position key did not arrive")
+            poll("the rider to see the driver's position", driverMatch) {
+                driverMatch.sharePosition(quote.quoteHash, riderKey, PICKUP.latE7 + 5_000, PICKUP.lonE7)
+                riderSaw.takeIf { it.get() }
+            }
             driverPhone.start(id, Hash.sha3("pickup proof $id".toByteArray()))
             poll("the rider to confirm arrival") { id.takeIf { driverPhone.ride(id).status == RideStatus.Completed } }
+            assertEquals(Numeric.toHexString(receipt), driverPhone.ride(id).receiptHash)
             driverPhone.rate(id, 5)
             id
         }
@@ -75,16 +130,20 @@ class TwoPhonesRideTest {
         // Rider phone: ask for a ride up to R$ 25,00, take the driver's quote, wait until the driver has started
         // the ride, then confirm arrival.
         val riderJob = pool.submit<BigInteger> {
-            val request = riderMatch.requestRide(coin, maxFare)
+            val request = riderMatch.requestRide(coin, maxFare, route)
             val offer = poll("the driver's R$ 23,40 quote", riderMatch) {
                 riderMatch.offers(request).firstOrNull { it.fare == fare }
             }
             assertEquals(driverPhone.address, offer.driver)
             assertEquals(1, riderMatch.offers(request).size)
-            val id = riderMatch.acceptOffer(request, offer)
+            val id = riderMatch.acceptOffer(request, offer, routeForDriver)
             assertTrue(riderMatch.openRequests().isEmpty())
+            assertEquals(0, riderPhone.ridesAhead(riderPhone.ride(id))) // this driver has no ride before this one
+            val seen = poll("the driver's position", riderMatch) { riderMatch.driverPosition(offer.quoteHash) }
+            assertEquals(PICKUP.latE7 + 5_000 to PICKUP.lonE7, seen.latE7 to seen.lonE7)
+            riderSaw.set(true)
             poll("the driver to start the ride", riderMatch) { id.takeIf { riderPhone.ride(id).status == RideStatus.Started } }
-            riderPhone.complete(id)
+            riderPhone.complete(id, receipt)
             riderPhone.rate(id, 5)
             id
         }
@@ -96,9 +155,27 @@ class TwoPhonesRideTest {
         assertEquals(riderId, driverId)
         assertTrue(riderPhone.hasRated(riderId) && driverPhone.hasRated(riderId))
         assertEquals(RideStatus.Completed, riderPhone.ride(riderId).status)
-        // Driver nets R$ 22,40: the R$ 23,40 fare minus R$ 1,00 for Instituto Klippel (the bond comes back).
-        assertEquals(coin.toBaseUnits(BigDecimal("22.40")), driverPhone.balanceOf(coin) - driverBefore)
-        println("Ride $riderId completed: driver received R$ 22,40, Instituto Klippel R$ 1,00")
+        // Driver nets the R$ 23,40 fare minus R$ 1,00 for Instituto Klippel and minus the government's tax, a
+        // share of the fare read from the escrow (the bond comes back). The tax went to its collector.
+        val ride = riderPhone.ride(riderId)
+        assertEquals(riderPhone.taxOn(fare), ride.tax)
+        assertEquals(fare - coin.toBaseUnits(BigDecimal("1.00")) - ride.tax, driverPhone.balanceOf(coin) - driverBefore)
+        // Each phone knows what its own transactions cost the network, and what that is in reais.
+        val riderGas = riderPhone.gasSpent(riderId) ?: error("the rider's phone lost count of its gas")
+        assertTrue(riderGas.signum() > 0 && (driverPhone.gasSpent(riderId) ?: BigInteger.ZERO).signum() > 0)
+        println(
+            "Ride $riderId completed: driver received R$ ${coin.toReais(ride.driverPayout)}, Instituto Klippel R$ 1,00, " +
+                "tax R$ ${coin.toReais(ride.tax)}, network R$ ${riderPhone.infrastructureCost(riderGas)} (rider's side)",
+        )
+    }
+
+    private companion object {
+        /** Region of `testnet/fixtures/test-pack`, a manifest that stands in for a map pack. */
+        const val TEST_REGION = "test-no-map"
+
+        /** Two points in Cascavel, about 8 km apart. */
+        val PICKUP = Coordinate(-249_555_000, -534_552_000)
+        val DROPOFF = Coordinate(-249_900_000, -534_000_000)
     }
 
     /** Waits for `check`, running the phone's gossip the way the app's two-second loop does. */

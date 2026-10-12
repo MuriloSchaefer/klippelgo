@@ -48,6 +48,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -56,6 +57,10 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.klippelgo.app.R
+import org.klippelgo.app.ui.tags.Tags
+
+/** Names this piece for the tests (see [Tags]). Nothing when there is no name to give. */
+fun Modifier.tagged(tag: String?): Modifier = if (tag == null) this else testTag(tag)
 
 @Composable
 fun PrimaryButton(
@@ -134,7 +139,7 @@ fun Choice(text: String, selected: Boolean, onClick: () -> Unit, modifier: Modif
 @Composable
 fun BackButton(onClick: () -> Unit, modifier: Modifier = Modifier, onMap: Boolean = false) {
     val button = @Composable {
-        IconButton(onClick = onClick, Modifier.size(44.dp)) {
+        IconButton(onClick = onClick, Modifier.size(44.dp).testTag(Tags.BACK)) {
             Icon(KIcons.Back, contentDescription = stringResource(R.string.back), Modifier.size(22.dp))
         }
     }
@@ -233,36 +238,65 @@ fun Avatar(size: Dp = 48.dp) {
 
 /** A label on the left and its value on the right, with a hairline under it. */
 @Composable
-fun KeyValue(label: String, value: String, divider: Boolean = true, strong: Boolean = false) {
+fun KeyValue(label: String, value: String, divider: Boolean = true, strong: Boolean = false, tag: String? = null) {
     Column {
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Muted(label, Modifier.weight(1f))
-            Text(value, fontSize = 14.sp, fontWeight = if (strong) FontWeight.SemiBold else FontWeight.Normal)
+            Text(value, Modifier.tagged(tag), fontSize = 14.sp, fontWeight = if (strong) FontWeight.SemiBold else FontWeight.Normal)
         }
         if (divider) HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
     }
 }
 
-/** The bottom sheet that sits over the map. */
+/**
+ * The bottom sheet that sits over the map. `topInset` is room kept clear at its top edge, above what scrolls,
+ * for something that lies over that edge.
+ */
 @Composable
-fun Sheet(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+fun Sheet(modifier: Modifier = Modifier, topInset: Dp = 0.dp, content: @Composable ColumnScope.() -> Unit) {
     Surface(
         shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(
-            Modifier.verticalScroll(rememberScrollState()).padding(20.dp),
+            Modifier.padding(top = topInset).verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             content = content,
         )
     }
 }
 
-/** Stand-in for the map until the app has one: the wireframes' grey grid. */
+/**
+ * The map under every ride screen. With a map pack on the phone it is the real map; without one, the
+ * wireframes' grey grid stands in.
+ */
 @Composable
-fun MapSurface(modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit = {}) {
+fun MapSurface(modifier: Modifier = Modifier, scene: MapScene? = null, content: @Composable BoxScope.() -> Unit = {}) {
     val line = MaterialTheme.colorScheme.outlineVariant
+    if (scene != null) {
+        Box(modifier) {
+            PackMap(
+                scene,
+                ink = MaterialTheme.colorScheme.primary,
+                accent = MaterialTheme.colorScheme.tertiary,
+                ring = MaterialTheme.colorScheme.surface,
+                muted = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.fillMaxSize(),
+            )
+            // The map data's licence asks for this credit wherever the map is shown.
+            Text(
+                stringResource(R.string.map_credit),
+                Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 4.dp)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 4.dp),
+                fontSize = 10.sp,
+                lineHeight = 14.sp,
+            )
+            content()
+        }
+        return
+    }
     Box(
         modifier
             .background(MaterialTheme.colorScheme.surfaceContainerHighest)
@@ -283,7 +317,10 @@ fun MapSurface(modifier: Modifier = Modifier, content: @Composable BoxScope.() -
     )
 }
 
-/** A route drawn over the map: dotted while it is only planned, solid blue once the trip is under way. */
+/**
+ * A route drawn as a picture, for screens with no real one to show: dotted while it is only planned, solid blue
+ * once the trip is under way.
+ */
 @Composable
 fun RouteArt(modifier: Modifier = Modifier, underWay: Boolean = false) {
     val ink = MaterialTheme.colorScheme.primary
@@ -319,10 +356,10 @@ fun RouteArt(modifier: Modifier = Modifier, underWay: Boolean = false) {
 
 /** Five stars; tapping the nth picks n. */
 @Composable
-fun StarPicker(stars: Int, onPick: (Int) -> Unit, modifier: Modifier = Modifier, size: Dp = 32.dp) {
+fun StarPicker(stars: Int, onPick: (Int) -> Unit, modifier: Modifier = Modifier, size: Dp = 32.dp, tag: String? = null) {
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         (1..5).forEach { n ->
-            IconButton(onClick = { onPick(n) }, Modifier.size(size + 16.dp)) {
+            IconButton(onClick = { onPick(n) }, Modifier.size(size + 16.dp).tagged(tag?.let { Tags.star(it, n) })) {
                 Icon(
                     if (n <= stars) KIcons.StarFilled else KIcons.Star,
                     contentDescription = stringResource(R.string.stars_n, n),
@@ -346,7 +383,7 @@ fun LanguagePills(current: String, onPick: (String) -> Unit, modifier: Modifier 
                     shape = CircleShape,
                     color = if (on) MaterialTheme.colorScheme.primary else Color.Transparent,
                     contentColor = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.widthIn(min = 44.dp).height(36.dp),
+                    modifier = Modifier.widthIn(min = 44.dp).height(36.dp).testTag(Tags.language(tag.substringBefore('-'))),
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(label, fontSize = 13.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium)
@@ -359,8 +396,8 @@ fun LanguagePills(current: String, onPick: (String) -> Unit, modifier: Modifier 
 
 /** A full-screen column that scrolls when the content is taller than the screen, and otherwise lets weights fill it. */
 @Composable
-fun ScrollScreen(content: @Composable ColumnScope.() -> Unit) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+fun ScrollScreen(tag: String? = null, content: @Composable ColumnScope.() -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize().tagged(tag)) {
         Column(Modifier.verticalScroll(rememberScrollState()).heightIn(min = maxHeight), content = content)
     }
 }

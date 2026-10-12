@@ -33,7 +33,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -46,6 +50,7 @@ import org.klippelgo.app.R
 import org.klippelgo.app.Role
 import org.klippelgo.app.UiState
 import org.klippelgo.app.setAppLanguage
+import org.klippelgo.app.ui.tags.Tags
 import org.klippelgo.chain.Coin
 import org.klippelgo.chain.DriverInfo
 import org.klippelgo.chain.Ride
@@ -56,10 +61,14 @@ import java.math.RoundingMode
 import java.text.NumberFormat
 import java.util.Locale
 
+/** Lets the tests find a piece of the UI by its tag (see [Tags]), the way a screen reader finds it by its label. */
+@OptIn(ExperimentalComposeUiApi::class)
+fun Modifier.testable(): Modifier = semantics { testTagsAsResourceId = true }
+
 @Composable
 fun KlippelGoApp(vm: AppViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    Surface(Modifier.fillMaxSize().testable(), color = MaterialTheme.colorScheme.background) {
         Box(Modifier.safeDrawingPadding().imePadding()) {
             when (state.role) {
                 null -> Onboarding(state, vm)
@@ -70,8 +79,12 @@ fun KlippelGoApp(vm: AppViewModel) {
         state.error?.let { msg ->
             AlertDialog(
                 onDismissRequest = vm::dismissError,
-                confirmButton = { TextButton(onClick = vm::dismissError) { Text(stringResource(R.string.dismiss)) } },
-                text = { Text(msg) },
+                confirmButton = {
+                    TextButton(onClick = vm::dismissError, Modifier.testTag(Tags.ERROR_DISMISS)) { Text(stringResource(R.string.dismiss)) }
+                },
+                text = { Text(msg, Modifier.testTag(Tags.ERROR_MESSAGE)) },
+                // A dialog is a window of its own, so it says again that its tags may be read.
+                modifier = Modifier.testable().testTag(Tags.ERROR),
             )
         }
     }
@@ -92,7 +105,7 @@ private fun Onboarding(state: UiState, vm: AppViewModel) {
 
 @Composable
 private fun Welcome(onStart: () -> Unit) {
-    ScrollScreen {
+    ScrollScreen(Tags.WELCOME) {
         Row(
             Modifier.fillMaxWidth().padding(start = 20.dp, top = 28.dp, end = 20.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -123,7 +136,7 @@ private fun Welcome(onStart: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            PrimaryButton(stringResource(R.string.start), onStart)
+            PrimaryButton(stringResource(R.string.start), onStart, Modifier.testTag(Tags.WELCOME_START))
             Muted(stringResource(R.string.institute_infra), size = 12.sp)
         }
     }
@@ -161,7 +174,7 @@ private fun CreateAccount(state: UiState, onBack: () -> Unit, onContinue: (Strin
     var name by rememberSaveable { mutableStateOf(state.name) }
     var role by rememberSaveable { mutableStateOf(Role.RIDER) }
     var rpc by rememberSaveable { mutableStateOf(state.rpcUrl.ifBlank { DEFAULT_RPC }) }
-    ScrollScreen {
+    ScrollScreen(Tags.CREATE_ACCOUNT) {
         BackButton(onBack, Modifier.padding(start = 12.dp, top = 20.dp))
         Column(Modifier.padding(start = 20.dp, top = 8.dp, end = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Title(stringResource(R.string.create_title))
@@ -176,15 +189,15 @@ private fun CreateAccount(state: UiState, onBack: () -> Unit, onContinue: (Strin
                     placeholder = { Muted(stringResource(R.string.first_name_hint), size = 16.sp) },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag(Tags.CREATE_NAME),
                 )
                 Tag(stringResource(R.string.only_you_this_phone), Modifier.padding(top = 2.dp))
             }
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 FieldLabel(stringResource(R.string.choose_role))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Choice(stringResource(R.string.role_rider), role == Role.RIDER, { role = Role.RIDER }, Modifier.weight(1f))
-                    Choice(stringResource(R.string.role_driver), role == Role.DRIVER, { role = Role.DRIVER }, Modifier.weight(1f))
+                    Choice(stringResource(R.string.role_rider), role == Role.RIDER, { role = Role.RIDER }, Modifier.weight(1f).testTag(Tags.CREATE_ROLE_RIDER))
+                    Choice(stringResource(R.string.role_driver), role == Role.DRIVER, { role = Role.DRIVER }, Modifier.weight(1f).testTag(Tags.CREATE_ROLE_DRIVER))
                 }
             }
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -195,7 +208,7 @@ private fun CreateAccount(state: UiState, onBack: () -> Unit, onContinue: (Strin
                     supportingText = { Text(stringResource(R.string.rpc_hint)) },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag(Tags.CREATE_RPC),
                 )
             }
         }
@@ -213,7 +226,7 @@ private fun CreateAccount(state: UiState, onBack: () -> Unit, onContinue: (Strin
             stringResource(R.string.continue_label),
             onClick = { onContinue(name, role, rpc) },
             enabled = rpc.isNotBlank(),
-            modifier = Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 32.dp),
+            modifier = Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 32.dp).testTag(Tags.CREATE_CONTINUE),
         )
     }
 }
@@ -236,7 +249,7 @@ fun NetworkNotice(state: UiState, modifier: Modifier = Modifier) {
         state.gossipConnected == false -> stringResource(R.string.gossip_not_connected)
         else -> return
     }
-    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.error, modifier = modifier) {
+    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.error, modifier = modifier.testTag(Tags.NETWORK_NOTICE)) {
         Text(text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 13.sp, lineHeight = 18.sp)
     }
 }
@@ -276,7 +289,7 @@ fun RideEndScreen(
     val rider = state.role == Role.RIDER
     val paid = ride.status == RideStatus.Completed
     var stars by rememberSaveable(ride.id.toString()) { mutableIntStateOf(0) }
-    ScrollScreen {
+    ScrollScreen(Tags.RIDE_END) {
         if (onBack != null) BackButton(onBack, Modifier.padding(start = 12.dp, top = 20.dp)) else Spacer(Modifier.height(48.dp))
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 20.dp),
@@ -286,8 +299,8 @@ fun RideEndScreen(
             Box(Modifier.size(64.dp).background(MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) {
                 Icon(KIcons.Check, contentDescription = null, Modifier.size(30.dp), tint = MaterialTheme.colorScheme.onPrimary)
             }
-            Title(stringResource(if (rider && !paid) R.string.arrived_title else R.string.status_completed), size = 26.sp)
-            Muted(stringResource(R.string.ride_number, ride.id.toString()))
+            Title(stringResource(if (rider && !paid) R.string.arrived_title else R.string.status_completed), Modifier.testTag(Tags.RIDE_END_TITLE), size = 26.sp)
+            Muted(stringResource(R.string.ride_number, ride.id.toString()), Modifier.testTag(Tags.RIDE_END_RIDE))
         }
         KCard(Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp)) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -297,7 +310,7 @@ fun RideEndScreen(
                         Modifier.weight(1f),
                         fontWeight = FontWeight.SemiBold,
                     )
-                    Text(brl(coin, if (rider) ride.fare else ride.driverPayout), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Text(brl(coin, if (rider) ride.fare else ride.driverPayout), Modifier.testTag(Tags.RIDE_END_AMOUNT), fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 }
                 Muted(
                     when {
@@ -307,6 +320,23 @@ fun RideEndScreen(
                     },
                     size = 13.sp,
                 )
+                // What came out of the fare for the government, and what the ride cost the network on this
+                // side: what this phone's transactions paid if it knows, else what they are expected to.
+                KeyValue(
+                    stringResource(if (rider) R.string.tax_in_fare else R.string.tax_paid, percent(state.taxBps, ride)),
+                    brl(coin, ride.tax),
+                    tag = Tags.RIDE_END_TAX,
+                )
+                val spent = state.infrastructureSpent[ride.id]
+                (spent ?: state.infrastructure)?.let { cost ->
+                    KeyValue(
+                        stringResource(R.string.infrastructure_cost),
+                        (if (spent == null) "≈ " else "") + brlFine(cost),
+                        divider = false,
+                        tag = Tags.RIDE_END_INFRASTRUCTURE,
+                    )
+                    Muted(stringResource(R.string.infrastructure_note), size = 12.sp)
+                }
             }
         }
         Column(
@@ -315,7 +345,7 @@ fun RideEndScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(stringResource(if (rider) R.string.rate_driver else R.string.rate_rider), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            StarPicker(stars, onPick = { stars = it })
+            StarPicker(stars, onPick = { stars = it }, tag = Tags.RIDE_END_STARS)
             Tag(stringResource(R.string.rating_public))
         }
         Spacer(Modifier.weight(1f))
@@ -325,12 +355,12 @@ fun RideEndScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             if (paid) {
-                PrimaryButton(stringResource(R.string.send_rating), { onConfirm(stars) }, enabled = stars > 0, busy = state.busy)
-                TextButton(onClick = onSkip, enabled = !state.busy) {
+                PrimaryButton(stringResource(R.string.send_rating), { onConfirm(stars) }, Modifier.testTag(Tags.RIDE_END_RATE), enabled = stars > 0, busy = state.busy)
+                TextButton(onClick = onSkip, Modifier.testTag(Tags.RIDE_END_SKIP), enabled = !state.busy) {
                     Muted(stringResource(R.string.not_now), align = TextAlign.Center)
                 }
             } else {
-                PrimaryButton(stringResource(R.string.confirm_and_pay), { onConfirm(stars) }, busy = state.busy)
+                PrimaryButton(stringResource(R.string.confirm_and_pay), { onConfirm(stars) }, Modifier.testTag(Tags.RIDE_END_PAY), busy = state.busy)
             }
         }
     }
@@ -348,5 +378,29 @@ fun brl(coin: Coin, units: BigInteger): String =
     brlFormat.format(coin.toReais(units).setScale(2, RoundingMode.DOWN))
 
 fun brl(reais: BigDecimal): String = brlFormat.format(reais.setScale(2, RoundingMode.DOWN))
+
+/**
+ * An amount that may be under a centavo, as what a ride costs the network often is: R$ 0,0012 where R$ 0,00
+ * would say it is free.
+ */
+fun brlFine(reais: BigDecimal): String =
+    if (reais.signum() > 0 && reais < BigDecimal("0.01")) "R$ " + reais.setScale(4, RoundingMode.HALF_UP).toPlainString().replace('.', ',') else brl(reais)
+
+/** The tax rate as a ride carries it, "5" for 5%: from the ride's own amounts when it has a fare, else today's rate. */
+fun percent(taxBps: Int, ride: Ride? = null): String {
+    val bps = if (ride != null && ride.fare.signum() > 0) (ride.tax * BigInteger.valueOf(10_000) / ride.fare).toInt() else taxBps
+    return BigDecimal(bps).movePointLeft(2).stripTrailingZeros().toPlainString().replace('.', ',')
+}
+
+/** "8,5 km" from 8 500 m; "850 m" under a kilometre. */
+fun distanceLabel(metres: Int): String =
+    if (metres < 1000) "$metres m" else String.format(java.util.Locale.forLanguageTag("pt-BR"), "%.1f km", metres / 1000.0)
+
+/** "8,5 km · 22 min" */
+fun routeLabel(metres: Int, seconds: Int): String = distanceLabel(metres) + " · " + maxOf(1, (seconds + 30) / 60) + " min"
+
+/** What a fare comes to per kilometre of the route, in reais. */
+fun perKm(coin: Coin, fare: BigInteger, metres: Int): BigDecimal =
+    coin.toReais(fare).multiply(BigDecimal(1000)).divide(BigDecimal(maxOf(metres, 1)), 2, RoundingMode.HALF_UP)
 
 fun shortAddress(a: String): String = if (a.length > 12) a.take(6) + "…" + a.takeLast(4) else a

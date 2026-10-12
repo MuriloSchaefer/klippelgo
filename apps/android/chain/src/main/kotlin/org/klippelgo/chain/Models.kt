@@ -8,6 +8,9 @@ enum class RideStatus { None, Open, Accepted, Started, Completed, Cancelled, Dis
 
     val isActive get() = this == Open || this == Accepted || this == Started || this == Disputed
 
+    /** A ride in one of these never changes again. */
+    val isFinal get() = this == Completed || this == Cancelled || this == Resolved
+
     companion object {
         fun of(i: Int) = entries.getOrElse(i) { None }
     }
@@ -26,9 +29,77 @@ data class Ride(
     val riderBond: BigInteger,
     val driverBond: BigInteger,
     val quoteHash: String,
+    /** Hash of the trip receipt on record, or all zeros while there is none. */
+    val receiptHash: String,
+    /** Unix seconds when the receipt was put on record, 0 while there is none. */
+    val receiptAt: Long,
+    /** The government's tax on this ride: a share of the fare, fixed when the ride opened. */
+    val tax: BigInteger = BigInteger.ZERO,
 ) {
-    /** What the driver keeps: the fare minus R$ 1,00 for Instituto Klippel. */
-    val driverPayout: BigInteger get() = fare - fee
+    /** What the driver keeps: the fare minus R$ 1,00 for Instituto Klippel and minus the government's tax. */
+    val driverPayout: BigInteger get() = fare - fee - tax
+}
+
+/**
+ * What a request tells drivers about the trip, computed on the rider's phone from its map pack: enough to price
+ * it, and nothing that points at a door. It says how far and how long, and in which region of about a square
+ * kilometre the trip starts and ends. The exact route stays on the rider's phone behind `routeHash`.
+ */
+data class RouteSummary(
+    /** Id of the map pack the route was computed on (`manifestHash` in MapRegistry), as 0x hex. */
+    val packId: String,
+    /** The rider's salted commitment to the route, as 0x hex. Every quote for the request signs over it. */
+    val routeHash: String,
+    /** Metres by road, rounded to 500 m. */
+    val distanceM: Int,
+    /** Seconds, rounded to a minute. No traffic is known. */
+    val durationS: Int,
+    /** The region the pickup is in: a geohash cell of about 1.2 km by 0.6 km (`regionCell` in the core). */
+    val pickupCell: String,
+    /** The region the drop-off is in. */
+    val dropoffCell: String,
+)
+
+/**
+ * The price guide governance set in `FareGuide`: what a trip is recommended to cost and how far riders and
+ * drivers may move from it. The escrow never learns a trip's length, so the phones keep these limits: a driver's
+ * phone ignores a request priced outside the rider's range, and a rider's phone ignores a quote under the
+ * driver's floor. Amounts are in centavos.
+ */
+data class Tariff(
+    val baseCentavos: Long,
+    val perKmCentavos: Long,
+    val perMinuteCentavos: Long,
+    val minimumCentavos: Long,
+    /** How far above or below the recommendation a rider may ask, and a driver quote above it, in basis points. */
+    val riderRangeBps: Int,
+    /** How far below the rider's price a driver may quote, in basis points. */
+    val driverDiscountBps: Int,
+) {
+    /** The recommended price for a trip, from the distance and duration its request states. Mirrors `FareGuide.recommended`. */
+    fun recommended(distanceM: Int, durationS: Int): Long {
+        val price = maxOf(minimumCentavos, baseCentavos + perKmCentavos * distanceM / 1000 + perMinuteCentavos * durationS / 60)
+        return (price + STEP_CENTAVOS / 2) / STEP_CENTAVOS * STEP_CENTAVOS
+    }
+
+    /** The lowest and highest price a rider may ask for the trip. */
+    fun riderRange(distanceM: Int, durationS: Int): LongRange {
+        val price = recommended(distanceM, durationS)
+        val range = price * riderRangeBps / 10_000
+        return (price - range)..(price + range)
+    }
+
+    /** The highest quote a driver may make for the trip, whatever the rider asked: the top of the rider's range. */
+    fun driverCeiling(distanceM: Int, durationS: Int): Long = riderRange(distanceM, durationS).last
+
+    /** The lowest quote a driver may make against a rider's price, in the same units as the price. */
+    fun driverFloor(riderPrice: BigInteger): BigInteger =
+        riderPrice - riderPrice * BigInteger.valueOf(driverDiscountBps.toLong()) / BigInteger.valueOf(10_000)
+
+    companion object {
+        /** Recommendations are whole multiples of R$ 0,50. */
+        const val STEP_CENTAVOS = 50L
+    }
 }
 
 /** A rider's request for a ride, as gossiped to nearby drivers. */
@@ -37,10 +108,14 @@ data class RideRequest(
     val id: BigInteger,
     val rider: String,
     val token: String,
-    /** The most the rider will pay. Drivers quote at or below it. */
+    /**
+     * The rider's price. Drivers quote around it: down to the guide's floor under it, or above it up to the
+     * guide's ceiling for the trip, which the rider is free to turn down.
+     */
     val maxFare: BigInteger,
     /** Unix seconds, by the phones' clocks. */
     val expiresAt: Long,
+    val route: RouteSummary,
 )
 
 /** A driver's signed quote for a request. The rider locks `quoteHash` in the escrow when taking it. */
@@ -52,7 +127,12 @@ data class Offer(
     val quoteHash: String,
     /** The driver's signature over the quote, kept as proof of what was offered. */
     val signature: String,
+    /** The key the rider seals the route to if they take this offer, as 0x hex. Made for this offer alone. */
+    val routeKey: String,
 )
+
+/** Where a driver's phone said it was, as sent sealed to the rider of the ride it is on. */
+data class DriverPosition(val latE7: Int, val lonE7: Int, val atMs: Long)
 
 data class DriverInfo(
     val address: String,
@@ -85,6 +165,8 @@ sealed interface Blocker {
 }
 
 data class Coin(val symbol: String, val address: String, val decimals: Int) {
+    fun fromCentavos(centavos: Long): BigInteger = BigInteger.valueOf(centavos) * BigInteger.TEN.pow(decimals - 2)
+
     fun toBaseUnits(reais: BigDecimal): BigInteger = reais.movePointRight(decimals).toBigIntegerExact()
     fun toReais(units: BigInteger): BigDecimal = BigDecimal(units, decimals)
 }

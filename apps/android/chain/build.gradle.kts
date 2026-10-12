@@ -1,5 +1,5 @@
 plugins {
-    kotlin("jvm") version "2.1.0"
+    kotlin("jvm") version "2.3.0"
     `java-library`
 }
 
@@ -17,7 +17,7 @@ kotlin {
     }
 }
 
-// The gossip network lives in the Rust core. Build it for this computer and generate its Kotlin bindings with
+// The gossip network and the map and trip proofs live in the Rust core. Build it for this computer and generate its Kotlin bindings with
 // UniFFI, so the client and its tests run on a plain JVM. The Android app builds the same core for phones.
 val coreDir = file("../../../core")
 val coreLibrary = coreDir.resolve("target/release/" + System.mapLibraryName("klippelgo_core"))
@@ -27,7 +27,12 @@ val cargoBuildHost by tasks.registering(Exec::class) {
     workingDir = coreDir
     commandLine("cargo", "build", "--release", "--lib")
     inputs.dir(coreDir.resolve("src"))
-    inputs.files(coreDir.resolve("Cargo.toml"), coreDir.resolve("Cargo.lock"), coreDir.resolve("uniffi.toml"))
+    inputs.dir(coreDir.resolve("verify/src"))
+    inputs.dir(coreDir.resolve("proofs/src"))
+    inputs.files(
+        coreDir.resolve("Cargo.toml"), coreDir.resolve("Cargo.lock"), coreDir.resolve("uniffi.toml"),
+        coreDir.resolve("verify/Cargo.toml"), coreDir.resolve("proofs/Cargo.toml"),
+    )
     outputs.file(coreLibrary)
 }
 

@@ -19,10 +19,13 @@ class MainActivity : AppCompatActivity() {
         // Portuguese is the default whatever the phone's language; English and Spanish are picked in the app.
         if (AppCompatDelegate.getApplicationLocales().isEmpty) setAppLanguage("pt-BR")
 
-        // Scripted launches (scripts/two-phones.sh) pass the role and node address as extras.
+        // Scripted launches (scripts/two-phones.sh) pass the role the phone starts in, the node address and which
+        // pair of phones it belongs to; role and pair together pick the phone's account.
         if (savedInstanceState == null) intent.getStringExtra("role")?.let { extra ->
             val role = if (extra.equals("driver", ignoreCase = true)) Role.DRIVER else Role.RIDER
-            vm.connect(role, intent.getStringExtra("rpc") ?: vm.state.value.rpcUrl)
+            val rpc = intent.getStringExtra("rpc") ?: vm.state.value.rpcUrl
+            val pair = intent.getIntExtra("pair", 0)
+            vm.connect(role, rpc, pair.takeIf { it in 1..2 })
         }
 
         setContent {

@@ -6,7 +6,8 @@ plugins {
 
 android {
     namespace = "org.klippelgo.app"
-    compileSdk = 35
+    // The Valhalla library asks for 36 to compile against. The app still targets 35.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "org.klippelgo.app"
@@ -14,6 +15,9 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+
+        // No tests run on the phone. This is what starts the UI agent the test harness talks to (tests/README.md).
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -25,10 +29,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
     }
 
     buildFeatures {
@@ -56,6 +56,12 @@ android {
     }
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
 // Ships the addresses from the last `make deploy` (deployments/local.json) inside the app. Without that file the
 // app falls back to the addresses a fresh local testnet always gets.
 val copyDeployment by tasks.registering(Copy::class) {
@@ -63,7 +69,7 @@ val copyDeployment by tasks.registering(Copy::class) {
     into(layout.buildDirectory.dir("generated/deployments"))
 }
 
-// Builds the Rust core, which holds the gossip network, for phones (arm64) and emulators (x86_64). Needs the NDK
+// Builds the Rust core, which holds the gossip network and the map and trip proofs, for phones (arm64) and emulators (x86_64). Needs the NDK
 // and `cargo install cargo-ndk`; scripts/two-phones.sh installs both.
 val coreDir = rootProject.file("../../core")
 val rustJniLibs = layout.buildDirectory.dir("rustJniLibs")
@@ -75,7 +81,12 @@ val cargoNdk by tasks.registering(Exec::class) {
         "build", "--release", "--lib",
     )
     inputs.dir(coreDir.resolve("src"))
-    inputs.files(coreDir.resolve("Cargo.toml"), coreDir.resolve("Cargo.lock"))
+    inputs.dir(coreDir.resolve("verify/src"))
+    inputs.dir(coreDir.resolve("proofs/src"))
+    inputs.files(
+        coreDir.resolve("Cargo.toml"), coreDir.resolve("Cargo.lock"),
+        coreDir.resolve("verify/Cargo.toml"), coreDir.resolve("proofs/Cargo.toml"),
+    )
     outputs.dir(rustJniLibs)
 }
 android.sourceSets["main"].jniLibs.srcDir(rustJniLibs)
@@ -88,6 +99,12 @@ dependencies {
         exclude(group = "net.java.dev.jna", module = "jna")
     }
     implementation("net.java.dev.jna:jna:5.17.0@aar")
+
+    // The map: MapLibre draws the pack's vector tiles, Valhalla routes on its graph. Both run on the phone.
+    implementation("org.maplibre.gl:android-sdk:13.6.1")
+    implementation("io.github.rallista:valhalla-mobile:0.6.4")
+    implementation("io.github.rallista:valhalla-models:0.6.0")
+    implementation("io.github.rallista:valhalla-models-config:0.6.0")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
@@ -102,4 +119,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    // The UI agent: it reads the screen and injects touches for the test harness. It is in the test APK only.
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
 }

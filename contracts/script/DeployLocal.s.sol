@@ -47,7 +47,14 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
                 driverMinStakeBrl: 100,
                 validatorMinStakeBrl: 500,
                 driverMinScore: 450,
-                proposerMinAccountAge: 0
+                proposerMinAccountAge: 0,
+                mapRebuildQuorum: 3,
+                mapGracePeriod: 30 days,
+                // 5% of each fare, in the place of a municipal service tax, to a test account.
+                taxBps: 500,
+                taxCollector: taxCollector,
+                // R$ 2,50 for one native coin. A stand-in: a real network's rate is set by proposal.
+                nativeCoinCentavos: 250
             })
         );
 
@@ -94,7 +101,10 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
         vm.serializeAddress(k, "FeeVault", address(p.feeVault));
         vm.serializeAddress(k, "RideEscrow", address(p.escrow));
         vm.serializeAddress(k, "DisputeCourt", address(p.court));
+        vm.serializeAddress(k, "MapRegistry", address(p.maps));
+        vm.serializeAddress(k, "FareGuide", address(p.fares));
         vm.serializeAddress(k, "institutoKlippel", institutoKlippel);
+        vm.serializeAddress(k, "taxCollector", taxCollector);
         vm.serializeAddress(k, "attester", attester);
         vm.serializeAddress(k, "rider", rider);
         string memory json = vm.serializeAddress(k, "driver", driver);
@@ -106,6 +116,8 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
         console2.log("FeeVault         ", address(p.feeVault));
         console2.log("RideEscrow       ", address(p.escrow));
         console2.log("DisputeCourt     ", address(p.court));
+        console2.log("MapRegistry      ", address(p.maps));
+        console2.log("FareGuide        ", address(p.fares));
         console2.log("BRLA (mock)      ", address(brla));
         console2.log("BRZ (mock)       ", address(brz));
         console2.log("Written to deployments/local.json");

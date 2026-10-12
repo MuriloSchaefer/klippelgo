@@ -8,7 +8,8 @@ import {RideEscrow} from "../src/RideEscrow.sol";
 import {Reputation} from "../src/Reputation.sol";
 import {FeeVault} from "../src/FeeVault.sol";
 
-/// @notice Runs one R$ 23,40 ride in BRZ on the local testnet: open, accept, start, complete, rate, sweep.
+/// @notice Runs one R$ 23,40 ride in BRZ on the local testnet: open, accept, start, complete, rate, sweep. The
+/// quote, pickup proof and receipt hashes are stand-ins: no phones are involved here.
 ///
 ///   forge script script/DemoRide.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
 contract DemoRide is Script, LocalAccounts {
@@ -38,7 +39,7 @@ contract DemoRide is Script, LocalAccounts {
         vm.stopBroadcast();
 
         vm.startBroadcast(riderKey);
-        escrow.complete(rideId);
+        escrow.complete(rideId, keccak256("trip receipt signed by both phones"));
         reputation.rate(rideId, 5);
         vm.stopBroadcast();
 
@@ -55,6 +56,7 @@ contract DemoRide is Script, LocalAccounts {
         console2.log(
             "Instituto Klippel received (BRZ base units)", brz.balanceOf(institutoKlippel) - instituteBefore
         );
+        console2.log("Tax on the ride (BRZ base units)", escrow.ride(rideId).tax);
         console2.log("Driver score x100", reputation.scoreOf(driver));
     }
 }
