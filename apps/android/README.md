@@ -79,9 +79,12 @@ Then play a ride:
    time, with the recommended price under it. Adjust the price if you like and tap **Pedir ofertas**. The request goes out over
    gossip with the trip's distance and duration, rounded, the region of about a square kilometre that the pickup
    and the destination are each in, and a salted hash of the route. Nothing is locked yet.
-2. **Driver** (emulator-5556): tap **Ficar online**. The request appears as **Nova solicitação** within a few
-   seconds, with the trip's length and its two regions shaded on the map and named by neighbourhood. Set your price with − and +, from 20% under the rider's price to 10% over the recommended
-   one, and tap **Enviar oferta**. You can change it and send again.
+2. **Driver** (emulator-5556): tap **Ficar online**. Within a few seconds the request appears in the list
+   under **Ignorar solicitações automaticamente**, with the rider, the two neighbourhoods, the trip's length and
+   the rider's price. Tap it: it opens, and its two regions are shaded on the map. The offer is for the one
+   that is open. Set your price with − and +, from 20% under the rider's price to 10% over the recommended
+   one, and tap **Enviar oferta**. You can change it and send again; **Pular** takes it off the list, and
+   tapping another request moves the map and the offer to that one.
 3. **Rider**: the offer appears under **Escolha um motorista**, cheapest first. Tap it, check the route, the
    price per km and the breakdown, and tap **Bloquear**. The offered fare and a R$ 2,00 bond are locked in the
    escrow, with the hash of the quote the driver signed. The quote itself, with the exact route, is saved on
@@ -105,7 +108,9 @@ protocol cannot back yet are left out instead of faked: saved places, names, car
 position and arrival time, turn-by-turn directions, chat, call, share and SOS, the pickup QR code and Bluetooth
 check, PIX, and Face ID. A phone without the map pack shows a grey grid where the map goes.
 
-The pickup point is the pin the rider places; the app does not read the phone's location yet. The route is for
+The pickup point is the pin. It starts where the phone is (the app asks for the location permission) and
+follows it until the rider places it by hand or starts asking; after a ride it follows again. A phone outside
+the map pack, as an emulator in California is, leaves the pin in the middle of the map. The route is for
 a car: the core also routes and verifies for motorcycles, and the app has no way to pick one yet.
 
 ### What the trip proofs do and do not do yet
@@ -172,6 +177,29 @@ NAT, and the encrypted ride channel.
 
 The Gradle build runs `cargo ndk`, so the NDK and `cargo-ndk` must be installed, and `make gossip-node` must be
 running for the two phones to find each other.
+
+## Moving the car
+
+An emulator stays where it was put, so the driver's dot never moves by itself. This moves it along the route
+the driver is on, a tenth of the way each second:
+
+```sh
+make android-drive                        # the emulator in driver mode: emulator-5556 with two phones
+make android-drive PHONE=emulator-5560    # the second driver of android-four-phones
+make android-drive LEG=ride STEPS=20 EVERY=0.5
+```
+
+It reads which ride the driver's account is on from the chain, and goes to the pickup while the ride has not
+started, then along the ride once it has: run it after "Aceitar corrida", and again after "Iniciar corrida".
+The ride's route is the one the app itself checked and saved, so the app must show "rota conferida" first.
+The way to the pickup comes from the router `tests/stack.sh up` starts; without it the car goes there in a
+straight line. `LEG=pickup` or `LEG=ride` picks the stretch by hand. The rider's phone shows the car move.
+
+Along the ride the rider is in the car, so the rider's emulator moves with it: the one signed in as the ride's
+rider, found by itself. `RIDER=emulator-5554` names it when several fit.
+
+It is the `drive` command of the test CLI ([tests/README.md](../../tests/README.md)), and reads the app's saved
+route with `run-as`, which only a debug build allows.
 
 ## Accounts
 

@@ -190,6 +190,12 @@ tests/klippelgo peer driver accept 42
 tests/klippelgo chain ride 42
 ```
 
+`klippelgo drive` moves a driver's emulator along the route it is on: to the pickup until the ride starts,
+then along the ride, in ten equal steps, one a second (`--steps`, `--every`, `--phone`, and `pickup` or `ride`
+to pick the stretch). Along the ride the rider's emulator moves with the car (`--rider` names it when several are
+signed in as that rider). With no `--phone` it finds the running emulator whose app is in driver mode, so it works
+on the emulators of `make android-two-phones` as they are: `make android-drive`.
+
 `klippelgo help` lists everything. Peers are `rider`, `driver`, `rider2`, `driver2`; play the other side with
 an account the app is not using. `tap`, `read`, `type`, `wait` and `gone` take a raw tag, for what no driver
 covers yet; `shot <file.png>` takes a picture.
@@ -198,7 +204,7 @@ covers yet; `shot <file.png>` takes a picture.
 
 - **iOS.** The drivers are written against tags, not Android, so an iOS agent can serve the same suites.
 - **A public testnet.** See "The chain" above.
-- **Known limits** in [apps/docs/security.md](../apps/docs/security.md) (P1 to P15) are not tested as if they
+- **Known limits** in [apps/docs/security.md](../apps/docs/security.md) (P1 to P16) are not tested as if they
   were closed. `RevealedRouteTest` says which one it stops short of.
 - **The UI agent is test equipment.** It can read the screen and touch it, so the test APK goes on test
   emulators only. It answers only adb's shell user and root, and it is never part of the app's own APK.

@@ -21,6 +21,14 @@ The app
   klippelgo shot <file.png>           a picture of the screen
   klippelgo locate <lat> <lon>        tell the emulator where it is
 
+Moving the car
+  klippelgo drive [pickup|ride] [--phone <serial>] [--rider <serial>] [--steps 10] [--every 1]
+                                      move a driver's emulator along its current route: to the pickup until the
+                                      ride starts, then along the ride. The way is cut in equal steps, one each
+                                      second. With no --phone it finds the emulator in driver mode. Along the
+                                      ride the rider's emulator moves too: the one signed in as the ride's rider,
+                                      or the one --rider names.
+
 One piece of the UI (each has a driver in tests/harness/drivers)
   klippelgo ui                        every component and what can be done with it
   klippelgo ui <component>            one component's commands
@@ -80,6 +88,28 @@ private fun run(args: List<String>) {
     if (command in setOf("help", "-h", "--help")) return println(HELP)
     val stack = Stack.current
     when (command) {
+        "drive" -> {
+            // Words starting with -- take the word after them; what is left is the leg.
+            val options = HashMap<String, String>()
+            val words = mutableListOf<String>()
+            var i = 0
+            while (i < rest.size) {
+                if (rest[i].startsWith("--")) {
+                    options[rest[i].removePrefix("--")] = rest.getOrNull(i + 1) ?: throw UsageException("${rest[i]} needs a value")
+                    i += 2
+                } else {
+                    words += rest[i++]
+                }
+            }
+            Drive.run(
+                stack,
+                serial = options["phone"],
+                riderSerial = options["rider"],
+                leg = words.firstOrNull(),
+                steps = options["steps"]?.toInt() ?: 10,
+                everySeconds = options["every"]?.toDouble() ?: 1.0,
+            )
+        }
         "launch" -> println("drawn in ${stack.phone.launch(fresh = rest.firstOrNull() == "fresh")} ms")
         "stop" -> show(stack.phone.stop())
         "screen" -> stack.phone.screen().let { screen ->

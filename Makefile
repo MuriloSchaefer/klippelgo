@@ -1,4 +1,4 @@
-.PHONY: test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-four-phones android-apk android-test-chain e2e e2e-integrity e2e-security e2e-performance e2e-up e2e-down e2e-three-phones
+.PHONY: test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-four-phones android-apk android-test-chain e2e e2e-integrity e2e-security e2e-performance e2e-up e2e-down e2e-three-phones android-drive
 
 test: test-contracts test-core test-mappack
 
@@ -53,6 +53,15 @@ android-two-phones:
 ## Android: two riders and two drivers on four emulators. Needs about 16 GB of free RAM.
 android-four-phones:
 	PAIRS=2 apps/android/scripts/two-phones.sh
+
+## Android: move a driver's emulator along its current route, a tenth of the way each second: to the pickup
+## until the ride starts, then along the ride. Run it again after tapping "Iniciar corrida".
+##   make android-drive                          the emulator in driver mode (emulator-5556 with two phones)
+##   make android-drive PHONE=emulator-5560      the second driver of android-four-phones
+##   make android-drive LEG=ride STEPS=20 EVERY=0.5
+## Along the ride the rider's emulator moves with the car. RIDER=emulator-5554 names it when several fit.
+android-drive:
+	tests/klippelgo drive $(LEG) $(if $(PHONE),--phone $(PHONE)) $(if $(RIDER),--rider $(RIDER)) $(if $(STEPS),--steps $(STEPS)) $(if $(EVERY),--every $(EVERY))
 
 android-apk:
 	cd apps/android && ./gradlew :app:assembleDebug

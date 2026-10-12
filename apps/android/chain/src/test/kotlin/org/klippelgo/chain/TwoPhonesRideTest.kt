@@ -155,9 +155,18 @@ class TwoPhonesRideTest {
         assertEquals(riderId, driverId)
         assertTrue(riderPhone.hasRated(riderId) && driverPhone.hasRated(riderId))
         assertEquals(RideStatus.Completed, riderPhone.ride(riderId).status)
-        // Driver nets R$ 22,40: the R$ 23,40 fare minus R$ 1,00 for Instituto Klippel (the bond comes back).
-        assertEquals(coin.toBaseUnits(BigDecimal("22.40")), driverPhone.balanceOf(coin) - driverBefore)
-        println("Ride $riderId completed: driver received R$ 22,40, Instituto Klippel R$ 1,00")
+        // Driver nets the R$ 23,40 fare minus R$ 1,00 for Instituto Klippel and minus the government's tax, a
+        // share of the fare read from the escrow (the bond comes back). The tax went to its collector.
+        val ride = riderPhone.ride(riderId)
+        assertEquals(riderPhone.taxOn(fare), ride.tax)
+        assertEquals(fare - coin.toBaseUnits(BigDecimal("1.00")) - ride.tax, driverPhone.balanceOf(coin) - driverBefore)
+        // Each phone knows what its own transactions cost the network, and what that is in reais.
+        val riderGas = riderPhone.gasSpent(riderId) ?: error("the rider's phone lost count of its gas")
+        assertTrue(riderGas.signum() > 0 && (driverPhone.gasSpent(riderId) ?: BigInteger.ZERO).signum() > 0)
+        println(
+            "Ride $riderId completed: driver received R$ ${coin.toReais(ride.driverPayout)}, Instituto Klippel R$ 1,00, " +
+                "tax R$ ${coin.toReais(ride.tax)}, network R$ ${riderPhone.infrastructureCost(riderGas)} (rider's side)",
+        )
     }
 
     private companion object {

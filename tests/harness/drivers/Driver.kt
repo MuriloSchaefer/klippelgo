@@ -3,6 +3,7 @@ package org.klippelgo.tests.drivers
 import org.klippelgo.app.ui.tags.Tags
 import org.klippelgo.tests.Phone
 import org.klippelgo.tests.reais
+import org.klippelgo.tests.waitUntil
 import java.math.BigDecimal
 
 /** The driver's home: the map, today's numbers, and the round button that goes online. */
@@ -55,10 +56,41 @@ class AutoSkip(phone: Phone) : Component(phone, Tags.AUTO_SKIP) {
 }
 
 /** What a driver is told about a request: who, how far, how much, and roughly where. Never the addresses. */
-data class RequestShown(val rider: String, val trip: String, val pays: BigDecimal, val price: BigDecimal, val pickupRegion: String?, val dropoffRegion: String?)
+data class RequestShown(
+    val rider: String,
+    val trip: String,
+    val pays: BigDecimal,
+    val price: BigDecimal,
+    val pickupRegion: String?,
+    val dropoffRegion: String?,
+    /** What the driver would receive for the quote on screen, after the fee and the tax. */
+    val receive: BigDecimal,
+    /** The line that says what comes out: the tax, and what the network costs. */
+    val costs: String,
+)
 
-/** A rider's request on the driver's screen, to quote on or pass. */
+/**
+ * Riders' requests on the driver's screen. Online they are a list under the driver's rules; the one tapped
+ * opens to the whole request and the quote, and its regions go on the map. With a ride in hand a request is a
+ * screen of its own. Either way the open one is the [Tags.REQUEST] piece.
+ */
 class IncomingRequest(phone: Phone) : Component(phone, Tags.REQUEST) {
+    private val entry = Tags.requestEntry("")
+
+    /** Whether the driver is shown any request at all: one open, or any in the list. */
+    override fun visible(): Boolean = phone.screen().let { it.has(tag) || it.startingWith(entry).isNotEmpty() }
+
+    override fun shown(): Boolean = phone.await("a request") { screen -> true.takeIf { screen.has(tag) || screen.startingWith(entry).isNotEmpty() } }
+
+    override fun gone(): Boolean = waitUntil("no request to be on the driver's screen") { true.takeIf { !visible() } }
+
+    /** How many requests the list says it holds. */
+    fun count(): Int {
+        if (!visible()) return 0
+        // The line may be under the fold or scrolled away: it is looked for, as a person would.
+        return Regex("""\d+""").find(phone.reach(Tags.GO_ONLINE_REQUESTS_COUNT).text)?.value?.toInt() ?: 0
+    }
+
     fun info(): RequestShown {
         phone.awaitTag(tag)
         return RequestShown(
@@ -68,13 +100,29 @@ class IncomingRequest(phone: Phone) : Component(phone, Tags.REQUEST) {
             price = reais(read(Tags.REQUEST_PRICE)),
             pickupRegion = readOrNull(Tags.REQUEST_PICKUP),
             dropoffRegion = readOrNull(Tags.REQUEST_DROPOFF),
+            receive = reais(read(Tags.REQUEST_RECEIVE)),
+            costs = read(Tags.REQUEST_COSTS),
         )
     }
 
-    /** Waits for a request from this rider, given as the app shortens addresses, to be the one on screen. */
-    fun awaitFrom(rider: String, timeoutMs: Long = 60_000): Boolean {
-        phone.await("a request from $rider", timeoutMs) { screen -> screen[Tags.REQUEST_RIDER]?.takeIf { it.text == rider } }
-        return true
+    /**
+     * Waits for a request from this rider, given as the app shortens addresses, and picks it in the list as a
+     * driver would, by tapping it, so that it is the one open.
+     */
+    fun awaitFrom(rider: String, timeoutMs: Long = 60_000): Boolean = waitUntil("a request from $rider", timeoutMs) {
+        val screen = phone.screen()
+        if (screen[Tags.REQUEST_RIDER]?.text == rider) {
+            // A card just opened takes no tap on its buttons for half a second, against double taps.
+            Thread.sleep(700)
+            return@waitUntil true
+        }
+        val listed = screen.startingWith(entry).firstOrNull { it.tag.endsWith(".rider") && it.text == rider }
+        when {
+            listed != null -> phone.tap(listed.tag.removeSuffix(".rider"))
+            // Another one is open and fills the sheet: tapping it closes it, and the rest of the list is in sight again.
+            screen.has(Tags.GO_ONLINE) && screen.has(Tags.REQUEST_RIDER) -> phone.tap(Tags.REQUEST_RIDER)
+        }
+        null
     }
 
     /** The quote about to be sent. */
@@ -99,7 +147,15 @@ class IncomingRequest(phone: Phone) : Component(phone, Tags.REQUEST) {
 
     fun awaitYourOffer(): BigDecimal = phone.await("the app to show the offer as sent") { it[Tags.REQUEST_YOUR_OFFER] }.reais()
 
-    fun pass() = phone.tap(Tags.REQUEST_PASS)
+    /** Passes the request that is open, or the first of the list when none is. */
+    fun pass() {
+        if (phone.find(Tags.REQUEST_PASS) == null) {
+            phone.tap(phone.await("a request to pass") { screen -> screen.startingWith(entry).firstOrNull { !it.tag.endsWith(".rider") } }.tag)
+            phone.awaitTag(Tags.REQUEST_PASS)
+            Thread.sleep(700)
+        }
+        phone.tap(Tags.REQUEST_PASS)
+    }
 }
 
 /** One ride in the driver's sheet. `route` is checked, waiting or needs-map. */

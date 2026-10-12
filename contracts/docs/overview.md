@@ -15,12 +15,12 @@ Related: [security.md](security.md), [scalability.md](scalability.md), the
 | [`PBACGovernor`](../src/PBACGovernor.sol) | Policies (who may call what) and governance (propose, vote, timelock, execute) | No |
 | [`Governed`](../src/Governed.sol) | Base of every other contract: `permitted` and `onlyGovernor` | No |
 | [`IdentityRegistry`](../src/IdentityRegistry.sol) | Roles, stake with unbonding, credential hashes from trusted attesters | Stake |
-| [`RideEscrow`](../src/RideEscrow.sol) | The ride state machine: locks the fare and both bonds, pays out | Fares and bonds |
+| [`RideEscrow`](../src/RideEscrow.sol) | The ride state machine: locks the fare and both bonds, pays out, and takes the fee and the government's tax from the fare | Fares and bonds |
 | [`FeeVault`](../src/FeeVault.sol) | Collects R$ 1,00 per completed ride for Instituto Klippel | Fees |
 | [`Reputation`](../src/Reputation.sol) | Completed-ride counts and star ratings between the two parties of a ride | No |
 | [`DisputeCourt`](../src/DisputeCourt.sol) | Commit-reveal juror vote that splits a disputed fare | No |
 | [`MapRegistry`](../src/MapRegistry.sol) | Proof roots of the map packs, and the verifier's tolerances | No |
-| [`FareGuide`](../src/FareGuide.sol) | The tariff and the band riders and drivers may price in | No |
+| [`FareGuide`](../src/FareGuide.sol) | The tariff and the band riders and drivers may price in, and what one native coin is worth in reais, for showing gas as a ride's infrastructure cost | No |
 
 ## How they fit together
 
@@ -96,16 +96,22 @@ stateDiagram-v2
 
 Where the money goes at each exit:
 
-| Exit | Rider gets | Driver gets | FeeVault gets |
-| --- | --- | --- | --- |
-| Completed | rider bond | fare − fee + driver bond | fee |
-| Cancelled from Open | fare + rider bond | nothing (posted nothing) | nothing |
-| Cancelled from Accepted by rider | fare | driver bond + rider bond | nothing |
-| Cancelled from Accepted by driver | fare + rider bond + driver bond | nothing | nothing |
-| Resolved | `riderBps` of the fare + rider bond | the rest − fee + driver bond | fee, only if the driver's share covers it |
+| Exit | Rider gets | Driver gets | FeeVault gets | Tax collector gets |
+| --- | --- | --- | --- | --- |
+| Completed | rider bond | fare − fee − tax + driver bond | fee | tax |
+| Cancelled from Open | fare + rider bond | nothing (posted nothing) | nothing | nothing |
+| Cancelled from Accepted by rider | fare | driver bond + rider bond | nothing | nothing |
+| Cancelled from Accepted by driver | fare + rider bond + driver bond | nothing | nothing | nothing |
+| Resolved | `riderBps` of the fare + rider bond | the rest − its tax − fee + driver bond | fee, only if what is left of the driver's share covers it | the ride's tax, in the proportion of the fare the driver keeps |
 
-The fee and both bonds are copied from the token's config into the ride when it opens, so a later governance
-change never alters a ride already under way.
+The fee and both bonds are copied from the token's config into the ride when it opens, and the tax is worked
+out then as `fare × taxBps` and kept with its collector, so a later governance change never alters a ride
+already under way, nor where its tax goes. The rider never pays more than the fare: fee and tax both come out
+of the driver's part.
+
+Gas is not in this table. Each account pays the network for its own transactions in the chain's native coin,
+and the escrow never sees it. `FareGuide.nativeCoinCentavos` is only a rate governance publishes so every
+phone converts gas to reais the same way when it shows a ride's infrastructure cost.
 
 ## Governance
 

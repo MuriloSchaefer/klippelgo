@@ -5,11 +5,14 @@ import org.klippelgo.chain.RideStatus
 import org.klippelgo.tests.Peer
 import org.klippelgo.tests.Places
 import org.klippelgo.tests.Scenario
+import org.klippelgo.tests.alike
+import org.klippelgo.tests.shown
 import org.klippelgo.tests.waitUntil
 import java.math.BigDecimal
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -34,6 +37,9 @@ class DriverRideTest : Scenario() {
         val shown = app.request.info()
         assertEquals(coin.toReais(request.maxFare).setScale(2), shown.pays)
         assertEquals(shown.pays, shown.price)
+        // Before quoting, the driver sees what they would be left with: the price minus the fee and the tax.
+        assertEquals(coin.shown(request.maxFare - fee - driver.taxOn(request.maxFare)), shown.receive)
+        assertTrue("≈" in shown.costs, "the request does not say what the network costs: ${shown.costs}")
         assertTrue(shown.trip.contains("km") || shown.trip.contains(" m"), shown.trip)
         // Two neighbourhood names, from this phone's own map pack.
         assertNotNull(shown.pickupRegion)
@@ -48,6 +54,8 @@ class DriverRideTest : Scenario() {
         assertEquals(fare, offer.fare)
 
         val before = driver.balanceOf(coin)
+        val taxBefore = taxCollected(coin)
+        val tax = driver.taxOn(fare)
         val id = rider.take(request, offer)
 
         // The rider locked it: the driver sees the ride, what is guaranteed, and the route once it checked out.
@@ -55,7 +63,7 @@ class DriverRideTest : Scenario() {
         assertEquals(id.toString(), chosen.ride)
         assertEquals(coin.toReais(fare).setScale(2), chosen.fare)
         assertEquals(Peer.short(request.rider), chosen.rider.lowercase())
-        assertEquals(coin.toReais(fare - fee).setScale(2), app.driverRide.guaranteed())
+        assertEquals(coin.shown(fare - fee - tax), app.driverRide.guaranteed())
         app.driverRide.awaitRouteChecked("chosen")
 
         app.driverRide.accept()
@@ -75,13 +83,108 @@ class DriverRideTest : Scenario() {
         // Paid: the screen says what the driver received, and asks for the rating.
         val end = app.rideEnd.info()
         assertEquals(id.toString(), end.ride)
-        assertEquals(coin.toReais(fare - fee).setScale(2), end.amount)
+        assertEquals(coin.shown(fare - fee - tax), end.amount)
         assertTrue(end.paid)
-        assertEquals(before + fare - fee, driver.balanceOf(coin))
+        assertEquals(coin.shown(tax), end.tax)
+        assertTrue(end.infrastructure != null && !end.infrastructure.startsWith("≈"), "infrastructure cost at the end: ${end.infrastructure}")
+        assertEquals(before + fare - fee - tax, driver.balanceOf(coin))
+        assertEquals(taxBefore + tax, taxCollected(coin))
         app.rideEnd.stars(5)
         app.rideEnd.rate()
         waitUntil("the driver's rating to be on chain", 60_000) { true.takeIf { driver.hasRated(id) } }
         app.goOnline.shown()
+    }
+
+    @Test
+    fun `the map stays where the driver put it while the car moves`() {
+        val rider = peer(DevAccount.RIDER)
+        freshDriver()
+        app.goOnline.goOnline()
+        val request = rider.ask(rider.route(Places.CATHEDRAL, Places.LAKE))
+        app.request.awaitFrom(Peer.short(request.rider))
+        app.request.send()
+        val id = rider.take(request, rider.awaitOffer(request, appDriver))
+        app.driverRide.awaitRouteChecked("chosen")
+        app.driverRide.accept()
+        app.driverRide.awaitRouteChecked("current")
+        Thread.sleep(3_000) // the map frames the ride and the way to it
+
+        // The driver looks closer at some part of the map: two taps on zoom, and a drag.
+        app.map.zoomIn()
+        Thread.sleep(800)
+        app.map.zoomIn()
+        Thread.sleep(800)
+        app.map.drag(0.2, 0.15)
+        Thread.sleep(3_000)
+        val before = phone.picture("map")
+
+        // The car moves on, a couple of hundred metres at a time, as it does when someone is driving. The way
+        // to the pickup is drawn again from each new position.
+        for (step in 1..5) {
+            phone.locate((Places.CENTRE.latE7 - step * 18_000) / 1e7, Places.CENTRE.lonE7 / 1e7)
+            Thread.sleep(3_000)
+        }
+        val after = phone.picture("map")
+
+        // Same streets in the same places. Had the map framed the route again, hardly a pixel would match.
+        val same = alike(before, after)
+        assertTrue(same > 0.8, "the map moved or zoomed by itself while the car moved: only ${(same * 100).toInt()}% of it is as the driver left it")
+        // And the rider did hear the car move, so the positions above were real ones to the app.
+        val position = waitUntil("the rider to learn where the driver is", 60_000) { rider.driverPosition(id) }
+        assertTrue(position.latE7 < Places.CENTRE.latE7 - 50_000, "the rider was told $position")
+        rider.cancel(id)
+    }
+
+    /** How much of the map is the colour a request's regions are edged in. */
+    private fun regionsDrawn(): Int {
+        val map = phone.picture("map")
+        var count = 0
+        for (y in 0 until map.height step 2) {
+            for (x in 0 until map.width step 2) {
+                val p = map.getRGB(x, y)
+                if (kotlin.math.abs(((p shr 16) and 0xFF) - 0xE8) <= 16 && kotlin.math.abs(((p shr 8) and 0xFF) - 0x59) <= 16 && kotlin.math.abs((p and 0xFF) - 0x0C) <= 16) count++
+            }
+        }
+        return count
+    }
+
+    @Test
+    fun `requests are listed, and the one picked is the one on the map and the one quoted`() {
+        val ana = peer(DevAccount.RIDER)
+        val bia = peer(DevAccount.RIDER_2)
+        freshDriver()
+        app.goOnline.goOnline()
+
+        val first = ana.ask(ana.route(Places.CATHEDRAL, Places.LAKE))
+        val second = bia.ask(bia.route(Places.CENTRE, Places.NORTH))
+        // Both are listed under the driver's rules, and the driver is still at home: none is open, and the map
+        // has not moved for them.
+        waitUntil("both requests to be listed", 60_000) { true.takeIf { app.request.count() == 2 } }
+        assertTrue(app.goOnline.visible())
+        assertFalse(phone.screen().has("request"), "a request opened by itself")
+        assertTrue(regionsDrawn() < 20, "the map shows a request's regions before any was picked")
+
+        // Picking the second: it opens, with its own numbers, and its regions are what the map now shows.
+        app.request.awaitFrom(Peer.short(second.rider))
+        assertEquals(Peer.short(second.rider), app.request.info().rider)
+        Thread.sleep(3_000)
+        assertTrue(regionsDrawn() > 50, "the map does not show the regions of the request picked")
+
+        // The quote goes to the rider of the one picked, and to nobody else.
+        app.request.send()
+        bia.awaitOffer(second, appDriver)
+        assertTrue(ana.offers(first).isEmpty(), "the rider of a request that was not picked got an offer")
+
+        // Picking the other one moves the map to its regions and the quote to it.
+        app.request.awaitFrom(Peer.short(first.rider))
+        assertEquals(Peer.short(first.rider), app.request.info().rider)
+        Thread.sleep(3_000)
+        assertTrue(regionsDrawn() > 50, "the map does not show the regions of the request picked")
+        // Passing it takes it off the list; the other stays.
+        app.request.pass()
+        waitUntil("the passed request to leave the list") { true.takeIf { app.request.count() == 1 } }
+        ana.withdraw(first)
+        bia.withdraw(second)
     }
 
     @Test

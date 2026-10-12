@@ -84,7 +84,7 @@ What one cell carries, from the constants in the code:
 | Request | a few hundred bytes | Re-announced at most every 2.5 s while open (gossip keeps no history) |
 | Offer | a few hundred bytes | Re-announced with the request's cycle while valid |
 | Sealed route | a few KB; tens for a trip across a large city; 64 KB at most | Re-announced until the request expires |
-| Sealed position | a few hundred bytes | At most every 4 s per ride under way |
+| Sealed position | a few hundred bytes | At most every 4 s per ride on the way to its pickup, and every second once it has started |
 
 A phone keeps at most 200 requests and 50 offers per request, and the node's inbox holds 4096 messages between
 two drains, dropping the oldest. Memory per phone is therefore bounded whatever the cell does.

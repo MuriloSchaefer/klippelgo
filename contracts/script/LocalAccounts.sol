@@ -25,6 +25,7 @@ abstract contract LocalAccounts is Script {
     address[3] internal validators;
     address internal rider2;
     address internal driver2;
+    address internal taxCollector; // #10, receives the government's tax on each ride
 
     function _loadAccounts() internal {
         string memory mnemonic = vm.envOr("MNEMONIC", ANVIL_MNEMONIC);
@@ -46,5 +47,6 @@ abstract contract LocalAccounts is Script {
         driver2Key = vm.deriveKey(mnemonic, 9);
         rider2 = vm.addr(rider2Key);
         driver2 = vm.addr(driver2Key);
+        taxCollector = vm.addr(vm.deriveKey(mnemonic, 10));
     }
 }

@@ -49,7 +49,12 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
                 driverMinScore: 450,
                 proposerMinAccountAge: 0,
                 mapRebuildQuorum: 3,
-                mapGracePeriod: 30 days
+                mapGracePeriod: 30 days,
+                // 5% of each fare, in the place of a municipal service tax, to a test account.
+                taxBps: 500,
+                taxCollector: taxCollector,
+                // R$ 2,50 for one native coin. A stand-in: a real network's rate is set by proposal.
+                nativeCoinCentavos: 250
             })
         );
 
@@ -99,6 +104,7 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
         vm.serializeAddress(k, "MapRegistry", address(p.maps));
         vm.serializeAddress(k, "FareGuide", address(p.fares));
         vm.serializeAddress(k, "institutoKlippel", institutoKlippel);
+        vm.serializeAddress(k, "taxCollector", taxCollector);
         vm.serializeAddress(k, "attester", attester);
         vm.serializeAddress(k, "rider", rider);
         string memory json = vm.serializeAddress(k, "driver", driver);

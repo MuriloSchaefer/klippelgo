@@ -8,6 +8,7 @@ import org.klippelgo.core.Coordinate
 import org.klippelgo.tests.Peer
 import org.klippelgo.tests.Places
 import org.klippelgo.tests.Scenario
+import org.klippelgo.tests.shown
 import org.klippelgo.tests.drivers.App
 import org.klippelgo.tests.waitUntil
 import java.math.BigDecimal
@@ -128,7 +129,8 @@ class ThreePhonesTest : Scenario() {
         // Paid: the driver's phone says what it received and asks for a rating.
         val end = waitUntil("the driver to be shown the payment", 60_000) { firstDriver.rideEnd.info().takeIf { it.paid } }
         assertEquals(id.toString(), end.ride)
-        assertEquals((price - coin.toReais(fee)).setScale(2), end.amount)
+        val tax = riderAccount.taxOn(coin.toBaseUnits(price))
+        assertEquals(coin.shown(coin.toBaseUnits(price) - fee - tax), end.amount)
         firstDriver.rideEnd.stars(5)
         firstDriver.rideEnd.rate()
 
@@ -138,7 +140,7 @@ class ThreePhonesTest : Scenario() {
         // The rider paid the fare and has the bond back; the driver nets the fare minus the fee and has theirs
         // back; the driver who only looked on is where they started.
         assertEquals(riderBefore - fare, riderAccount.balanceOf(coin))
-        assertEquals(firstBefore + fare - fee, firstAccount.balanceOf(coin))
+        assertEquals(firstBefore + fare - fee - tax, firstAccount.balanceOf(coin))
         assertEquals(secondBefore, secondAccount.balanceOf(coin))
         assertTrue(driverBond.signum() >= 0)
 

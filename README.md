@@ -2,8 +2,9 @@
 
 A ride-hailing protocol with no central server. Riders and drivers find each other phone to phone, agree a
 fare, lock it in an on-chain escrow paid in a BRL stablecoin, and every rule is a policy the community governs on-chain.
-Personal data stays encrypted on the phone. Each completed ride pays a flat R$ 1,00 to Instituto Klippel,
-deducted from the fare.
+Personal data stays encrypted on the phone. Each completed ride pays a flat R$ 1,00 to Instituto Klippel and
+the government's tax, a share of the fare the community sets, both deducted from the fare: the rider pays the
+fare and nothing on top. The app also shows what a ride costs the network (gas) as its infrastructure cost.
 
 The design is in the [KlippelGo Architecture Plan](https://claude.ai/code/artifact/9a1aa829-3b30-4485-9395-42fa77304dc8).
 How maps, routes and trip proofs are computed on the phone is in [docs/maps-and-routing.md](docs/maps-and-routing.md).
@@ -42,7 +43,7 @@ Needs [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge
 git clone --recurse-submodules <this repo>
 make testnet      # terminal 1: anvil on http://127.0.0.1:8545, chain id 31337
 make deploy       # terminal 2: deploy contracts, mock BRLA/BRZ, seed accounts
-make demo         # run one R$ 23,40 ride: driver gets R$ 22,40, Instituto Klippel R$ 1,00
+make demo         # run one R$ 23,40 ride: driver gets R$ 21,23, Instituto Klippel R$ 1,00, tax R$ 1,17
 ```
 
 To play the ride on two Android emulators (rider and driver at once), see [apps/android](apps/android/README.md).
@@ -77,6 +78,7 @@ All accounts come from anvil's public test mnemonic (`test test ... junk`). Neve
 | 4 | Second phone, starts as driver | The same |
 | 5-7 | Validators | R$ 500 stake each, can judge disputes |
 | 8, 9 | Third and fourth phone | The same, for trying four phones at once |
+| 10 | Tax collector | Receives the government's tax on each ride (5% of the fare on the local testnet). Not one of anvil's ten funded accounts: it only receives |
 
 ### Local governance settings
 
@@ -106,6 +108,17 @@ up to 10% above the recommended one, so a driver can ask for more than the rider
 The escrow never learns how long a trip is, so the phones keep the band: a driver's phone ignores a request
 priced outside it, and a rider's phone ignores a quote outside the driver's limits. The tariff and both limits
 change only through a governance proposal.
+
+What comes out of a fare, and what does not:
+
+| | On the local testnet | Who bears it | Where it is set |
+| --- | --- | --- | --- |
+| Instituto Klippel | R$ 1,00 per ride | The driver: deducted from the fare | `RideEscrow.setToken` |
+| Government tax (imposto) | 5% of the fare | The driver: deducted from the fare | `RideEscrow.setTax` |
+| Infrastructure cost | About R$ 0,002 a ride at local gas prices | Each side pays the network for its own transactions, in the chain's coin, outside the escrow | The network's gas price; `FareGuide.setNativeCoinPrice` sets the rate the app uses to show it in reais |
+
+A ride keeps the tax it opened with. The app shows all three before the rider locks and before the driver
+quotes, and what was actually paid when the ride ends.
 
 ## Tests
 

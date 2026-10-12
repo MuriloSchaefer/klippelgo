@@ -15,6 +15,8 @@ data class Deployment(
     val fares: String,
     val brla: String,
     val brz: String,
+    /** The account the government's tax on each ride is paid to, when the deployment file names it. */
+    val taxCollector: String = "",
 ) {
     companion object {
         fun fromJson(json: String): Deployment {
@@ -32,6 +34,7 @@ data class Deployment(
                 fares = a("FareGuide"),
                 brla = a("BRLA"),
                 brz = a("BRZ"),
+                taxCollector = n.get("taxCollector")?.asText().orEmpty(),
             )
         }
 
@@ -51,6 +54,7 @@ data class Deployment(
             fares = "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
             brla = "0x5FbDB2315678afecb367f032d93F642f64180aa3",
             brz = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+            taxCollector = "0xBcd4042DE499D14e55001CcbB24a551F3b954096",
         )
     }
 }

@@ -140,6 +140,21 @@
     <string name="pickup">Embarque</string>
     <string name="pickup_pin">No ponto marcado</string>
     <string name="pickup_pin_hint">Mova o mapa para marcar onde o carro deve chegar.</string>
+    <string name="search_pickup">Buscar endereço ou lugar de embarque</string>
+    <string name="keep_pickup">Manter %1$s</string>
+    <string name="move_pickup_title">Mudar o embarque?</string>
+    <string name="move_pickup_body">O pedido atual é retirado, com as ofertas que recebeu, e um novo é feito saindo de %1$s. O trajeto muda, então o preço volta ao recomendado para o novo trajeto.</string>
+    <string name="move_pickup_confirm">Retirar e pedir de novo</string>
+    <string name="move_pickup_keep">Manter o pedido</string>
+    <string name="tax_in_fare">Imposto (%1$s%%), já na tarifa</string>
+    <string name="tax_paid">Imposto (%1$s%%)</string>
+    <string name="infrastructure_cost">Custo de infraestrutura (rede)</string>
+    <string name="infrastructure_note">Pago à rede blockchain pelas transações da corrida, na moeda dela. Fica fora do valor travado.</string>
+    <string name="tax_and_network">Imposto %1$s%%: %2$s · Rede: %3$s</string>
+    <string name="costs_title">Imposto e infraestrutura</string>
+    <string name="rule_tax">Imposto do governo</string>
+    <string name="rule_tax_value">%1$s%% da tarifa</string>
+    <string name="costs_body">O imposto sai da parte do motorista: o passageiro paga a tarifa e nada além. O custo de infraestrutura é o que a rede cobra pelas suas transações em uma corrida, convertido em reais pela cotação definida em votação.</string>
     <string name="destination">Destino</string>
     <string name="search_destination">Endereço ou lugar</string>
     <string name="change">Trocar</string>
@@ -209,4 +224,12 @@
     </plurals>
     <string name="driver_busy_body">Você vê a posição dele no mapa assim que a sua corrida for a da vez. Cancelar enquanto espera segue as mesmas regras.</string>
     <string name="driver_live">Posição do motorista ao vivo no mapa.</string>
+    <plurals name="requests_heard">
+        <item quantity="one">%d solicitação</item>
+        <item quantity="other">%d solicitações</item>
+    </plurals>
+    <plurals name="requests_more">
+        <item quantity="one">mais %d solicitação</item>
+        <item quantity="other">mais %d solicitações</item>
+    </plurals>
 </resources>

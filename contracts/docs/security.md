@@ -55,11 +55,12 @@ sequenceDiagram
     participant G as PBACGovernor
     participant D as Driver
     participant V as FeeVault
+    participant T as Tax collector
     participant P as Reputation
 
     R->>E: open(driver, token, fare, quoteHash)
     E->>G: hasPermission(rider, open)
-    Note over E: token on allow-list, fare > fee<br/>fee and bonds copied into the ride
+    Note over E: token on allow-list, fare > fee + tax<br/>fee, bonds, tax and its collector copied into the ride
     R-->>E: fare + rider bond
     D->>E: accept(rideId)
     E->>G: hasPermission(driver, accept)
@@ -69,7 +70,8 @@ sequenceDiagram
     R->>E: complete(rideId, receiptHash)
     Note over E: status set to Completed before any transfer
     E-->>V: fee
-    E-->>D: fare - fee + driver bond
+    E-->>T: tax
+    E-->>D: fare - fee - tax + driver bond
     E-->>R: rider bond
     E->>P: recordCompletion(rideId, rider, driver)
 ```
@@ -149,10 +151,12 @@ A change that breaks one of these is a security bug, whatever the tests say.
   before any transfer, and every function that transfers is `nonReentrant`.
 - **C4. Only parties move a ride.** Outside the court and `timeout`, only the ride's rider or driver changes
   its state, and each only through their own functions.
-- **C5. A ride keeps the terms it opened with.** Fee and bonds are read from the ride, never from the current
-  `tokenConfig`.
+- **C5. A ride keeps the terms it opened with.** Fee, bonds, the tax amount and the tax collector are read
+  from the ride, never from the current `tokenConfig`, `taxBps` or `taxCollector`. Switching the tax off, or
+  naming another collector, cannot lock or redirect a ride already under way.
 - **C6. Only allow-listed tokens.** `open` reverts for a token whose fee is zero, and for a fare not above
-  the fee.
+  the fee plus the tax, so a settlement never pays out more than the fare. `setTax` refuses a rate of 100% or
+  more, and a non-zero rate with no collector.
 - **C7. A dispute freezes the ride.** While Disputed, only `resolve` from the court moves funds.
 - **C8. A split is bounded.** `riderBps` is at most 10 000 at both the court and the escrow.
 - **C9. A juror is not a party**, votes once per dispute, and cannot change a committed vote.
@@ -179,12 +183,15 @@ These are real today. A change that touches one should either close it or leave 
 | L4 | Jurors are not paid and not slashed; one juror alone decides if only one reveals; no reveal means 50/50 | First version of the court | Juror selection, rewards, slashing, a minimum number of reveals |
 | L5 | Stake is a gate, never seized: there is no slashing anywhere | Not built | Slashing by court or governance decision |
 | L6 | Voting weight is read when the vote is cast, with no snapshot | Simplicity | Safe only while `unbondingPeriod` is longer than `votingPeriod`. Neither setter enforces that: a proposal changing either must keep it |
-| L7 | Completed rides give voting weight and cost R$ 1,00 each to fake between two own accounts | Sybil cost is the fee plus gas | Credential-gated weight, or weight from rated rides only |
+| L7 | Completed rides give voting weight and cost R$ 1,00 plus the tax each to fake between two own accounts | Sybil cost is the fee, the tax and gas | Credential-gated weight, or weight from rated rides only |
 | L8 | An account with no ratings passes any `minScore` | New drivers must be able to start | Credential and stake gates carry the weight until the first rating |
 | L9 | A dispute can be raised once per ride, by either party, at no cost | First version | A dispute bond |
 | L10 | Fee-on-transfer, rebasing or hook tokens would break C2 | The escrow assumes plain ERC-20s | Governance must only allow-list plain tokens |
 | L11 | The deployer is all-powerful until `finishBootstrap` | Wiring needs it | `ProtocolDeployer` calls it in the same script. Verify `bootstrapper() == 0` on any deployment |
 | L12 | Rider and driver addresses and fares are public and linkable across rides | Public chain | Fresh accounts per ride with smart accounts; not built |
+| L13 | A tax collector that cannot receive the token (a contract that reverts, or an address a real BRL token blocklists) blocks the settlement of the rides that name it | The escrow pays in the same transaction, as it does the fee vault and the parties | Governance must name a plain account. Because the collector is fixed per ride, naming another one later does not free a ride already open: its only exit is a dispute resolved wholly to the rider. A pull payment (the collector withdraws) would remove the dependency |
+| L14 | `FareGuide.nativeCoinCentavos` is a number governance types in, not a price feed | No oracle | It prices nothing on chain: a stale rate only makes the app's infrastructure-cost line wrong. An oracle if it ever gates anything |
+| L15 | `setTax` accepts any rate under 100% | Same kind of power as the fee in `setToken` | Rides under way are unaffected and the rider never pays more than the fare; a high rate makes `open` revert or drivers stop quoting. A cap in the contract, if the community wants one |
 
 ## How it is tested
 

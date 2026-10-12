@@ -83,6 +83,8 @@ object Tags {
     const val RULES_MINIMUM = "rules.minimum"
     const val RULES_RIDER_RANGE = "rules.rider-range"
     const val RULES_DRIVER_DISCOUNT = "rules.driver-discount"
+    const val RULES_TAX = "rules.tax"
+    const val RULES_INFRASTRUCTURE = "rules.infrastructure"
     fun rulesFee(symbol: String) = "rules.fee.$symbol"
     fun rulesRiderBond(symbol: String) = "rules.rider-bond.$symbol"
     fun rulesDriverBond(symbol: String) = "rules.driver-bond.$symbol"
@@ -105,6 +107,14 @@ object Tags {
     const val ASK_SUBMIT = "ask.submit"
     fun askCoin(symbol: String) = "ask.coin.$symbol"
 
+    /** Where the car should come, on the ask screen: the name, and a search to pick another place. */
+    const val PICKUP = "pickup"
+    const val PICKUP_NAME = "pickup.name"
+    const val PICKUP_CHANGE = "pickup.change"
+    const val PICKUP_SEARCH = "pickup.search"
+    const val PICKUP_KEEP = "pickup.keep"
+    fun pickupPlace(index: Int) = "pickup.place.$index"
+
     const val DESTINATION = "destination"
     const val DESTINATION_SEARCH = "destination.search"
     const val DESTINATION_PICKED = "destination.picked"
@@ -116,6 +126,14 @@ object Tags {
 
     /** The request is out: the drivers' quotes as they arrive. */
     const val OFFERS = "offers"
+    const val OFFERS_PICKUP = "offers.pickup"
+
+    /** Asks before moving the pickup of a request that is out: the request is withdrawn and a new one made. */
+    const val MOVE_PICKUP = "move-pickup"
+    const val MOVE_PICKUP_MESSAGE = "move-pickup.message"
+    const val MOVE_PICKUP_CONFIRM = "move-pickup.confirm"
+    const val MOVE_PICKUP_KEEP = "move-pickup.keep"
+    const val OFFERS_DESTINATION = "offers.destination"
     const val OFFERS_TRIP = "offers.trip"
     const val OFFERS_PRICE = "offers.price"
     const val OFFERS_STATUS = "offers.status"
@@ -136,6 +154,8 @@ object Tags {
     const val CONFIRM_TO_DRIVER = "confirm.to-driver"
     const val CONFIRM_FEE = "confirm.fee"
     const val CONFIRM_BOND = "confirm.bond"
+    const val CONFIRM_TAX = "confirm.tax"
+    const val CONFIRM_INFRASTRUCTURE = "confirm.infrastructure"
     const val CONFIRM_LOCK = "confirm.lock"
 
     /** From the fare being locked until the driver starts the ride. */
@@ -161,6 +181,8 @@ object Tags {
     const val RIDE_END_RIDE = "ride-end.ride"
     const val RIDE_END_AMOUNT = "ride-end.amount"
     const val RIDE_END_STARS = "ride-end.stars"
+    const val RIDE_END_TAX = "ride-end.tax"
+    const val RIDE_END_INFRASTRUCTURE = "ride-end.infrastructure"
 
     /** The rider confirming arrival, which pays the driver; and, once paid, either side sending the rating. */
     const val RIDE_END_PAY = "ride-end.pay"
@@ -179,6 +201,15 @@ object Tags {
     const val GO_ONLINE_SCORE = "go-online.score"
     const val GO_ONLINE_RIDES = "go-online.rides"
     const val GO_ONLINE_WAITING = "go-online.waiting"
+
+    /** The requests heard while online, listed under the driver's rules. */
+    const val GO_ONLINE_REQUESTS = "go-online.requests"
+    const val GO_ONLINE_REQUESTS_COUNT = "go-online.requests.count"
+    const val GO_ONLINE_REQUESTS_MORE = "go-online.requests.more"
+
+    /** One request in that list, by its id in hex. Tapping it picks it; the one picked holds a [REQUEST]. */
+    fun requestEntry(id: String) = "go-online.request.$id"
+    fun requestEntryRider(id: String) = "go-online.request.$id.rider"
 
     /** Why the policy will not let this driver accept rides. */
     const val BLOCKED = "blocked"
@@ -203,6 +234,10 @@ object Tags {
     const val REQUEST_LOWER = "request.lower"
     const val REQUEST_RAISE = "request.raise"
     const val REQUEST_YOUR_OFFER = "request.your-offer"
+
+    /** What the driver would receive for the quote, and what comes out of it: the tax, and the network's cost. */
+    const val REQUEST_RECEIVE = "request.receive"
+    const val REQUEST_COSTS = "request.costs"
     const val REQUEST_PASS = "request.pass"
     const val REQUEST_SEND = "request.send"
 

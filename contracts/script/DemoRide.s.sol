@@ -56,6 +56,7 @@ contract DemoRide is Script, LocalAccounts {
         console2.log(
             "Instituto Klippel received (BRZ base units)", brz.balanceOf(institutoKlippel) - instituteBefore
         );
+        console2.log("Tax on the ride (BRZ base units)", escrow.ride(rideId).tax);
         console2.log("Driver score x100", reputation.scoreOf(driver));
     }
 }

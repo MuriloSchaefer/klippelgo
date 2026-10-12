@@ -33,9 +33,11 @@ data class Ride(
     val receiptHash: String,
     /** Unix seconds when the receipt was put on record, 0 while there is none. */
     val receiptAt: Long,
+    /** The government's tax on this ride: a share of the fare, fixed when the ride opened. */
+    val tax: BigInteger = BigInteger.ZERO,
 ) {
-    /** What the driver keeps: the fare minus R$ 1,00 for Instituto Klippel. */
-    val driverPayout: BigInteger get() = fare - fee
+    /** What the driver keeps: the fare minus R$ 1,00 for Instituto Klippel and minus the government's tax. */
+    val driverPayout: BigInteger get() = fare - fee - tax
 }
 
 /**

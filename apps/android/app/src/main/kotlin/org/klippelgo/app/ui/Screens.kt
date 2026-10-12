@@ -63,7 +63,7 @@ import java.util.Locale
 
 /** Lets the tests find a piece of the UI by its tag (see [Tags]), the way a screen reader finds it by its label. */
 @OptIn(ExperimentalComposeUiApi::class)
-private fun Modifier.testable(): Modifier = semantics { testTagsAsResourceId = true }
+fun Modifier.testable(): Modifier = semantics { testTagsAsResourceId = true }
 
 @Composable
 fun KlippelGoApp(vm: AppViewModel) {
@@ -320,6 +320,23 @@ fun RideEndScreen(
                     },
                     size = 13.sp,
                 )
+                // What came out of the fare for the government, and what the ride cost the network on this
+                // side: what this phone's transactions paid if it knows, else what they are expected to.
+                KeyValue(
+                    stringResource(if (rider) R.string.tax_in_fare else R.string.tax_paid, percent(state.taxBps, ride)),
+                    brl(coin, ride.tax),
+                    tag = Tags.RIDE_END_TAX,
+                )
+                val spent = state.infrastructureSpent[ride.id]
+                (spent ?: state.infrastructure)?.let { cost ->
+                    KeyValue(
+                        stringResource(R.string.infrastructure_cost),
+                        (if (spent == null) "≈ " else "") + brlFine(cost),
+                        divider = false,
+                        tag = Tags.RIDE_END_INFRASTRUCTURE,
+                    )
+                    Muted(stringResource(R.string.infrastructure_note), size = 12.sp)
+                }
             }
         }
         Column(
@@ -361,6 +378,19 @@ fun brl(coin: Coin, units: BigInteger): String =
     brlFormat.format(coin.toReais(units).setScale(2, RoundingMode.DOWN))
 
 fun brl(reais: BigDecimal): String = brlFormat.format(reais.setScale(2, RoundingMode.DOWN))
+
+/**
+ * An amount that may be under a centavo, as what a ride costs the network often is: R$ 0,0012 where R$ 0,00
+ * would say it is free.
+ */
+fun brlFine(reais: BigDecimal): String =
+    if (reais.signum() > 0 && reais < BigDecimal("0.01")) "R$ " + reais.setScale(4, RoundingMode.HALF_UP).toPlainString().replace('.', ',') else brl(reais)
+
+/** The tax rate as a ride carries it, "5" for 5%: from the ride's own amounts when it has a fare, else today's rate. */
+fun percent(taxBps: Int, ride: Ride? = null): String {
+    val bps = if (ride != null && ride.fare.signum() > 0) (ride.tax * BigInteger.valueOf(10_000) / ride.fare).toInt() else taxBps
+    return BigDecimal(bps).movePointLeft(2).stripTrailingZeros().toPlainString().replace('.', ',')
+}
 
 /** "8,5 km" from 8 500 m; "850 m" under a kilometre. */
 fun distanceLabel(metres: Int): String =

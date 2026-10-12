@@ -30,6 +30,7 @@ import org.web3j.protocol.http.HttpService
 import org.web3j.tx.RawTransactionManager
 import org.web3j.tx.response.PollingTransactionReceiptProcessor
 import org.web3j.utils.Numeric
+import java.math.BigDecimal
 import java.math.BigInteger
 
 /**
@@ -82,7 +83,7 @@ class KlippelGoClient(
                 "ride",
                 listOf(Uint256(id)),
                 listOf(addressRef, addressRef, addressRef, uint8Ref, uint64Ref, uint64Ref) +
-                    List(4) { uint256Ref } + listOf(bytes32Ref, bytes32Ref, bytes32Ref, uint64Ref),
+                    List(4) { uint256Ref } + listOf(bytes32Ref, bytes32Ref, bytes32Ref, uint64Ref, uint256Ref, addressRef),
             ),
         )
         return Ride(
@@ -100,7 +101,65 @@ class KlippelGoClient(
             quoteHash = Numeric.toHexString((out[10] as Bytes32).value),
             receiptHash = Numeric.toHexString((out[12] as Bytes32).value),
             receiptAt = uint(out[13]).toLong(),
+            tax = uint(out[14]),
         )
+    }
+
+    // ---------------------------------------------------------------- what a ride costs beyond the fare
+
+    /**
+     * The government's tax on a ride, as a share of the fare in basis points. It comes out of what the driver
+     * receives; the rider pays the fare and nothing on top. Governance can change it, so it is read again
+     * every few seconds: a quote is priced on today's rate, and a ride keeps the rate it opened with.
+     */
+    fun taxBps(): Int {
+        val now = System.currentTimeMillis()
+        if (now - taxReadAt > TAX_FRESH_MS) {
+            taxRate = uint(call(deployment.escrow, fn("taxBps", emptyList(), listOf(uint16Ref)))[0]).toInt()
+            taxReadAt = now
+        }
+        return taxRate
+    }
+
+    @Volatile private var taxRate = 0
+    @Volatile private var taxReadAt = 0L
+
+    /** The tax a ride opened now at `fare` would carry. Mirrors `RideEscrow.open`. */
+    fun taxOn(fare: BigInteger): BigInteger = fare * BigInteger.valueOf(taxBps().toLong()) / BigInteger.valueOf(10_000)
+
+    /** What one native coin of the chain is worth in centavos, as governance set it in `FareGuide`. Zero: not set. */
+    val nativeCoinCentavos: BigInteger by lazy {
+        uint(call(deployment.fares, fn("nativeCoinCentavos", emptyList(), listOf(uint256Ref)))[0])
+    }
+
+    /** What the network asks for a unit of gas right now, in wei. */
+    fun gasPrice(): BigInteger = web3.ethGasPrice().send().gasPrice
+
+    /**
+     * What `wei` paid to the network comes to in reais, at the rate governance set: the infrastructure cost of
+     * the transactions behind a ride. Kept to a hundredth of a centavo, since on a cheap chain a whole ride
+     * costs less than one. The same sum as `FareGuide.infrastructureCost`, which rounds to the centavo.
+     */
+    fun infrastructureCost(wei: BigInteger): BigDecimal =
+        BigDecimal(wei * nativeCoinCentavos).divide(BigDecimal.TEN.pow(20), 4, java.math.RoundingMode.HALF_UP)
+
+    private val spent = java.util.concurrent.ConcurrentHashMap<BigInteger, BigInteger>()
+
+    /** Rides whose first transaction on this side (the rider's `open`, the driver's `accept`) this client sent. */
+    private val seenFromTheStart = java.util.concurrent.ConcurrentHashMap.newKeySet<BigInteger>()
+
+    /**
+     * What this account's own transactions for a ride cost in gas so far, in wei, or null when this client did
+     * not see the ride from its first transaction. It is kept in memory only, so after the app restarts the
+     * sum would be missing its beginning: better to say an estimate than a part as if it were the whole.
+     */
+    fun gasSpent(rideId: BigInteger): BigInteger? = spent[rideId]?.takeIf { rideId in seenFromTheStart }
+
+    private fun paid(rideId: BigInteger, vararg receipts: TransactionReceipt?) {
+        val wei = receipts.filterNotNull().fold(BigInteger.ZERO) { sum, r ->
+            sum + r.gasUsed * (r.effectiveGasPrice?.let { Numeric.decodeQuantity(it) } ?: BigInteger.ZERO)
+        }
+        spent.merge(rideId, wei, BigInteger::add)
     }
 
     /** Fee, rider bond and driver bond for a coin on the allow-list. */
@@ -309,44 +368,49 @@ class KlippelGoClient(
     /** Rider locks the fare plus the rider bond. Returns the new ride id. */
     fun openRide(driver: String, coin: Coin, fare: BigInteger, quoteHash: ByteArray): BigInteger {
         val (_, riderBond, _) = tokenConfig(coin)
-        approveIfNeeded(coin, deployment.escrow, fare + riderBond)
+        val approval = approveIfNeeded(coin, deployment.escrow, fare + riderBond)
         val receipt = send(
             deployment.escrow,
             fn("open", listOf(Address(driver), Address(coin.address), Uint256(fare), Bytes32(quoteHash)), listOf(uint256Ref)),
         )
         val log = receipt.logs.first { it.topics.firstOrNull() == RIDE_OPENED_TOPIC }
-        return Numeric.toBigInt(log.topics[1])
+        return Numeric.toBigInt(log.topics[1]).also {
+            seenFromTheStart += it
+            paid(it, approval, receipt)
+        }
     }
 
     /** Driver accepts and posts the driver bond. */
     fun accept(rideId: BigInteger) {
         val r = ride(rideId)
-        approveIfNeeded(coinFor(r.token), deployment.escrow, r.driverBond)
-        send(deployment.escrow, fn("accept", listOf(Uint256(rideId)), emptyList()))
+        val approval = approveIfNeeded(coinFor(r.token), deployment.escrow, r.driverBond)
+        val accepted = send(deployment.escrow, fn("accept", listOf(Uint256(rideId)), emptyList()))
+        seenFromTheStart += rideId
+        paid(rideId, approval, accepted)
     }
 
     /** Driver records the pickup proof hash. */
     fun start(rideId: BigInteger, pickupProofHash: ByteArray) =
-        send(deployment.escrow, fn("start", listOf(Uint256(rideId), Bytes32(pickupProofHash)), emptyList()))
+        paid(rideId, send(deployment.escrow, fn("start", listOf(Uint256(rideId), Bytes32(pickupProofHash)), emptyList())))
 
     /**
-     * Rider confirms arrival with the hash of the trip receipt; the driver is paid and R$ 1,00 goes to Instituto
-     * Klippel. If the driver already put a receipt on record, it must be the same one.
+     * Rider confirms arrival with the hash of the trip receipt; the driver is paid, R$ 1,00 goes to Instituto
+     * Klippel and the tax to its collector. If the driver already put a receipt on record, it must be the same one.
      */
     fun complete(rideId: BigInteger, receiptHash: ByteArray) =
-        send(deployment.escrow, fn("complete", listOf(Uint256(rideId), Bytes32(receiptHash)), emptyList()))
+        paid(rideId, send(deployment.escrow, fn("complete", listOf(Uint256(rideId), Bytes32(receiptHash)), emptyList())))
 
     /** Driver puts their trip receipt on record when the rider does not confirm. Starts the clock for [timeout]. */
     fun submitReceipt(rideId: BigInteger, receiptHash: ByteArray) =
-        send(deployment.escrow, fn("submitReceipt", listOf(Uint256(rideId), Bytes32(receiptHash)), emptyList()))
+        paid(rideId, send(deployment.escrow, fn("submitReceipt", listOf(Uint256(rideId), Bytes32(receiptHash)), emptyList())))
 
     /** Settles a ride whose driver's receipt has stood for the completion timeout with no dispute. */
-    fun timeout(rideId: BigInteger) = send(deployment.escrow, fn("timeout", listOf(Uint256(rideId)), emptyList()))
+    fun timeout(rideId: BigInteger) = paid(rideId, send(deployment.escrow, fn("timeout", listOf(Uint256(rideId)), emptyList())))
 
-    fun cancel(rideId: BigInteger) = send(deployment.escrow, fn("cancel", listOf(Uint256(rideId)), emptyList()))
+    fun cancel(rideId: BigInteger) = paid(rideId, send(deployment.escrow, fn("cancel", listOf(Uint256(rideId)), emptyList())))
 
     fun rate(rideId: BigInteger, stars: Int) =
-        send(deployment.reputation, fn("rate", listOf(Uint256(rideId), Uint8(stars.toLong())), emptyList()))
+        paid(rideId, send(deployment.reputation, fn("rate", listOf(Uint256(rideId), Uint8(stars.toLong())), emptyList())))
 
     /** Mints test reais to this account. Only the local testnet's mock coins allow it: they stand in for PIX. */
     fun mint(coin: Coin, amount: BigInteger) =
@@ -355,13 +419,13 @@ class KlippelGoClient(
     fun coinFor(token: String): Coin =
         coins.firstOrNull { it.address.equals(token, ignoreCase = true) } ?: throw ChainException("Unknown coin $token")
 
-    private fun approveIfNeeded(coin: Coin, spender: String, amount: BigInteger) {
+    /** Gives back the approval's receipt when one was needed, so its gas counts towards the ride it was for. */
+    private fun approveIfNeeded(coin: Coin, spender: String, amount: BigInteger): TransactionReceipt? {
         val allowance = uint(
             call(coin.address, fn("allowance", listOf(Address(address), Address(spender)), listOf(uint256Ref)))[0],
         )
-        if (allowance < amount) {
-            send(coin.address, fn("approve", listOf(Address(spender), Uint256(amount)), listOf(boolRef)))
-        }
+        if (allowance >= amount) return null
+        return send(coin.address, fn("approve", listOf(Address(spender), Uint256(amount)), listOf(boolRef)))
     }
 
     // ---------------------------------------------------------------- plumbing
@@ -410,6 +474,17 @@ class KlippelGoClient(
     }
 
     companion object {
+        /**
+         * Gas a ride's own transactions take on each side, from the gas report in contracts/docs/scalability.md:
+         * the rider's `open` and `complete`, the driver's `accept` and `start`. Used to say ahead of the ride
+         * what it will cost the network; what was actually paid is read from the receipts ([gasSpent]).
+         */
+        val RIDER_RIDE_GAS: BigInteger = BigInteger.valueOf(614_000)
+        val DRIVER_RIDE_GAS: BigInteger = BigInteger.valueOf(170_000)
+
+        /** How long a tax rate read from the escrow is used before it is read again. */
+        private const val TAX_FRESH_MS = 10_000L
+
         const val ROLE_RIDER = 1
         const val ROLE_DRIVER = 2
 

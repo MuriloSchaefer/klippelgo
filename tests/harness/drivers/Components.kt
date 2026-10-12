@@ -12,16 +12,16 @@ import org.klippelgo.tests.Phone
  */
 abstract class Component(protected val phone: Phone, val tag: String) {
     /** Waits until this piece is on screen. */
-    fun shown(): Boolean {
+    open fun shown(): Boolean {
         phone.awaitTag(tag)
         return true
     }
 
     /** Whether this piece is on screen right now. */
-    fun visible(): Boolean = phone.find(tag) != null
+    open fun visible(): Boolean = phone.find(tag) != null
 
     /** Waits until this piece has left the screen. */
-    fun gone(): Boolean {
+    open fun gone(): Boolean {
         phone.awaitGone(tag)
         return true
     }

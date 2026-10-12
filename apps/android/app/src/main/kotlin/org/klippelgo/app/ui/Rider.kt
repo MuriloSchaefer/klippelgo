@@ -1,6 +1,9 @@
 package org.klippelgo.app.ui
 
+import android.Manifest
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -19,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -39,6 +43,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
@@ -62,6 +67,7 @@ import org.klippelgo.chain.RideStatus
 import org.klippelgo.chain.Tariff
 import org.klippelgo.core.coarseRoute
 import org.klippelgo.core.Coordinate
+import org.klippelgo.core.Place
 import java.math.BigDecimal
 import java.math.BigInteger
 import kotlin.math.roundToInt
@@ -81,6 +87,9 @@ fun RiderApp(state: UiState, vm: AppViewModel) {
     val toRate = state.rides.firstOrNull()
         ?.takeIf { it.status == RideStatus.Completed && it.id !in state.rated && it.id !in skipped }
 
+    // An offer picked for a request that has since been replaced is not an offer for the one out now.
+    LaunchedEffect(state.request?.id) { picked = null }
+
     LaunchedEffect(active?.id) {
         if (active != null) {
             asking = false
@@ -90,6 +99,12 @@ fun RiderApp(state: UiState, vm: AppViewModel) {
         }
     }
 
+    // Where the phone is, for the pickup pin to start there. Asked once; without it the pin starts in the
+    // middle of the map and the rider moves it.
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { vm.startLocation() }
+    LaunchedEffect(Unit) {
+        permission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+    }
 
     when {
         state.showFunding -> WalletScreen(state, vm, onboarding = true, onDone = vm::fundingDone)
@@ -232,10 +247,14 @@ fun sceneOf(state: UiState, underWay: Boolean = false, onCentre: ((Coordinate) -
     // The route just measured, or after a restart the one saved with the ride under way.
     val active = state.rides.firstOrNull { it.status.isActive }
     val route = state.route?.line ?: active?.let { state.rideRoutes[it.id]?.line }.orEmpty()
+    val progress = remember(route) { RouteProgress(route) }
     return MapScene(
         basemap = map.basemap,
         centre = state.pickup ?: map.centre,
-        lines = if (route.size < 2) emptyList() else listOf(MapLine(route, if (underWay) LineKind.UNDER_WAY else LineKind.PLANNED)),
+        // On the trip the rider is in the car: what the driver has driven comes off the route.
+        lines = if (route.size < 2) emptyList() else listOf(
+            MapLine(route, if (underWay) LineKind.UNDER_WAY else LineKind.PLANNED, ahead = if (underWay && active != null) progress.ahead(state.driverAt) else null),
+        ),
         driver = state.driverAt.takeIf { active != null },
         onCentre = onCentre,
     )
@@ -289,14 +308,71 @@ fun MapNotice(state: UiState, onDownload: () -> Unit, modifier: Modifier = Modif
 @Composable
 private fun Destination(state: UiState, vm: AppViewModel, modifier: Modifier = Modifier) {
     var query by rememberSaveable { mutableStateOf("") }
+    var pickupQuery by rememberSaveable { mutableStateOf("") }
+    var editingPickup by rememberSaveable { mutableStateOf(false) }
+    // Both searches fill the same list of places. It belongs to the field typed in last.
+    var forPickup by rememberSaveable { mutableStateOf(false) }
     val destination = state.destination
     Column(modifier.testTag(Tags.DESTINATION), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // Where the car should come: the spot under the pin on the home map, or a place picked by name here.
+        FieldLabel(stringResource(R.string.pickup))
+        if (!editingPickup) {
+            KCard(Modifier.testTag(Tags.PICKUP), padding = 14.dp) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        state.pickupName ?: stringResource(R.string.pickup_pin),
+                        Modifier.weight(1f).testTag(Tags.PICKUP_NAME),
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    TextButton(
+                        onClick = {
+                            pickupQuery = ""
+                            editingPickup = true
+                        },
+                        modifier = Modifier.testTag(Tags.PICKUP_CHANGE),
+                    ) { Text(stringResource(R.string.change), fontSize = 14.sp) }
+                }
+            }
+        } else {
+            val keep = {
+                editingPickup = false
+                if (forPickup) vm.searchPlaces("")
+                forPickup = false
+            }
+            OutlinedTextField(
+                value = pickupQuery,
+                onValueChange = {
+                    pickupQuery = it
+                    forPickup = true
+                    vm.searchPlaces(it)
+                },
+                placeholder = { Text(stringResource(R.string.search_pickup)) },
+                leadingIcon = { Icon(KIcons.Search, contentDescription = null, Modifier.size(20.dp)) },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().testTag(Tags.PICKUP_SEARCH),
+            )
+            if (forPickup) {
+                state.places.forEachIndexed { i, place ->
+                    PlaceCard(place, Tags.pickupPlace(i)) {
+                        vm.choosePickup(place)
+                        editingPickup = false
+                        forPickup = false
+                    }
+                }
+            }
+            TextButton(onClick = keep, modifier = Modifier.testTag(Tags.PICKUP_KEEP)) {
+                Text(stringResource(R.string.keep_pickup, state.pickupName ?: stringResource(R.string.pickup_pin)), fontSize = 14.sp)
+            }
+        }
         FieldLabel(stringResource(R.string.destination))
         if (destination == null) {
             OutlinedTextField(
                 value = query,
                 onValueChange = {
                     query = it
+                    forPickup = false
                     vm.searchPlaces(it)
                 },
                 placeholder = { Text(stringResource(R.string.search_destination)) },
@@ -305,16 +381,8 @@ private fun Destination(state: UiState, vm: AppViewModel, modifier: Modifier = M
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth().testTag(Tags.DESTINATION_SEARCH),
             )
-            state.places.forEachIndexed { i, place ->
-                KCard(Modifier.testTag(Tags.destinationPlace(i)), padding = 12.dp, onClick = { vm.chooseDestination(place) }) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(place.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                            if (place.context.isNotEmpty()) Muted(place.context, size = 13.sp)
-                        }
-                        place.distanceM?.let { Muted(distanceLabel(it.toInt()), size = 13.sp) }
-                    }
-                }
+            if (!forPickup) {
+                state.places.forEachIndexed { i, place -> PlaceCard(place, Tags.destinationPlace(i)) { vm.chooseDestination(place) } }
             }
             Muted(stringResource(R.string.route_private), size = 12.sp)
         } else {
@@ -353,6 +421,101 @@ private fun Destination(state: UiState, vm: AppViewModel, modifier: Modifier = M
             }
         }
     }
+}
+
+/**
+ * The pickup of a request that is already out, and the way to move it. Moving it changes the route, and a
+ * request commits to its route, so the rider is asked first: the request out there is withdrawn and a new one
+ * is made.
+ */
+@Composable
+private fun MovePickup(state: UiState, request: RideRequest, vm: AppViewModel) {
+    var editing by remember(request.id) { mutableStateOf(false) }
+    var query by remember(request.id) { mutableStateOf("") }
+    var chosen by remember(request.id) { mutableStateOf<Place?>(null) }
+    val name = state.pickupName ?: stringResource(R.string.pickup_pin)
+    Column {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Muted(stringResource(R.string.pickup), Modifier.weight(1f))
+            Text(name, Modifier.testTag(Tags.OFFERS_PICKUP), fontSize = 14.sp)
+            TextButton(
+                onClick = {
+                    query = ""
+                    vm.searchPlaces("")
+                    editing = !editing
+                },
+                enabled = !state.busy,
+                modifier = Modifier.testTag(Tags.PICKUP_CHANGE),
+            ) { Text(stringResource(if (editing) R.string.back else R.string.change), fontSize = 14.sp) }
+        }
+        if (editing) {
+            Column(Modifier.padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = {
+                        query = it
+                        vm.searchPlaces(it)
+                    },
+                    placeholder = { Text(stringResource(R.string.search_pickup)) },
+                    leadingIcon = { Icon(KIcons.Search, contentDescription = null, Modifier.size(20.dp)) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth().testTag(Tags.PICKUP_SEARCH),
+                )
+                // Not while the request is being replaced already: one change at a time.
+                state.places.forEachIndexed { i, place -> PlaceCard(place, Tags.pickupPlace(i)) { if (!state.busy) chosen = place } }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+    }
+    chosen?.let { place ->
+        AlertDialog(
+            onDismissRequest = { chosen = null },
+            title = { Text(stringResource(R.string.move_pickup_title)) },
+            text = { Text(stringResource(R.string.move_pickup_body, place.name), Modifier.testTag(Tags.MOVE_PICKUP_MESSAGE)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        chosen = null
+                        editing = false
+                        vm.changePickup(request, place)
+                    },
+                    enabled = !state.busy,
+                    modifier = Modifier.testTag(Tags.MOVE_PICKUP_CONFIRM),
+                ) { Text(stringResource(R.string.move_pickup_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { chosen = null }, Modifier.testTag(Tags.MOVE_PICKUP_KEEP)) { Text(stringResource(R.string.move_pickup_keep)) }
+            },
+            // A dialog is a window of its own, so it says again that its tags may be read.
+            modifier = Modifier.testable().testTag(Tags.MOVE_PICKUP),
+        )
+    }
+}
+
+/** One place the search found: its name, where it is, and how far from the pickup. */
+@Composable
+private fun PlaceCard(place: Place, tag: String, onClick: () -> Unit) {
+    KCard(Modifier.testTag(tag), padding = 12.dp, onClick = onClick) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(place.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                if (place.context.isNotEmpty()) Muted(place.context, size = 13.sp)
+            }
+            place.distanceM?.let { Muted(distanceLabel(it.toInt()), size = 13.sp) }
+        }
+    }
+}
+
+/**
+ * The trip on the map, on the screens that ask for it: from the pickup to the destination picked, with the
+ * route drawn once it is measured. It only shows; moving it does not move the pickup.
+ */
+@Composable
+private fun TripMap(state: UiState, modifier: Modifier = Modifier) {
+    if (state.destination == null) return
+    val scene = sceneOf(state) ?: return
+    MapSurface(modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(16.dp)), scene)
 }
 
 @Composable
@@ -570,6 +733,19 @@ private fun Rules(state: UiState) {
                     }
                 }
             }
+            KCard {
+                Column {
+                    Text(stringResource(R.string.costs_title), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    KeyValue(stringResource(R.string.rule_tax), stringResource(R.string.rule_tax_value, percent(state.taxBps)), tag = Tags.RULES_TAX)
+                    KeyValue(
+                        stringResource(R.string.infrastructure_cost),
+                        state.infrastructure?.let { "≈ " + brlFine(it) } ?: "—",
+                        divider = false,
+                        tag = Tags.RULES_INFRASTRUCTURE,
+                    )
+                    Muted(stringResource(R.string.costs_body), size = 12.sp)
+                }
+            }
             Muted(stringResource(R.string.rules_voting), size = 12.sp)
         }
     }
@@ -661,6 +837,8 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                 fontWeight = FontWeight.SemiBold,
             )
         }
+        // The trip being asked for, drawn: before the request goes out and while the offers come in.
+        TripMap(state, Modifier.padding(start = 20.dp, top = 12.dp, end = 20.dp))
         if (request == null) {
             // Recommended from the distance and duration the request will state, so drivers work out the same.
             val tariff = state.tariff
@@ -728,7 +906,8 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
             val offers = state.offers.filter { it.driver in drivers }
                 .sortedWith(compareBy<Offer> { it.fare }.thenByDescending { drivers.getValue(it.driver).score })
             Column(Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp)) {
-                state.destination?.let { KeyValue(stringResource(R.string.destination), it.name) }
+                MovePickup(state, request, vm)
+                state.destination?.let { KeyValue(stringResource(R.string.destination), it.name, tag = Tags.OFFERS_DESTINATION) }
                 KeyValue(stringResource(R.string.trip), routeLabel(request.route.distanceM, request.route.durationS), tag = Tags.OFFERS_TRIP)
                 KeyValue(stringResource(R.string.pay_at_most), brl(asked, request.maxFare), divider = false, tag = Tags.OFFERS_PRICE)
             }
@@ -798,7 +977,8 @@ private fun Offers(state: UiState, vm: AppViewModel, onBack: () -> Unit, onPick:
                         } else {
                             BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                         },
-                        onClick = { onPick(offer) },
+                        // While the request is being replaced, its offers are on their way out with it.
+                        onClick = { if (!state.busy) onPick(offer) },
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Avatar()
@@ -847,6 +1027,8 @@ private fun ConfirmFare(state: UiState, request: RideRequest, offer: Offer, onBa
     val coin = coinOf(state, request.token)
     val fee = state.fees[coin] ?: BigInteger.ZERO
     val bond = state.bonds[coin]?.first ?: BigInteger.ZERO
+    // The same sum the escrow does when the ride opens.
+    val tax = offer.fare * BigInteger.valueOf(state.taxBps.toLong()) / BigInteger.valueOf(10_000)
     val scene = sceneOf(state)
     MapScreen(
         tag = Tags.CONFIRM,
@@ -864,9 +1046,15 @@ private fun ConfirmFare(state: UiState, request: RideRequest, offer: Offer, onBa
                     stringResource(R.string.per_km, brl(perKm(coin, offer.fare, request.route.distanceM))),
                 size = 13.sp,
             )
-            KeyValue(stringResource(R.string.to_driver), brl(coin, offer.fare - fee), tag = Tags.CONFIRM_TO_DRIVER)
+            KeyValue(stringResource(R.string.to_driver), brl(coin, offer.fare - fee - tax), tag = Tags.CONFIRM_TO_DRIVER)
             KeyValue(stringResource(R.string.institute_per_ride), brl(coin, fee), tag = Tags.CONFIRM_FEE)
-            KeyValue(stringResource(R.string.bond_back_on_arrival), brl(coin, bond), divider = false, tag = Tags.CONFIRM_BOND)
+            KeyValue(stringResource(R.string.tax_in_fare, percent(state.taxBps)), brl(coin, tax), tag = Tags.CONFIRM_TAX)
+            KeyValue(stringResource(R.string.bond_back_on_arrival), brl(coin, bond), divider = state.infrastructure != null, tag = Tags.CONFIRM_BOND)
+            // Not part of what is locked: the network is paid for the ride's transactions, in its own coin.
+            state.infrastructure?.let {
+                KeyValue(stringResource(R.string.infrastructure_cost), "≈ " + brlFine(it), divider = false, tag = Tags.CONFIRM_INFRASTRUCTURE)
+                Muted(stringResource(R.string.infrastructure_note), size = 12.sp)
+            }
         }
         Surface(
             shape = RoundedCornerShape(14.dp),

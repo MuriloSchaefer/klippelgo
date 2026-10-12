@@ -86,6 +86,12 @@ class Rules(phone: Phone) : Component(phone, Tags.RULES) {
         driverDiscount = read(Tags.RULES_DRIVER_DISCOUNT),
     )
 
+    /** The government's tax as the screen states it, such as "5% da tarifa". */
+    fun tax(): String = read(Tags.RULES_TAX)
+
+    /** What a ride's transactions cost the network on this side, as shown, or "—" when no rate is set. */
+    fun infrastructure(): String = read(Tags.RULES_INFRASTRUCTURE)
+
     fun fee(symbol: String): BigDecimal = reais(read(Tags.rulesFee(symbol)))
 
     fun riderBond(symbol: String): BigDecimal = reais(read(Tags.rulesRiderBond(symbol)))
@@ -136,6 +142,37 @@ class Ask(phone: Phone) : Component(phone, Tags.ASK) {
 
     fun places(): List<String> = phone.screen().nodes.filter { Regex("""destination\.place\.\d+""").matches(it.tag) }.map { it.text }
 
+    /** Whether the trip is drawn on a map on this screen. It is from the moment a destination is picked. */
+    fun mapShown(): Boolean = phone.find(Tags.MAP) != null
+
+    /** Where the car should come, as the screen names it. */
+    fun pickup(): String = read(Tags.PICKUP_NAME)
+
+    /** Opens the pickup field, types into its search and gives back the places found, in order. */
+    fun searchPickup(query: String): List<String> {
+        if (phone.find(Tags.PICKUP_SEARCH) == null) phone.tap(Tags.PICKUP_CHANGE)
+        phone.type(Tags.PICKUP_SEARCH, query)
+        phone.await("pickup places for \"$query\"") { screen -> screen[Tags.pickupPlace(0)] }
+        var last = emptyList<String>()
+        repeat(10) {
+            Thread.sleep(200)
+            val now = phone.screen().nodes.filter { Regex("""pickup\.place\.\d+""").matches(it.tag) }.map { it.text }
+            if (now == last && now.isNotEmpty()) return now
+            last = now
+        }
+        return last
+    }
+
+    /** Picks the nth pickup place found, counting from 0. With a destination set, the route is measured again. */
+    fun pickPickup(index: Int): String {
+        phone.tap(Tags.pickupPlace(index))
+        phone.awaitTag(Tags.PICKUP_NAME)
+        return pickup()
+    }
+
+    /** Leaves the pickup search without changing the pickup. */
+    fun keepPickup() = phone.tap(Tags.PICKUP_KEEP)
+
     /** Picks the nth place found, counting from 0, and waits for the route to it to be measured. */
     fun pick(index: Int): String {
         phone.tap(Tags.destinationPlace(index))
@@ -182,6 +219,36 @@ class Ask(phone: Phone) : Component(phone, Tags.ASK) {
 class Offers(phone: Phone) : Component(phone, Tags.OFFERS) {
     fun trip(): String = read(Tags.OFFERS_TRIP)
 
+    fun pickup(): String = read(Tags.OFFERS_PICKUP)
+
+    fun destination(): String = read(Tags.OFFERS_DESTINATION)
+
+    /**
+     * Opens the pickup search on the request that is out, types into it and picks the nth place found, counting
+     * from 0. The app then asks before doing anything: gives the question it asks.
+     */
+    fun movePickup(query: String, index: Int = 0): String {
+        if (phone.find(Tags.PICKUP_SEARCH) == null) phone.tap(Tags.PICKUP_CHANGE)
+        phone.type(Tags.PICKUP_SEARCH, query)
+        phone.tap(Tags.pickupPlace(index))
+        return phone.awaitTag(Tags.MOVE_PICKUP_MESSAGE).text
+    }
+
+    /** Answers the question: withdraw the request and ask again from the new pickup. */
+    fun confirmMove() {
+        phone.tap(Tags.MOVE_PICKUP_CONFIRM)
+        phone.awaitGone(Tags.MOVE_PICKUP)
+    }
+
+    /** Answers the question: leave the request as it is. */
+    fun keepRequest() {
+        phone.tap(Tags.MOVE_PICKUP_KEEP)
+        phone.awaitGone(Tags.MOVE_PICKUP)
+    }
+
+    /** Whether the trip is drawn on a map while the offers come in. */
+    fun mapShown(): Boolean = phone.find(Tags.MAP) != null
+
     fun price(): BigDecimal = reais(read(Tags.OFFERS_PRICE))
 
     /** Each quote on screen: the driver's address and the fare, in the order shown. */
@@ -209,7 +276,17 @@ class Offers(phone: Phone) : Component(phone, Tags.OFFERS) {
 }
 
 /** The amounts the confirmation shows, which are the amounts about to be locked. */
-data class ConfirmShown(val fare: BigDecimal, val toDriver: BigDecimal, val fee: BigDecimal, val bond: BigDecimal, val toLock: BigDecimal)
+data class ConfirmShown(
+    val fare: BigDecimal,
+    val toDriver: BigDecimal,
+    val fee: BigDecimal,
+    /** The government's tax, which is inside the fare and comes out of the driver's part. */
+    val tax: BigDecimal,
+    val bond: BigDecimal,
+    val toLock: BigDecimal,
+    /** What the ride's transactions are expected to cost the network, as shown ("≈ R$ 0,0012"), or null. */
+    val infrastructure: String?,
+)
 
 /** The last look before locking the fare in the escrow. */
 class Confirm(phone: Phone) : Component(phone, Tags.CONFIRM) {
@@ -217,8 +294,10 @@ class Confirm(phone: Phone) : Component(phone, Tags.CONFIRM) {
         fare = reais(read(Tags.CONFIRM_FARE)),
         toDriver = reais(read(Tags.CONFIRM_TO_DRIVER)),
         fee = reais(read(Tags.CONFIRM_FEE)),
+        tax = reais(read(Tags.CONFIRM_TAX)),
         bond = reais(read(Tags.CONFIRM_BOND)),
         toLock = reais(read(Tags.CONFIRM_LOCK)),
+        infrastructure = runCatching { read(Tags.CONFIRM_INFRASTRUCTURE) }.getOrNull(),
     )
 
     fun driver(): String = read(Tags.CONFIRM_DRIVER)

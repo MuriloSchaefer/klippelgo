@@ -27,7 +27,13 @@ contract FareGuide is Governed {
 
     Tariff public tariff;
 
+    /// @notice What one whole native coin of this chain (10^18 wei) is worth, in centavos. The phones use it to
+    /// show what a ride's transactions cost the network, the infrastructure cost, in reais. It prices nothing
+    /// on chain: gas is paid to the network in the native coin, outside the escrow. Zero means not set.
+    uint256 public nativeCoinCentavos;
+
     event TariffSet(Tariff tariff);
+    event NativeCoinPriceSet(uint256 centavos);
 
     error InvalidTariff();
 
@@ -37,6 +43,16 @@ contract FareGuide is Governed {
 
     function setTariff(Tariff calldata tariff_) external onlyGovernor {
         _set(tariff_);
+    }
+
+    function setNativeCoinPrice(uint256 centavos) external onlyGovernor {
+        nativeCoinCentavos = centavos;
+        emit NativeCoinPriceSet(centavos);
+    }
+
+    /// @notice What `gasUsed` units of gas at `gasPriceWei` cost, in centavos, at the rate governance set.
+    function infrastructureCost(uint256 gasUsed, uint256 gasPriceWei) external view returns (uint256) {
+        return gasUsed * gasPriceWei * nativeCoinCentavos / 1e18;
     }
 
     /// @notice The recommended price in centavos for a trip of `distanceM` metres and `durationS` seconds, as

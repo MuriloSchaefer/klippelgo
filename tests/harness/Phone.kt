@@ -33,6 +33,9 @@ data class Node(
     fun reais(): BigDecimal = reais(text)
 }
 
+/** An amount of a coin as the app writes it: in reais, cut to the centavo. */
+fun org.klippelgo.chain.Coin.shown(units: java.math.BigInteger): BigDecimal = toReais(units).setScale(2, java.math.RoundingMode.DOWN)
+
 /** Reads the first amount in reais out of a text: "Travar R$ 25,40" gives 25.40. */
 fun reais(text: String): BigDecimal {
     val match = Regex("""R\$[\s\u00A0]*([\d.]+,\d{2})""").find(text) ?: error("no amount in reais in \"$text\"")
@@ -100,7 +103,8 @@ class PhoneException(message: String) : Exception(message)
 /**
  * One phone, real or emulated, with the app on it. Everything goes through adb and the UI agent in the app's
  * test APK (`apps/android/app/src/androidTest`): the screen is read as a screen reader would read it, and taps
- * are real touches. Nothing reaches into the app.
+ * are real touches. Nothing reaches into the app, with one exception: `klippelgo drive` reads the debug app's
+ * settings and the route it saved, with `run-as`, to know which way the car goes.
  */
 class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
     private val json = ObjectMapper()
@@ -132,6 +136,19 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
     fun screenshot(file: File) {
         val process = ProcessBuilder(stack.adb, "-s", serial, "exec-out", "screencap", "-p").redirectOutput(file).start()
         process.waitFor(30, TimeUnit.SECONDS)
+    }
+
+    /** What a piece of the UI looks like right now: the pixels inside its bounds. */
+    fun picture(tag: String): java.awt.image.BufferedImage {
+        val node = awaitTag(tag)
+        val file = File.createTempFile("klippelgo", ".png")
+        try {
+            screenshot(file)
+            val screen = javax.imageio.ImageIO.read(file) ?: throw PhoneException("could not take a picture of $serial")
+            return screen.getSubimage(node.left, node.top, node.right - node.left, node.bottom - node.top)
+        } finally {
+            file.delete()
+        }
     }
 
     /** Megabytes of memory the app holds, as Android counts it (PSS). */
@@ -172,7 +189,7 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
      * The tests wipe the app again and again, and the UI agent can drive the screen. That is for an emulator,
      * never for a phone someone uses: a real device has to be vouched for with KLIPPELGO_ALLOW_DEVICE=1.
      */
-    private fun requireTestDevice() {
+    fun requireTestDevice() {
         if (checked) return
         if (shell("getprop ro.kernel.qemu").trim() != "1" && System.getenv("KLIPPELGO_ALLOW_DEVICE") != "1") {
             throw PhoneException("$serial is not an emulator. The tests wipe the app's data and start an agent that can drive the screen. If this is a device kept for testing, say so: KLIPPELGO_ALLOW_DEVICE=1")
@@ -274,7 +291,9 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
                     val area = before.scrollers.filter { it.tag != "map" }.maxByOrNull { it.height } ?: return@repeat
                     val from = area.y + direction * area.height / 4
                     val to = area.y - direction * area.height / 4
-                    ask("op" to "swipe", "x1" to area.x, "y1" to from, "x2" to area.x, "y2" to to, "steps" to 30)
+                    // Down the page's margin: a map inside the page would take a swipe that starts on it for itself.
+                    val x = area.left + 24
+                    ask("op" to "swipe", "x1" to x, "y1" to from, "x2" to x, "y2" to to, "steps" to 30)
                     Thread.sleep(250)
                     visible(tag)?.let { return it }
                 }
@@ -328,6 +347,27 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
         const val TIMEOUT_MS = 30_000L
         const val POLL_MS = 150L
     }
+}
+
+/**
+ * How much of two pictures of the same size is the same, from 0 to 1, looking at one pixel in every four each
+ * way. A map that stayed where it was is nearly all the same even with a dot moving on it; one that moved or
+ * zoomed is nearly all different.
+ */
+fun alike(a: java.awt.image.BufferedImage, b: java.awt.image.BufferedImage): Double {
+    require(a.width == b.width && a.height == b.height) { "the pictures are not the same size" }
+    var same = 0
+    var all = 0
+    for (y in 0 until a.height step 4) {
+        for (x in 0 until a.width step 4) {
+            val p = a.getRGB(x, y)
+            val q = b.getRGB(x, y)
+            val close = (0..2).all { c -> kotlin.math.abs(((p shr (8 * c)) and 0xFF) - ((q shr (8 * c)) and 0xFF)) <= 12 }
+            if (close) same++
+            all++
+        }
+    }
+    return same.toDouble() / all
 }
 
 /** Waits for `check` to give something, or fails saying what it was waiting for. */

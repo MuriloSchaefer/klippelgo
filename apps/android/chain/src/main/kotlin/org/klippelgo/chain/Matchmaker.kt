@@ -223,13 +223,13 @@ class Matchmaker(
     /**
      * Driver: tells the rider of the ride this phone is on where it is. The position is sealed to the rider's
      * key. The cell sees that this driver is sending something for the ride with this quote hash, which ties it
-     * to the ride on chain, and not where the driver is. Sent at most every few seconds; call it as often as
-     * fixes arrive.
+     * to the ride on chain, and not where the driver is. Sent at most every few seconds on the way to the
+     * pickup, and every second once the rider is in the car (`onTheRide`); call it as often as fixes arrive.
      */
     @Synchronized
-    fun sharePosition(quoteHash: String, riderKey: ByteArray, latE7: Int, lonE7: Int) {
+    fun sharePosition(quoteHash: String, riderKey: ByteArray, latE7: Int, lonE7: Int, onTheRide: Boolean = false) {
         val now = System.currentTimeMillis()
-        if (now - positionSentAt < POSITION_EVERY_MS) return
+        if (now - positionSentAt < (if (onTheRide) POSITION_ON_THE_RIDE_EVERY_MS else POSITION_EVERY_MS)) return
         positionSentAt = now
         val quote = Numeric.hexStringToByteArray(quoteHash)
         val sealed = sealRoute(riderKey, quote, "$latE7,$lonE7,$now")
@@ -259,7 +259,7 @@ class Matchmaker(
     fun sendOffer(request: RideRequest, fare: BigInteger, ttlSeconds: Long = OFFER_TTL): Offer {
         val fee = client.tokenConfig(client.coinFor(request.token)).first
         if (!client.driverMayQuote(request, fare)) throw ChainException("The quote is outside what the fare guide lets a driver ask for this trip")
-        if (fare <= fee) throw ChainException("FareTooLow")
+        if (fare <= fee + client.taxOn(fare)) throw ChainException("FareTooLow")
         val expiresAt = minOf(now() + ttlSeconds, request.expiresAt)
         val seq = maxOf(System.currentTimeMillis(), (quotes[request.id]?.get(client.address)?.seq ?: 0) + 1)
         val quoteHash = client.quoteHash(request, client.address, fare, expiresAt)
@@ -341,7 +341,8 @@ class Matchmaker(
         if (known == null && forRequest.size >= MAX_OFFERS_PER_REQUEST) return
         if (expiresAt <= now() || expiresAt > request.expiresAt) return
         if (!client.driverMayQuote(request, fare)) return
-        if (fare <= client.tokenConfig(client.coinFor(request.token)).first) return
+        // The escrow refuses a fare that the fee and the tax would eat whole.
+        if (fare <= client.tokenConfig(client.coinFor(request.token)).first + client.taxOn(fare)) return
         val quoteHash = client.quoteHash(request, driver, fare, expiresAt)
         val routeKey = m.bytes("routeKey", 32)
         if (KlippelGoClient.signerOf(offerHash(quoteHash, seq, routeKey), m.bytes("sig", 65)) != driver) return
@@ -387,6 +388,8 @@ class Matchmaker(
         val parts = runCatching { openRoute(watch.key.secret, quote, sealed) }.getOrNull()?.split(',') ?: return
         if (parts.size != 3) return
         val position = runCatching { DriverPosition(parts[0].toInt(), parts[1].toInt(), parts[2].toLong()) }.getOrNull() ?: return
+        // A place that is not on the Earth is not drawn: the map would refuse it.
+        if (position.latE7 !in -900_000_000..900_000_000 || position.lonE7 !in -1_800_000_000..1_800_000_000) return
         // Gossip can deliver out of order, and a replayed message is an old one: only a position the driver
         // stamped later than every one before it counts. Their clock orders their own messages and nothing
         // else. How fresh a position is goes by when it arrived here, so a clock that runs ahead or behind
@@ -473,6 +476,9 @@ class Matchmaker(
 
         /** How often a driver's position goes out at most, and how long a rider treats the last one as current. */
         private const val POSITION_EVERY_MS = 4_000L
+
+        /** The same once the ride has started: the rider watches the trip itself go by. A little under a second, so a fix a second is never held back. */
+        private const val POSITION_ON_THE_RIDE_EVERY_MS = 900L
         private const val POSITION_FRESH_MS = 30_000L
 
         /** Gossip topic for matching in one geohash-5 cell. */

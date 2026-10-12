@@ -248,16 +248,19 @@ fun KeyValue(label: String, value: String, divider: Boolean = true, strong: Bool
     }
 }
 
-/** The bottom sheet that sits over the map. */
+/**
+ * The bottom sheet that sits over the map. `topInset` is room kept clear at its top edge, above what scrolls,
+ * for something that lies over that edge.
+ */
 @Composable
-fun Sheet(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+fun Sheet(modifier: Modifier = Modifier, topInset: Dp = 0.dp, content: @Composable ColumnScope.() -> Unit) {
     Surface(
         shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(
-            Modifier.verticalScroll(rememberScrollState()).padding(20.dp),
+            Modifier.padding(top = topInset).verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             content = content,
         )

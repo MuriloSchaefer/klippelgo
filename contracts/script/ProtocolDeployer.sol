@@ -39,6 +39,9 @@ abstract contract ProtocolDeployer {
         uint32 proposerMinAccountAge;
         uint32 mapRebuildQuorum; // validators that must rebuild a map pack to the same proof root
         uint64 mapGracePeriod; // how long a pack outlives its replacement
+        uint16 taxBps; // the government's share of each fare, in basis points; zero for none
+        address taxCollector; // who receives it
+        uint256 nativeCoinCentavos; // what one native coin is worth, for showing gas in reais
     }
 
     struct Protocol {
@@ -78,6 +81,8 @@ abstract contract ProtocolDeployer {
                 abi.encodeCall(p.escrow.setToken, (c.tokens[i].token, one, 2 * one, 5 * one))
             );
         }
+        g.bootstrapCall(address(p.escrow), abi.encodeCall(p.escrow.setTax, (c.taxBps, c.taxCollector)));
+        g.bootstrapCall(address(p.fares), abi.encodeCall(p.fares.setNativeCoinPrice, (c.nativeCoinCentavos)));
         for (uint256 i; i < c.attesters.length; ++i) {
             g.bootstrapCall(
                 address(p.registry), abi.encodeCall(p.registry.setAttester, (c.attesters[i], true))

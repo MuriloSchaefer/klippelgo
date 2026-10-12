@@ -84,6 +84,9 @@ class OnboardingTest : Scenario() {
         assertEquals(reais(tariff.minimumCentavos), shown.minimum)
         assertTrue((tariff.riderRangeBps / 100).toString() in shown.riderRange)
         assertTrue((tariff.driverDiscountBps / 100).toString() in shown.driverDiscount)
+        // The government's tax as the escrow holds it, and what a ride costs the network at today's gas price.
+        assertTrue(java.math.BigDecimal(chain.taxBps()).movePointLeft(2).stripTrailingZeros().toPlainString().replace('.', ',') in app.rules.tax(), app.rules.tax())
+        assertTrue(app.rules.infrastructure().startsWith("≈"), app.rules.infrastructure())
         for (coin in chain.coins) {
             val (fee, riderBond, driverBond) = chain.tokenConfig(coin)
             assertEquals(coin.toReais(fee).setScale(2), app.rules.fee(coin.symbol))

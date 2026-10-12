@@ -22,6 +22,7 @@ contract ProtocolTest is Test, ProtocolDeployer {
     address rider = makeAddr("rider");
     address driver = makeAddr("driver");
     address[3] jurors = [makeAddr("juror0"), makeAddr("juror1"), makeAddr("juror2")];
+    address taxman = makeAddr("taxCollector");
 
     uint256 constant FARE = 23_4000; // R$ 23,40 in BRZ (4 decimals)
     bytes32 constant RECEIPT = keccak256("receipt");
@@ -59,7 +60,11 @@ contract ProtocolTest is Test, ProtocolDeployer {
                 driverMinScore: 450,
                 proposerMinAccountAge: 0,
                 mapRebuildQuorum: 3,
-                mapGracePeriod: 30 days
+                mapGracePeriod: 30 days,
+                // No tax to begin with: the tests that are about it switch it on.
+                taxBps: 0,
+                taxCollector: address(0),
+                nativeCoinCentavos: 250
             })
         );
 
@@ -118,6 +123,174 @@ contract ProtocolTest is Test, ProtocolDeployer {
         assertEq(brz.balanceOf(driver), driverBefore + 22_4000); // R$ 22,40
         assertEq(brz.balanceOf(institute), 1_0000); // R$ 1,00
         assertEq(p.reputation.completedRides(driver), 1);
+    }
+
+    function test_TaxIsAShareOfTheFareTakenFromTheDriver() public {
+        vm.prank(address(p.governor));
+        p.escrow.setTax(500, taxman); // 5%
+        uint256 riderBefore = brz.balanceOf(rider);
+        uint256 driverBefore = brz.balanceOf(driver);
+        uint256 id = _openAndStart();
+        assertEq(p.escrow.ride(id).tax, 1_1700); // 5% of R$ 23,40 = R$ 1,17
+        vm.prank(rider);
+        p.escrow.complete(id, RECEIPT);
+
+        // The rider pays the fare and nothing on top. The driver nets 23,40 - 1,00 - 1,17 = R$ 21,23.
+        assertEq(brz.balanceOf(rider), riderBefore - FARE);
+        assertEq(brz.balanceOf(driver), driverBefore + 21_2300);
+        assertEq(brz.balanceOf(taxman), 1_1700);
+        assertEq(brz.balanceOf(address(p.feeVault)), 1_0000);
+        assertEq(brz.balanceOf(address(p.escrow)), 0);
+    }
+
+    function test_ARideKeepsTheTaxItOpenedWith() public {
+        vm.prank(address(p.governor));
+        p.escrow.setTax(500, taxman);
+        uint256 id = _openAndStart();
+        // Governance doubles the tax and names another collector while the ride is under way.
+        vm.prank(address(p.governor));
+        p.escrow.setTax(1_000, makeAddr("anotherCollector"));
+        vm.prank(rider);
+        p.escrow.complete(id, RECEIPT);
+
+        // The amount and the collector are the ones the ride opened with.
+        assertEq(brz.balanceOf(taxman), 1_1700);
+        assertEq(brz.balanceOf(makeAddr("anotherCollector")), 0);
+        assertEq(brz.balanceOf(address(p.escrow)), 0);
+    }
+
+    function test_SwitchingTheTaxOffDoesNotLockRidesUnderWay() public {
+        vm.prank(address(p.governor));
+        p.escrow.setTax(500, taxman);
+        uint256 id = _openAndStart();
+        vm.prank(address(p.governor));
+        p.escrow.setTax(0, address(0));
+        vm.prank(rider);
+        p.escrow.complete(id, RECEIPT);
+
+        assertEq(brz.balanceOf(taxman), 1_1700);
+        assertEq(brz.balanceOf(address(p.escrow)), 0);
+        // A ride opened after that carries no tax.
+        uint256 next = _openAndStart();
+        assertEq(p.escrow.ride(next).tax, 0);
+    }
+
+    function test_AFareOfExactlyFeePlusTaxIsRefusedAndOneUnitMoreIsNot() public {
+        vm.prank(address(p.governor));
+        p.escrow.setTax(5_000, taxman); // 50%
+        vm.startPrank(rider);
+        brz.approve(address(p.escrow), type(uint256).max);
+        // R$ 2,00: tax 1,00 and fee 1,00 take all of it.
+        vm.expectRevert(RideEscrow.FareTooLow.selector);
+        p.escrow.open(driver, brz, 2_0000, keccak256("quote"));
+        p.escrow.open(driver, brz, 2_0002, keccak256("quote"));
+        vm.stopPrank();
+    }
+
+    /// @dev Whatever the court decides and whatever the tax, a dispute pays out exactly what was locked: the
+    /// rider's share whole, tax only on what the driver keeps, the fee only when the rest covers it.
+    function testFuzz_ADisputePaysOutExactlyWhatWasLocked(uint16 taxBps, uint256 fare, uint16 riderBps)
+        public
+    {
+        taxBps = uint16(bound(taxBps, 0, 9_999));
+        riderBps = uint16(bound(riderBps, 0, 10_000));
+        fare = bound(fare, 1, 500_0000);
+        vm.prank(address(p.governor));
+        p.escrow.setTax(taxBps, taxman);
+        uint256 tax = fare * taxBps / 10_000;
+        vm.assume(fare > 1_0000 + tax);
+
+        vm.prank(rider);
+        brz.approve(address(p.escrow), type(uint256).max);
+        vm.prank(rider);
+        uint256 id = p.escrow.open(driver, brz, fare, keccak256("quote"));
+        vm.startPrank(driver);
+        brz.approve(address(p.escrow), type(uint256).max);
+        p.escrow.accept(id);
+        vm.stopPrank();
+        uint256 riderBefore = brz.balanceOf(rider);
+        uint256 driverBefore = brz.balanceOf(driver);
+        uint256 vaultBefore = brz.balanceOf(address(p.feeVault));
+
+        vm.prank(address(p.court));
+        p.escrow.freeze(id);
+        vm.prank(address(p.court));
+        p.escrow.resolve(id, riderBps);
+
+        uint256 riderPart = fare * riderBps / 10_000;
+        uint256 driverPart = fare - riderPart;
+        uint256 taxPaid = tax * driverPart / fare;
+        uint256 feePaid = driverPart - taxPaid >= 1_0000 ? 1_0000 : 0;
+        assertEq(brz.balanceOf(address(p.escrow)), 0);
+        assertEq(brz.balanceOf(rider), riderBefore + riderPart + 2_0000);
+        assertEq(brz.balanceOf(taxman), taxPaid);
+        assertEq(brz.balanceOf(address(p.feeVault)), vaultBefore + feePaid);
+        assertEq(brz.balanceOf(driver), driverBefore + driverPart - taxPaid - feePaid + 5_0000);
+        // With nothing to the rider, a dispute pays what an undisputed ride would have.
+        if (riderBps == 0) assertEq(taxPaid, tax);
+        // With everything to the rider, nobody else is paid.
+        if (riderBps == 10_000) assertEq(taxPaid + feePaid, 0);
+    }
+
+    function test_OnlyGovernanceSetsTheTaxAndItIsBounded() public {
+        vm.expectRevert(Governed.NotGovernor.selector);
+        p.escrow.setTax(500, taxman);
+
+        vm.startPrank(address(p.governor));
+        vm.expectRevert(RideEscrow.InvalidBps.selector);
+        p.escrow.setTax(10_000, taxman);
+        vm.expectRevert(RideEscrow.NoTaxCollector.selector);
+        p.escrow.setTax(500, address(0));
+        p.escrow.setTax(0, address(0)); // off needs no collector
+        vm.stopPrank();
+        _govern(address(p.escrow), abi.encodeCall(p.escrow.setTax, (500, taxman)));
+        assertEq(p.escrow.taxBps(), 500);
+        assertEq(p.escrow.taxCollector(), taxman);
+    }
+
+    function test_AFareThatFeeAndTaxWouldEatIsRefused() public {
+        vm.prank(address(p.governor));
+        p.escrow.setTax(9_000, taxman); // 90%
+        vm.startPrank(rider);
+        brz.approve(address(p.escrow), type(uint256).max);
+        // R$ 9,00: tax 8,10 and fee 1,00 leave nothing.
+        vm.expectRevert(RideEscrow.FareTooLow.selector);
+        p.escrow.open(driver, brz, 9_0000, keccak256("quote"));
+        vm.stopPrank();
+    }
+
+    function test_DisputeTaxesOnlyWhatTheDriverKeeps() public {
+        vm.prank(address(p.governor));
+        p.escrow.setTax(500, taxman);
+        uint256 id = _openAndStart();
+        uint256 riderBefore = brz.balanceOf(rider);
+        uint256 driverBefore = brz.balanceOf(driver);
+        vm.prank(rider);
+        p.court.raise(id, keccak256("evidence"));
+        // One juror, half each.
+        vm.prank(jurors[0]);
+        p.court.commit(id, keccak256(abi.encode(id, jurors[0], uint256(5_000), bytes32(0))));
+        skip(10 minutes);
+        vm.prank(jurors[0]);
+        p.court.reveal(id, 5_000, bytes32(0));
+        skip(10 minutes);
+        p.court.settle(id);
+
+        // Half of R$ 23,40 each. The rider's half comes back whole, with the bond. The driver's R$ 11,70 pays
+        // 5% tax (R$ 0,585) and the R$ 1,00 fee, and their R$ 5,00 bond comes back.
+        assertEq(brz.balanceOf(rider), riderBefore + 11_7000 + 2_0000);
+        assertEq(brz.balanceOf(taxman), 5850);
+        assertEq(brz.balanceOf(driver), driverBefore + 11_7000 - 5850 - 1_0000 + 5_0000);
+        assertEq(brz.balanceOf(address(p.escrow)), 0);
+    }
+
+    function test_GovernanceSetsWhatANativeCoinIsWorth() public {
+        // 683 000 gas at 30 gwei is 0,02049 of a coin; at R$ 2,50 a coin that is 5 centavos, rounded down.
+        assertEq(p.fares.infrastructureCost(683_000, 30 gwei), 5);
+        vm.expectRevert(Governed.NotGovernor.selector);
+        p.fares.setNativeCoinPrice(500);
+        _govern(address(p.fares), abi.encodeCall(p.fares.setNativeCoinPrice, (500)));
+        assertEq(p.fares.infrastructureCost(683_000, 30 gwei), 10);
     }
 
     function test_FeeIsOneRealInEachTokensDecimals() public view {

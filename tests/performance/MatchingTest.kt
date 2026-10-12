@@ -92,17 +92,16 @@ class MatchingTest : Scenario() {
 
         // With all of that in the air, a new rider's request must still get through, and the UI must still answer.
         app.goOnline.goOnline()
-        phone.awaitTag("request", 60_000)
+        phone.awaitTag("go-online.requests", 60_000)
         val another = late.ask(late.route(Places.CATHEDRAL, Places.NORTH))
         waitUntil("the late rider's request to be heard by the crowd's phone too", 30_000) { crowd.requests().firstOrNull { it.id == another.id } }
 
         val reads = (1..10).map { Bench.time { phone.screen() } }
         Bench.record("reading the screen under 150 open requests (median)", Bench.median(reads), "ms", 1_500)
-        Bench.record("passing a request to the next one showing, under 150", Bench.time {
-            val before = phone.read("request.trip") + phone.read("request.rider")
+        Bench.record("picking a request and passing it, under 150", Bench.time {
             app.request.pass()
-            phone.await("the next request", 20_000) { screen -> screen["request"]?.takeIf { screen["request.rider"] != null } }
-            check(before.isNotEmpty())
+            // Passed, it closes and is gone from the list.
+            phone.awaitGone("request", 20_000)
         }, "ms", 5_000)
         Bench.record("memory with 150 open requests, over idle", (phone.memoryMb() - idle).toLong().coerceAtLeast(0), "MB", 300)
 

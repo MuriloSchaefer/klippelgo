@@ -123,12 +123,21 @@ data class UiState(
     val driverAt: Coordinate? = null,
     /** Driver: the pickup and drop-off regions of each open request, by request id. */
     val regions: Map<BigInteger, TripRegions> = emptyMap(),
-    /** Driver: where this phone is, once the driver has allowed reading it. */
+    /** Where this phone is, once its owner has allowed reading it: the driver on their map, the rider's pickup pin. */
     val location: Coordinate? = null,
     /** Driver: the checked route of each ride the driver was chosen for, by ride id. */
     val rideRoutes: Map<BigInteger, CheckedQuote> = emptyMap(),
     /** Driver: the way to the first pickup and between rides taken one after the other. */
     val links: List<List<Coordinate>> = emptyList(),
+    /** The government's tax on a ride, as a share of the fare in basis points. It comes out of the driver's part. */
+    val taxBps: Int = 0,
+    /**
+     * What this side's transactions for one ride are expected to cost the network, in reais: the gas they take,
+     * at today's gas price and the rate governance set for the chain's coin. Null until both are known.
+     */
+    val infrastructure: BigDecimal? = null,
+    /** What this phone's transactions for each ride on screen actually cost the network, in reais, by ride id. */
+    val infrastructureSpent: Map<BigInteger, BigDecimal> = emptyMap(),
 )
 
 const val DEFAULT_RPC = "http://10.0.2.2:8545"
@@ -193,9 +202,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val c = KlippelGoClient(rpcUrl.trim(), key.privateKey, deployment)
         client = c
         _state.value = _state.value.let {
-            UiState(role = role, rpcUrl = rpcUrl, address = c.address, name = it.name, minPerKm = it.minPerKm, maxBelowPercent = it.maxBelowPercent)
+            // Where the phone is does not change with the role: it is told again only when it moves.
+            UiState(role = role, rpcUrl = rpcUrl, address = c.address, name = it.name, minPerKm = it.minPerKm, maxBelowPercent = it.maxBelowPercent, location = it.location)
         }
+        pinByHand = false
         leaveGossip()
+        packBounds = null
         prepareMap()
         val mySession = session
         poller = viewModelScope.launch(Dispatchers.IO) {
@@ -206,6 +218,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 // A newer connect may have replaced this loop while its node was starting.
                 synchronized(matchLock) { if (session == mySession) match = m }
+                // Positions have a loop of their own: a refresh reads the chain and can take seconds.
+                launch {
+                    while (isActive) {
+                        delay(1_000)
+                        runCatching { positions(m, role) }
+                    }
+                }
                 while (isActive) {
                     refresh(c, m, role)
                     delay(2_000)
@@ -230,6 +249,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             session++
             match = null
         }
+        sharingFor = null
+        watchingQuote = null
     }
 
     /** Finishes the create-account screen: keeps the name on this phone and connects in the picked role. */
@@ -272,6 +293,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val cancelledHere = HashSet<BigInteger>()
     private val settled = HashSet<BigInteger>()
 
+    @Synchronized
     private fun announce(m: Matchmaker?, coin: Coin, maxFare: BigInteger) {
         val route = _state.value.route ?: throw IllegalStateException("No route yet")
         val id = packId ?: throw IllegalStateException("No map pack")
@@ -332,12 +354,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun acceptOffer(request: RideRequest, offer: Offer) = act {
         val terms = OfferTerms(offer.fare.toString(), request.token, request.rider, offer.driver, offer.expiresAt.toULong())
-        val quote = pending?.let { (route, salt) -> packId?.let { id -> quoteJson(id, route, salt, terms) } }
+        // Lock only an offer for the request this phone has out now. Asking again, at another price or from
+        // another pickup, replaces the route and salt kept here; an offer made for the request before that
+        // commits to another route, and locking it would hold the money on one route and reveal another.
+        if (offer.requestId != request.id) throw IllegalStateException("This offer is for another request. Pick an offer again.")
+        val (route, salt) = pending ?: throw IllegalStateException("This request is no longer the one out. Pick an offer again.")
+        val id = packId ?: throw IllegalStateException("No map pack")
+        if (!routeHash(id, route, salt).contentEquals(Numeric.hexStringToByteArray(request.route.routeHash))) {
+            throw IllegalStateException("This offer was for a request that has been replaced. Pick an offer again.")
+        }
+        val quote = quoteJson(id, route, salt, terms)
         // The chosen driver gets the route sealed to the key in their offer; nobody else in the cell can read it.
         val rideId = match?.acceptOffer(request, offer, quote) ?: return@act
-        if (quote != null) {
-            File(getApplication<Application>().filesDir, "rides").apply { mkdirs() }.resolve("$rideId.quote.json").writeText(quote)
-        }
+        File(getApplication<Application>().filesDir, "rides").apply { mkdirs() }.resolve("$rideId.quote.json").writeText(quote)
     }
 
     /**
@@ -351,6 +380,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         it.complete(id, Hash.sha3("receipt:$id:${System.currentTimeMillis()}".toByteArray()))
         if (stars in 1..5) it.rate(id, stars)
         _state.update { s -> s.copy(destination = null, route = null, places = emptyList()) }
+        // The rider is somewhere else now: the pin goes back to following the phone.
+        pinByHand = false
     }
 
     // ---------------------------------------------------------------- map
@@ -389,13 +420,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun openMap(c: KlippelGoClient, id: ByteArray) {
         val opened = runCatching { maps.open(id, c) }
         pack = opened.getOrNull()
+        packBounds = null
         _state.update { s ->
             val p = opened.getOrNull()?.pack ?: return@update s.copy(map = MapState.Failed(message(opened.exceptionOrNull()!!)))
             val centre = p.bounds()?.let {
                 Coordinate((it.southWest.latE7 + it.northEast.latE7) / 2, (it.southWest.lonE7 + it.northEast.lonE7) / 2)
             } ?: Coordinate(0, 0)
+            packBounds = p.bounds()
             s.copy(map = MapState.Ready(p.region(), p.version().toInt(), p.basemapPath(), centre), pickup = s.pickup ?: centre)
         }
+        pinWhereThePhoneIs()
         // Name the spot the pin starts on; after that the name follows the rider's hand.
         val at = _state.value.pickup ?: return
         val name = runCatching { pack?.pack?.reverse(at)?.name }.getOrNull() ?: return
@@ -422,6 +456,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Rider moved the map: the pin is the pickup point. A route already measured is measured again from it. */
     fun setPickup(at: Coordinate) {
+        pinByHand = true
         if (at == _state.value.pickup) return
         _state.update { it.copy(pickup = at, route = null, routeError = null) }
         viewModelScope.launch(Dispatchers.IO) {
@@ -429,6 +464,85 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { if (it.pickup == at) it.copy(pickupName = name) else it }
         }
         _state.value.destination?.let(::chooseDestination)
+    }
+
+    /** Rider: whether the pin is where the rider put it. Until then, and again after a ride, it follows the phone. */
+    @Volatile private var pinByHand = false
+
+    /** The area the open map pack covers. A position outside it is no pickup. */
+    @Volatile private var packBounds: Bounds? = null
+
+    /**
+     * Rider: the pin starts where the phone is and follows it, until the rider puts it somewhere else or starts
+     * asking for a ride. After a ride it follows again, so the next one starts where the last one ended. The
+     * position stays on this phone: it becomes a pickup like one picked by hand, and leaves only as those do (A9).
+     */
+    private fun pinWhereThePhoneIs() {
+        val bounds = packBounds ?: return
+        var moved: Coordinate? = null
+        // Decided and done in one step: the rider's hand on the map, or a request going out, may come in between.
+        _state.update { s ->
+            moved = null
+            val here = s.location ?: return@update s
+            if (s.role != Role.RIDER || pinByHand || s.destination != null || s.request != null || s.rides.any { it.status.isActive }) return@update s
+            if (here == s.pickup) return@update s
+            if (here.latE7 !in bounds.southWest.latE7..bounds.northEast.latE7 || here.lonE7 !in bounds.southWest.lonE7..bounds.northEast.lonE7) return@update s
+            moved = here
+            s.copy(pickup = here, route = null, routeError = null)
+        }
+        val at = moved ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val name = runCatching { pack?.pack?.reverse(at)?.name }.getOrNull()
+            _state.update { if (it.pickup == at) it.copy(pickupName = name) else it }
+        }
+    }
+
+    /**
+     * Rider picked the pickup by name, from the search, instead of moving the map under the pin. A route
+     * already measured is measured again from it.
+     */
+    fun choosePickup(place: Place) {
+        searchJob?.cancel()
+        pinByHand = true
+        _state.update { it.copy(pickup = place.at, pickupName = place.name, places = emptyList(), route = null, routeError = null) }
+        _state.value.destination?.let(::chooseDestination)
+    }
+
+    /**
+     * Rider: moves the pickup of a request that is already out. A request commits to its route, so it cannot
+     * be moved: the one out there is withdrawn and the same destination is asked again from the new pickup, at
+     * the price the fare guide recommends for the new route. The UI asks the rider before calling this.
+     *
+     * The new route is measured first. If there is none, the request out there stays as it is.
+     */
+    fun changePickup(request: RideRequest, place: Place) {
+        val c = client ?: return
+        val role = _state.value.role ?: return
+        val router = pack ?: return
+        val destination = _state.value.destination ?: return
+        routeJob?.cancel()
+        searchJob?.cancel()
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null, places = emptyList()) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val route = router.route(place.at, destination.at, VehicleKind.CAR)
+                    // The rider may have backed out while the route was being measured. Then there is nothing to move.
+                    if (_state.value.destination != destination) return@runCatching
+                    // The request expired or was replaced meanwhile: say so, instead of moving one that is not out.
+                    if (_state.value.request?.id != request.id) throw IllegalStateException("This request is no longer the one out. Try again.")
+                    val coin = c.coinFor(request.token)
+                    val trip = coarseRoute(route.distanceM, route.durationS)
+                    val price = coin.fromCentavos((_state.value.tariff ?: c.tariff).recommended(trip.distanceM.toInt(), trip.durationS.toInt()))
+                    match?.closeRequest(request)
+                    pinByHand = true
+                    _state.update { it.copy(pickup = place.at, pickupName = place.name, route = route, routeError = null, askedAgain = false) }
+                    announce(match, coin, price)
+                }
+            }
+            _state.update { it.copy(busy = false, error = result.exceptionOrNull()?.let(::message)) }
+            withContext(Dispatchers.IO) { refresh(c, match, role) }
+        }
     }
 
     /** Looks the typed text up in the pack's own search index. Nothing leaves the phone. */
@@ -443,10 +557,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Routes from the pickup pin to the place, on this phone, and measures the route with the verifier. */
     fun chooseDestination(place: Place) {
-        val from = _state.value.pickup ?: return
+        if (_state.value.pickup == null) return
         val router = pack ?: return
         routeJob?.cancel()
         _state.update { it.copy(destination = place, route = null, routing = true, routeError = null, places = emptyList()) }
+        // Read once the destination is set: from then on the pin no longer follows the phone, so this is the
+        // pickup the screen goes on naming.
+        val from = _state.value.pickup ?: return
         routeJob = viewModelScope.launch(Dispatchers.IO) {
             val result = runCatching { router.route(from, place.at, VehicleKind.CAR) }
             if (isActive) {
@@ -476,12 +593,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun start(id: BigInteger) = act { it.start(id, Hash.sha3("pickup:$id:${System.currentTimeMillis()}".toByteArray())) }
 
-    // ---------------------------------------------------------------- driver's map
+    // ---------------------------------------------------------------- where this phone is
 
     /**
-     * Starts following this phone's position, once the driver has allowed it. It places the driver on their
-     * own map and is where the way to the next pickup starts. It leaves the phone only sealed to the rider of
-     * the ride under way ([sharePosition]).
+     * Starts following this phone's position, once its owner has allowed it. It places the driver on their
+     * own map and is where the way to the next pickup starts; a driver's leaves the phone only sealed to the
+     * rider of the ride under way ([sharePosition]). A rider's is where the pickup pin starts
+     * ([pinWhereThePhoneIs]) and is never sent as a position.
      */
     @SuppressLint("MissingPermission")
     fun startLocation() {
@@ -495,12 +613,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (providers.isEmpty()) return
         locating = true
         providers.mapNotNull { runCatching { manager.getLastKnownLocation(it) }.getOrNull() }.maxByOrNull { it.time }?.let(locationListener::onLocationChanged)
-        for (provider in providers) manager.requestLocationUpdates(provider, 2_000L, 5f, locationListener, Looper.getMainLooper())
+        // A fix a second while the car moves: on a ride the rider watches it, and the route behind it is taken
+        // off the map. None while it stands still.
+        for (provider in providers) manager.requestLocationUpdates(provider, 1_000L, 3f, locationListener, Looper.getMainLooper())
     }
 
     private var locating = false
     private val locationListener = LocationListener { fix ->
         _state.update { it.copy(location = Coordinate((fix.latitude * 1e7).toInt(), (fix.longitude * 1e7).toInt())) }
+        pinWhereThePhoneIs()
     }
 
     private fun stopLocation() {
@@ -556,12 +677,46 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * next to the saved route, so it survives the app being closed.
      */
     private fun sharePosition(m: Matchmaker?, current: Ride?) {
-        val here = _state.value.location ?: return
+        // A refresh still running for a driver session the phone has left sends nothing: a rider's position is no driver's.
+        val s = _state.value
+        if (s.role != Role.DRIVER || match !== m) return
+        val here = s.location ?: return
         current ?: return
         val file = File(getApplication<Application>().filesDir, "rides").apply { mkdirs() }.resolve("${current.quoteHash.lowercase()}.riderkey")
         val key = m?.riderKey(current.quoteHash)?.also { if (!file.exists()) file.writeBytes(it) }
             ?: file.takeIf { it.exists() }?.readBytes() ?: return
-        runCatching { m?.sharePosition(current.quoteHash, key, here.latE7, here.lonE7) }
+        runCatching { m?.sharePosition(current.quoteHash, key, here.latE7, here.lonE7, onTheRide = current.status == RideStatus.Started) }
+    }
+
+    /**
+     * Driver: the ride positions are being sent for. Rider: the quote of the ride whose driver is being watched.
+     * Each refresh sets them from the chain, with the time, and a refresh that fails clears them: between
+     * refreshes they are believed for a few seconds and no longer, so a driver's position stops going out soon
+     * after the ride ends even when the chain cannot be read (A10).
+     */
+    @Volatile private var sharingFor: Ride? = null
+    @Volatile private var watchingQuote: String? = null
+    @Volatile private var rideConfirmedAt = 0L
+
+    /** How long what a refresh said about the ride under way is acted on without another: about two refreshes. */
+    private val RIDE_BELIEVED_MS = 6_000L
+
+    /**
+     * Once a second, between refreshes, while a ride has started: the driver's phone tells the rider where it
+     * is, and the rider's phone takes in what arrived and moves the car on its map. Nothing here reads the
+     * chain; which ride it is about was settled by the last refresh.
+     */
+    private fun positions(m: Matchmaker?, role: Role) {
+        m ?: return
+        if (android.os.SystemClock.elapsedRealtime() - rideConfirmedAt > RIDE_BELIEVED_MS) return
+        if (role == Role.DRIVER) {
+            sharingFor?.takeIf { it.status == RideStatus.Started }?.let { sharePosition(m, it) }
+            return
+        }
+        val quote = watchingQuote ?: return
+        m.tick()
+        val at = m.driverPosition(quote)?.let { Coordinate(it.latE7, it.lonE7) } ?: return
+        _state.update { if (it.role != role || it.driverAt == at) it else it.copy(driverAt = at) }
     }
 
     /**
@@ -691,9 +846,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val balances = c.coins.associateWith { c.balanceOf(it) }
             val configs = c.coins.associateWith { c.tokenConfig(it) }
             val fees = configs.mapValues { it.value.first }
+            val taxBps = c.taxBps()
+            val infrastructure = infrastructureEstimate(c, role)
             val bonds = configs.mapValues { it.value.second to it.value.third }
             // A driver's unfinished rides always show, however many newer ones name them: anyone can open a
             // ride naming a driver, and that must not push the one they are driving off the screen.
+            // When the rides were read, on a clock nobody can set: what follows can take long, and the time a
+            // position may still go out for a ride counts from here.
+            val readAt = android.os.SystemClock.elapsedRealtime()
             val underWay = if (role == Role.DRIVER) c.underWay() else emptyList()
             val recent = (if (role == Role.RIDER) c.ridesAsRider() else c.ridesAsDriver()).take(MAX_RIDES)
             val ids = (recent + underWay.map { it.id }).distinct().sortedDescending()
@@ -716,16 +876,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val ridesAhead = mine?.let { runCatching { c.ridesAhead(it) }.getOrDefault(_state.value.ridesAhead) } ?: 0
             val driverAt = mine?.takeIf { ridesAhead == 0 }?.let { m?.driverPosition(it.quoteHash) }?.let { Coordinate(it.latE7, it.lonE7) }
             if (role == Role.DRIVER) sharePosition(m, underWay.firstOrNull())
+            // Only for the session this refresh belongs to: one left behind by a change of account must not
+            // hand its ride to the next.
+            synchronized(matchLock) {
+                if (m != null && match === m) {
+                    sharingFor = underWay.firstOrNull()
+                    rideConfirmedAt = readAt
+                    // Only once the ride has started is the driver heard every second; before, each refresh is enough.
+                    watchingQuote = mine?.takeIf { ridesAhead == 0 && it.status == RideStatus.Started }?.quoteHash
+                }
+            }
             val links = if (role == Role.DRIVER) links(rides, rideRoutes) else emptyList()
             _state.update {
                 if (it.role != role) it else it.copy(
                     connected = true, balances = balances, fees = fees, bonds = bonds, rides = rides, rated = rated,
+                    taxBps = taxBps, infrastructure = infrastructure,
+                    // Only for rides this phone paid for from their first transaction: a part is not shown as the whole.
+                    infrastructureSpent = rides.mapNotNull { r -> c.gasSpent(r.id)?.let { wei -> r.id to c.infrastructureCost(wei) } }.toMap(),
                     drivers = drivers, canAccept = canAccept, blockers = blockers, me = me,
                     rideRoutes = rideRoutes, links = links, ridesAhead = ridesAhead, driverAt = driverAt,
                 )
             }
+            // A ride that just ended leaves the rider where it took them.
+            pinWhereThePhoneIs()
         }
-        if (result.isFailure) _state.update { if (it.role != role) it else it.copy(connected = false) }
+        if (result.isFailure) {
+            sharingFor = null
+            watchingQuote = null
+            _state.update { if (it.role != role) it else it.copy(connected = false) }
+        }
+    }
+
+    private var gasPriceAt = 0L
+    private var gasPrice: BigInteger? = null
+
+    /**
+     * What a ride's transactions on this side should cost the network, in reais. The gas price moves, so it is
+     * asked again now and then, not on every refresh. Nothing when governance set no rate for the chain's coin.
+     */
+    private fun infrastructureEstimate(c: KlippelGoClient, role: Role): BigDecimal? {
+        if (c.nativeCoinCentavos.signum() == 0) return null
+        val now = System.currentTimeMillis()
+        if (gasPrice == null || now - gasPriceAt > GAS_PRICE_EVERY_MS) {
+            gasPrice = runCatching { c.gasPrice() }.getOrNull() ?: gasPrice
+            gasPriceAt = now
+        }
+        val price = gasPrice ?: return null
+        val gas = if (role == Role.RIDER) KlippelGoClient.RIDER_RIDE_GAS else KlippelGoClient.DRIVER_RIDE_GAS
+        return c.infrastructureCost(gas * price)
     }
 
     private fun message(t: Throwable): String = t.message ?: t.javaClass.simpleName
@@ -738,6 +936,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val MAX_RIDES = 10
+
+        /** How often the network's gas price is asked for again. */
+        private const val GAS_PRICE_EVERY_MS = 30_000L
 
         /** How long a driver who gave a ride up is not shown that rider's requests. */
         private const val SKIP_AFTER_REFUSAL_MS = 3 * 60_000L

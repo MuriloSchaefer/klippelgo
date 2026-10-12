@@ -30,19 +30,20 @@ thousand GPS fixes: the chain sees one 32-byte hash.
 
 ## Cost of a ride
 
-Gas measured by `forge test --gas-report` on the test suite, with the mock tokens. Real tokens cost what their
+Gas measured by `forge test --gas-report` on the test suite, with the mock tokens and a tax set (the report's
+maximum for `open` and `complete`, since most tests run with no tax). Real tokens cost what their
 own `transferFrom` costs, so read these as the protocol's share.
 
-| Step | Median gas | Notes |
+| Step | Gas | Notes |
 | --- | --- | --- |
-| `open` | 289 000 | Writes the ride (the largest write) and pulls fare + bond |
+| `open` | 338 000 | Writes the ride (the largest write, two slots more for the tax and its collector) and pulls fare + bond |
 | `accept` | 95 000 | Policy check reads registry and reputation; pulls the bond |
 | `start` | 75 000 | |
-| `complete` | 224 000 | Three transfers and the reputation record |
-| **Ride, happy path** | **about 683 000** | Plus a token `approve` the first time |
+| `complete` | 276 000 | Four transfers, the tax among them, and the reputation record |
+| **Ride, happy path** | **about 784 000** | Plus a token `approve` the first time |
 | `cancel` | 58 000 | |
 | `submitReceipt` + `timeout` | 73 000 + 203 000 | When the rider does not confirm |
-| Dispute: `raise`, `commit`, `reveal`, `settle` | 117 000, 82 000, 64 000, 138 000 | Per juror for commit and reveal |
+| Dispute: `raise`, `commit`, `reveal`, `settle` | 117 000, 82 000, 64 000, 169 000 | Per juror for commit and reveal |
 
 Rerun the report after changing a contract: `cd contracts && forge test --gas-report`.
 
@@ -63,7 +64,7 @@ So cost per ride does not grow with the number of rides, users or regions. State
 
 | Limit | Where it bites | Lever |
 | --- | --- | --- |
-| Chain throughput | Rides per second across all cities share the chain's block space. At about 683 000 gas a ride, block gas limit ÷ 683 000 is the ceiling per block | Deploy per region or on a rollup: `Domain` (chain id + escrow address) already scopes every hash, so several escrows can coexist |
+| Chain throughput | Rides per second across all cities share the chain's block space. At about 784 000 gas a ride, block gas limit ÷ 784 000 is the ceiling per block | Deploy per region or on a rollup: `Domain` (chain id + escrow address) already scopes every hash, so several escrows can coexist |
 | Gas price against a R$ 1,00 fee | If four transactions cost a meaningful share of a fare, short rides stop making sense | A low-fee chain (the target is Polygon PoS); a paymaster with smart accounts (not built); merging `accept` and `start` is possible but removes the driver's bond before pickup |
 | Reading history | Phones find their rides by filtering `RideOpened` logs by indexed rider or driver. Public RPCs cap log ranges | See [app scalability](../../apps/docs/scalability.md): keep a cursor, or use an indexer as a cache that is never trusted |
 | Disputes | Each needs humans to read evidence. Juror work grows with the dispute rate, not with rides | `klippelgo-juror` makes the check mechanical; the verifier is written to run in a zkVM so a proof can replace the vote for what is provable |

@@ -139,6 +139,21 @@
     <string name="pickup">Recogida</string>
     <string name="pickup_pin">En el punto marcado</string>
     <string name="pickup_pin_hint">Mueve el mapa para marcar dónde debe llegar el auto.</string>
+    <string name="search_pickup">Buscar dirección o lugar de recogida</string>
+    <string name="keep_pickup">Mantener %1$s</string>
+    <string name="move_pickup_title">¿Cambiar la recogida?</string>
+    <string name="move_pickup_body">El pedido actual se retira, con las ofertas que recibió, y se hace uno nuevo saliendo de %1$s. El trayecto cambia, así que el precio vuelve al recomendado para el nuevo trayecto.</string>
+    <string name="move_pickup_confirm">Retirar y pedir de nuevo</string>
+    <string name="move_pickup_keep">Mantener el pedido</string>
+    <string name="tax_in_fare">Impuesto (%1$s%%), ya en la tarifa</string>
+    <string name="tax_paid">Impuesto (%1$s%%)</string>
+    <string name="infrastructure_cost">Costo de infraestructura (red)</string>
+    <string name="infrastructure_note">Pagado a la red blockchain por las transacciones del viaje, en su moneda. Queda fuera del valor bloqueado.</string>
+    <string name="tax_and_network">Impuesto %1$s%%: %2$s · Red: %3$s</string>
+    <string name="costs_title">Impuesto e infraestructura</string>
+    <string name="rule_tax">Impuesto del gobierno</string>
+    <string name="rule_tax_value">%1$s%% de la tarifa</string>
+    <string name="costs_body">El impuesto sale de la parte del conductor: el pasajero paga la tarifa y nada más. El costo de infraestructura es lo que la red cobra por tus transacciones en un viaje, convertido a reales según la cotización definida por votación.</string>
     <string name="destination">Destino</string>
     <string name="search_destination">Dirección o lugar</string>
     <string name="change">Cambiar</string>
@@ -208,4 +223,12 @@
     </plurals>
     <string name="driver_busy_body">Verás su posición en el mapa en cuanto tu viaje sea el que está haciendo. Cancelar mientras esperas sigue las mismas reglas.</string>
     <string name="driver_live">Posición del conductor en vivo en el mapa.</string>
+    <plurals name="requests_heard">
+        <item quantity="one">%d solicitud</item>
+        <item quantity="other">%d solicitudes</item>
+    </plurals>
+    <plurals name="requests_more">
+        <item quantity="one">%d solicitud más</item>
+        <item quantity="other">%d solicitudes más</item>
+    </plurals>
 </resources>

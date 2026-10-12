@@ -1,4 +1,50 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(JAVA_HOME=/usr/lib/jvm/java-17-openjdk ../apps/android/gradlew --continue integrity --tests '*OnTheRide*hears*' --tests '*DriverRideTest*')",
+      "Bash(JAVA_HOME=/usr/lib/jvm/java-17-openjdk ../apps/android/gradlew integrity --tests '*requests are listed*')",
+      "Bash(JAVA_HOME=/usr/lib/jvm/java-17-openjdk ../apps/android/gradlew --continue integrity security performance)",
+      "Bash(python3 - *)",
+      "Bash(sed -i 's/| A1 to A14 | P1 to P16 |/| A1 to A14 | P1 to P17 |/' .claude/skills/security-check/SKILL.md && grep -c \"P1 to P17\" .claude/skills/security-check/SKILL.md; grep -E \"PASSED|FAILED\" tests/.run/all.log | grep -v Task | wc -l)",
+      "Bash(grep -rnE 'KlippelGo_\\(Test|Driver|Rider\\)|avdmanager|wipe-data|no-snapshot|dataPartition' --include='*.sh' --include='Makefile' --include='*.kt' --include='*.md' --include='*.kts' . 2>/dev/null | grep -v '/build/' | head -30; ls -la ~/.android/avd/KlippelGo_Driver.avd/snapshots/*/ 2>/dev/null | head -20; ls -la --time-style=long-iso ~/.android/avd/ | head -20)",
+      "Read(//home/schaefer/.android/avd/KlippelGo_Driver.avd/snapshots/**)",
+      "Read(//home/schaefer/.android/avd/**)",
+      "Bash(du -sh . 2>/dev/null; du -h --max-depth=3 . 2>/dev/null | sort -rh | head -40; echo --- target; du -sh core/target/* core/target/debug/* 2>/dev/null | sort -rh | head -20; echo --- profile; grep -nE '^\\\\[profile|debug|incremental|opt-level|split-debuginfo|strip' core/Cargo.toml core/.cargo/config.toml .cargo/config.toml ~/.cargo/config.toml 2>/dev/null; echo --- ignored; git status --short --ignored | grep '^!!' | head -30)",
+      "Read(//home/schaefer/.cargo/**)",
+      "Bash(grep -vE '\\\\.md$')",
+      "Bash(~/Android/Sdk/platform-tools/adb devices *)",
+      "Bash(tests/stack.sh status *)",
+      "Bash(export ANDROID_HOME=$HOME/Android/Sdk JAVA_HOME=/usr/lib/jvm/java-17-openjdk)",
+      "Bash(tests/run.sh integrity *)",
+      "Bash(grep -vE '^\\\\s*$|^> Task|UP-TO-DATE')",
+      "Bash(tests/run.sh)",
+      "Bash(ps -eo pid,etime,args)",
+      "Bash(awk '{print $6, $7}')",
+      "Bash(ANDROID_HOME=/home/schaefer/Android/Sdk JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew --offline -q :app:compileDebugKotlin)",
+      "Bash(git diff *)",
+      "Read(//home/schaefer/.gradle/**)",
+      "Bash(mkdir -p /tmp/claude-1000/-home-schaefer-Documents-personal-klippelgo/c7cb81a5-bf1c-436f-8ddb-94bc37dedfd9/scratchpad/maplibre)",
+      "Bash(unzip -oq /home/schaefer/.gradle/caches/modules-2/files-2.1/org.maplibre.gl/android-sdk/13.6.1/add0a156925fb7741f70c56a4e3d3243fd75de26/android-sdk-13.6.1.aar classes.jar)",
+      "Bash(unzip -oq classes.jar 'org/maplibre/android/maps/Transform*' 'org/maplibre/android/maps/CameraChangeDispatcher*' 'org/maplibre/android/maps/MapGestureDetector*')",
+      "Bash(javap -p -c -cp /tmp/claude-1000/-home-schaefer-Documents-personal-klippelgo/c7cb81a5-bf1c-436f-8ddb-94bc37dedfd9/scratchpad/maplibre org.maplibre.android.maps.Transform)",
+      "Bash(python3 -I -c ' *)",
+      "Read(//usr/lib/jvm/**)",
+      "Read(//home/schaefer/.sdkman/candidates/**)",
+      "Bash(tests/klippelgo screen *)",
+      "Bash(tests/klippelgo tap *)",
+      "Bash(grep -rn -i \"maplibre\" apps/android --include=*.kts --include=*.toml | head -5; find ~/.gradle/caches -iname \"android-sdk-*.aar\" -path \"*maplibre*\" 2>/dev/null | head -5; find ~/.gradle/caches -iname \"*sources.jar\" -path \"*maplibre*\" 2>/dev/null | head -5)",
+      "Read(//home/schaefer/.gradle/caches/**)",
+      "Bash(mkdir -p /tmp/claude-1000/-home-schaefer-Documents-personal-klippelgo/c7cb81a5-bf1c-436f-8ddb-94bc37dedfd9/scratchpad/ml)",
+      "Bash(unzip -o -q /home/schaefer/.gradle/caches/modules-2/files-2.1/org.maplibre.gl/android-sdk/13.6.1/add0a156925fb7741f70c56a4e3d3243fd75de26/android-sdk-13.6.1.aar classes.jar)",
+      "Bash(javap -c -p -cp classes.jar org.maplibre.android.maps.CameraChangeDispatcher)",
+      "Bash(javap -c -p -cp classes.jar org.maplibre.android.maps.Transform)",
+      "Bash(javap -p -cp classes.jar org.maplibre.android.maps.MapGestureDetector)",
+      "Bash(javap -c -p -cp classes.jar 'org.maplibre.android.maps.MapGestureDetector$MoveGestureListener' 'org.maplibre.android.maps.MapGestureDetector$StandardGestureListener')"
+    ],
+    "additionalDirectories": [
+      "/home/schaefer/Documents/personal/klippelgo/.claude/skills/security-check"
+    ]
+  },
   "hooks": {
     "Stop": [
       {

@@ -139,6 +139,21 @@
     <string name="pickup">Pickup</string>
     <string name="pickup_pin">At the pin</string>
     <string name="pickup_pin_hint">Move the map to mark where the car should come.</string>
+    <string name="search_pickup">Search a pickup address or place</string>
+    <string name="keep_pickup">Keep %1$s</string>
+    <string name="move_pickup_title">Move the pickup?</string>
+    <string name="move_pickup_body">The current request is withdrawn, with the offers it received, and a new one is made starting from %1$s. The route changes, so the price goes back to the one recommended for the new route.</string>
+    <string name="move_pickup_confirm">Withdraw and ask again</string>
+    <string name="move_pickup_keep">Keep the request</string>
+    <string name="tax_in_fare">Tax (%1$s%%), already in the fare</string>
+    <string name="tax_paid">Tax (%1$s%%)</string>
+    <string name="infrastructure_cost">Infrastructure cost (network)</string>
+    <string name="infrastructure_note">Paid to the blockchain network for the ride\'s transactions, in its own coin. It is outside the amount locked.</string>
+    <string name="tax_and_network">Tax %1$s%%: %2$s · Network: %3$s</string>
+    <string name="costs_title">Tax and infrastructure</string>
+    <string name="rule_tax">Government tax</string>
+    <string name="rule_tax_value">%1$s%% of the fare</string>
+    <string name="costs_body">The tax comes out of the driver\'s part: the rider pays the fare and nothing more. The infrastructure cost is what the network charges for your transactions in one ride, converted to reais at the rate set by vote.</string>
     <string name="destination">Destination</string>
     <string name="search_destination">Address or place</string>
     <string name="change">Change</string>
@@ -208,4 +223,12 @@
     </plurals>
     <string name="driver_busy_body">You will see their position on the map as soon as your ride is the one they are on. Cancelling while you wait follows the same rules.</string>
     <string name="driver_live">The driver\'s live position is on the map.</string>
+    <plurals name="requests_heard">
+        <item quantity="one">%d request</item>
+        <item quantity="other">%d requests</item>
+    </plurals>
+    <plurals name="requests_more">
+        <item quantity="one">%d more request</item>
+        <item quantity="other">%d more requests</item>
+    </plurals>
 </resources>

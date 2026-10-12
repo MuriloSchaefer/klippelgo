@@ -62,6 +62,10 @@ between two in-process "phones" against a local chain and a real gossip node, on
 
 ## One state, one loop
 
+Beside the refresh loop below runs a small one, every second, that reads nothing from the chain: on a started
+ride it sends the driver's position, or on the rider's phone takes in the positions that arrived and moves
+the car on the map. Which ride it is about is what the last refresh said.
+
 ```mermaid
 flowchart LR
     user([User]) -- tap --> action[AppViewModel action]
@@ -108,6 +112,15 @@ sequenceDiagram
     R->>C: complete
     Note over R,D: both rate the ride
 ```
+
+The pickup pin starts where the rider's phone is, when the rider allows reading it and the place is inside
+the map pack, and follows the phone until the rider moves the home map under the pin, picks a pickup by name
+on the ask screen from the pack's own search, or starts asking for a ride. After a ride it follows again, so
+the next one starts where the last one ended. Without the permission it starts in the middle of the map. Once a destination is picked the trip is drawn on a map there, and stays drawn while offers come
+in. A request commits to its route, so its pickup cannot be edited in place: moving the pickup of a request
+that is out asks the rider first, then withdraws it and asks again for the route from the new pickup, at the
+price the fare guide recommends for that route. The new route is measured before anything is withdrawn. If
+asking again then fails, no request is out and the error is shown.
 
 If the chosen driver declines (`cancel` on an Open ride), the rider's phone gets the refund and announces the
 same trip again, skipping that driver. A driver already on a ride can take the next one; the waiting rider

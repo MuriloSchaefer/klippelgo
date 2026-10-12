@@ -7,6 +7,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,9 +18,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -28,7 +32,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
@@ -58,6 +65,7 @@ import org.klippelgo.chain.Blocker
 import org.klippelgo.chain.Ride
 import org.klippelgo.chain.RideRequest
 import org.klippelgo.chain.RideStatus
+import kotlinx.coroutines.delay
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.time.Instant
@@ -66,8 +74,9 @@ import java.time.ZoneId
 import java.util.Locale
 
 /**
- * Picks the driver's screen: rides in hand first, then a rating owed, then requests while online. A driver with
- * a ride in hand still sees new requests and can quote on them, to line the next ride up behind this one.
+ * Picks the driver's screen: rides in hand first, then a rating owed, then the home screen, which lists the
+ * requests heard while online. A driver with a ride in hand still sees new requests and can quote on them, to
+ * line the next ride up behind this one.
  */
 @Composable
 fun DriverApp(state: UiState, vm: AppViewModel) {
@@ -76,12 +85,21 @@ fun DriverApp(state: UiState, vm: AppViewModel) {
     val current = mine.firstOrNull { it.status != RideStatus.Open }
     val chosen = mine.firstOrNull { it.status == RideStatus.Open }
     var online by rememberSaveable { mutableStateOf(false) }
-    var quoting by rememberSaveable { mutableStateOf(false) }
+    // The request being quoted on with a ride in hand, by id: a newer one arriving must not take its place
+    // under the driver's finger.
+    var quoting by rememberSaveable { mutableStateOf<String?>(null) }
+    var selected by rememberSaveable { mutableStateOf<String?>(null) }
     var passed by remember { mutableStateOf(emptySet<BigInteger>()) }
     var skipped by remember { mutableStateOf(emptySet<BigInteger>()) }
     val toRate = state.rides.firstOrNull()
         ?.takeIf { it.status == RideStatus.Completed && it.id !in state.rated && it.id !in skipped }
     val request = state.requests.firstOrNull { it.id !in passed }
+    val quoted = state.requests.firstOrNull { it.id.toString() == quoting && it.id !in passed }
+    // A request that went quiet is forgotten: were it remembered, its rider announcing it again would put the
+    // quote back on screen by itself, under whatever the driver was about to tap.
+    if (quoting != null && (quoted == null || mine.isEmpty())) SideEffect { quoting = null }
+    // The same for a card left open on the home screen when a ride came in: it is not open still when the ride ends.
+    if (selected != null && mine.isNotEmpty()) SideEffect { selected = null }
 
     // The driver's own position, for their own map. Asked once; without it the map simply has no blue dot.
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { vm.startLocation() }
@@ -90,36 +108,50 @@ fun DriverApp(state: UiState, vm: AppViewModel) {
     }
 
     when {
-        mine.isNotEmpty() && quoting && request != null -> {
-            val back = { quoting = false }
+        mine.isNotEmpty() && quoted != null -> {
+            val back = { quoting = null }
             BackHandler(onBack = back)
             IncomingRequest(
-                state, request,
+                state, quoted,
                 onPass = {
-                    passed = passed + request.id
-                    quoting = false
+                    passed = passed + quoted.id
+                    quoting = null
                 },
                 onSend = {
-                    vm.sendOffer(request, it)
-                    quoting = false
+                    vm.sendOffer(quoted, it)
+                    quoting = null
                 },
             )
         }
-        mine.isNotEmpty() -> DriverRide(state, current, chosen, request, onQuote = { quoting = true }, vm)
+        mine.isNotEmpty() -> DriverRide(state, current, chosen, request, onQuote = { quoting = request?.id?.toString() }, vm)
         toRate != null -> RideEndScreen(
             state, toRate,
             onBack = null,
             onConfirm = { vm.rate(toRate.id, it) },
             onSkip = { skipped = skipped + toRate.id },
         )
-        online && request != null -> {
-            val pass = { passed = passed + request.id }
-            BackHandler(onBack = pass)
-            IncomingRequest(state, request, onPass = pass, onSend = { vm.sendOffer(request, it) })
-        }
         else -> {
-            BackHandler(enabled = online) { online = false }
-            GoOnline(state, vm, online, onToggle = { online = !online }, onRiderMode = { vm.connect(Role.RIDER, state.rpcUrl) })
+            // Online, the requests heard are listed under the driver's rules. One is picked to look at: its
+            // regions go on the map and the quote is made for it.
+            val open = if (online) state.requests.filter { it.id !in passed } else emptyList()
+            val picked = open.firstOrNull { it.id.toString() == selected }
+            if (selected != null && picked == null) SideEffect { selected = null }
+            BackHandler(enabled = online) { if (picked != null) selected = null else online = false }
+            GoOnline(
+                state, vm, online,
+                requests = open,
+                picked = picked,
+                onPick = { selected = if (it.id.toString() == selected) null else it.id.toString() },
+                onPass = {
+                    passed = passed + it.id
+                    selected = null
+                },
+                onToggle = {
+                    online = !online
+                    selected = null
+                },
+                onRiderMode = { vm.connect(Role.RIDER, state.rpcUrl) },
+            )
         }
     }
 }
@@ -141,7 +173,8 @@ fun driverScene(state: UiState, request: RideRequest? = null): MapScene? {
             ride.status == RideStatus.Started -> LineKind.UNDER_WAY
             else -> LineKind.PLANNED
         }
-        MapLine(route.line, kind)
+        // The ride being driven loses what is already behind the car.
+        MapLine(route.line, kind, ahead = if (kind == LineKind.UNDER_WAY) remember(route.line) { RouteProgress(route.line) }.ahead(state.location) else null)
     }
     // A request being looked at shows as two shaded regions: roughly where it starts and ends, and no more.
     val areas = request?.let { state.regions[it.id] }?.let { listOf(MapArea(it.pickup, pickup = true), MapArea(it.dropoff, pickup = false)) }
@@ -206,13 +239,23 @@ private fun OnlinePill(online: Boolean) {
 }
 
 @Composable
-private fun GoOnline(state: UiState, vm: AppViewModel, online: Boolean, onToggle: () -> Unit, onRiderMode: () -> Unit) {
+private fun GoOnline(
+    state: UiState,
+    vm: AppViewModel,
+    online: Boolean,
+    requests: List<RideRequest>,
+    picked: RideRequest?,
+    onPick: (RideRequest) -> Unit,
+    onPass: (RideRequest) -> Unit,
+    onToggle: () -> Unit,
+    onRiderMode: () -> Unit,
+) {
     val button = 132.dp
     var sheetHeight by remember { mutableIntStateOf(0) }
     val lift = with(LocalDensity.current) { (button / 2).roundToPx() }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest).testTag(Tags.GO_ONLINE)) {
         Column(Modifier.fillMaxSize()) {
-            MapSurface(Modifier.weight(1f).fillMaxWidth(), driverScene(state)) {
+            MapSurface(Modifier.weight(1f).fillMaxWidth(), driverScene(state, picked)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OnlinePill(online)
@@ -224,8 +267,12 @@ private fun GoOnline(state: UiState, vm: AppViewModel, online: Boolean, onToggle
                     NetworkNotice(state)
                 }
             }
-            Sheet(Modifier.onSizeChanged { sheetHeight = it.height }) {
-                Spacer(Modifier.height(button / 2 - 10.dp))
+            // The sheet scrolls once the list is long, and always leaves the map room above it.
+            // The round button's lower half lies over the sheet's top edge: the list scrolls under that edge, not under the button.
+            Sheet(
+                Modifier.heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.62f).dp).onSizeChanged { sheetHeight = it.height },
+                topInset = button / 2 - 10.dp,
+            ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Stat(stringResource(R.string.stat_today), earnedToday(state), Tags.GO_ONLINE_TODAY)
                     Stat(stringResource(R.string.stat_score), scoreLabel(state.me), Tags.GO_ONLINE_SCORE)
@@ -233,7 +280,7 @@ private fun GoOnline(state: UiState, vm: AppViewModel, online: Boolean, onToggle
                 }
                 when {
                     state.connected == true && !state.canAccept -> BlockedNotice(state)
-                    online -> Row(
+                    online && requests.isEmpty() -> Row(
                         Modifier.testTag(Tags.GO_ONLINE_WAITING),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -241,9 +288,11 @@ private fun GoOnline(state: UiState, vm: AppViewModel, online: Boolean, onToggle
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                         Muted(stringResource(R.string.waiting_rides), size = 13.sp)
                     }
+                    online -> Unit
                     else -> Muted(stringResource(R.string.go_online_body), size = 13.sp)
                 }
                 AutoSkipRules(state, vm)
+                if (requests.isNotEmpty()) RequestList(state, requests, picked, onPick, onPass, onSend = { request, price -> vm.sendOffer(request, price) })
                 // Quoting needs no map: the request says how long the trip is. The map is for seeing the streets.
                 if (state.map is MapState.NotDownloaded || state.map is MapState.Downloading || state.map is MapState.Failed) {
                     MapNotice(state, vm::downloadMap)
@@ -314,18 +363,6 @@ private fun earnedToday(state: UiState): String {
 /** A rider's request. The quote starts at the rider's price and moves in steps of R$ 0,50, down or up. */
 @Composable
 private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> Unit, onSend: (BigDecimal) -> Unit) {
-    val coin = coinOf(state, request.token)
-    val mine = state.myOffers[request.id]
-    var price by rememberSaveable(request.id.toString()) { mutableStateOf(mine?.fare ?: request.maxFare) }
-    val fee = state.fees[coin]
-    val step = coin.toBaseUnits(BigDecimal("0.50"))
-    // The fare guide lets a driver go a set share under the rider's price, or above it up to the top of the
-    // range for the trip. Without the guide the rider's price is the most that can be asked.
-    val floor = state.tariff?.driverFloor(request.maxFare) ?: BigInteger.ZERO
-    val ceiling = state.tariff?.let { coin.fromCentavos(it.driverCeiling(request.route.distanceM, request.route.durationS)) } ?: request.maxFare
-    val recommended = state.tariff?.let { coin.fromCentavos(it.recommended(request.route.distanceM, request.route.durationS)) }
-    val valid = fee != null && price > fee && price <= ceiling && price >= floor
-
     MapScreen(
         tag = Tags.REQUEST,
         scene = driverScene(state, request),
@@ -337,6 +374,101 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
         },
     ) {
         Text(stringResource(R.string.new_request), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        RequestQuote(state, request, onPass, onSend)
+    }
+}
+
+/** How many requests the list shows at once. A phone keeps up to 200; the rest are counted in a line under it. */
+private const val REQUESTS_LISTED = 20
+
+/**
+ * The requests heard while online, newest as the matchmaker gives them. Tapping one picks it: its regions go on
+ * the map above, and it opens to show the whole request and the quote, which is made for that one.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun RequestList(
+    state: UiState,
+    requests: List<RideRequest>,
+    picked: RideRequest?,
+    onPick: (RideRequest) -> Unit,
+    onPass: (RideRequest) -> Unit,
+    onSend: (RideRequest, BigDecimal) -> Unit,
+) {
+    Column(Modifier.testTag(Tags.GO_ONLINE_REQUESTS), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(pluralStringResource(R.plurals.requests_heard, requests.size, requests.size), Modifier.testTag(Tags.GO_ONLINE_REQUESTS_COUNT), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        // The one picked goes first and stays there: requests come and go above the others every few seconds,
+        // and the buttons of the open one must not slide under a finger aimed at something else.
+        val listed = (listOfNotNull(picked) + requests).distinctBy { it.id }.take(REQUESTS_LISTED)
+        for (request in listed) {
+            key(request.id) {
+                val open = request.id == picked?.id
+                val coin = coinOf(state, request.token)
+                KCard(
+                    Modifier.testTag(Tags.requestEntry(request.id.toString(16))),
+                    padding = 14.dp,
+                    border = if (open) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    onClick = { onPick(request) },
+                ) {
+                    if (open) {
+                        // The quote is the point of picking: the sheet scrolls to it instead of leaving it under the fold.
+                        val intoView = remember { BringIntoViewRequester() }
+                        // Picking moves the card to the top and opens it: for a moment its buttons do nothing, so
+                        // the second tap of a double tap does not send an offer or pass the request.
+                        var armed by remember { mutableStateOf(false) }
+                        // Two effects: the scroll can be cut short by a finger on the sheet, and the buttons must wake up all the same.
+                        LaunchedEffect(Unit) { intoView.bringIntoView() }
+                        LaunchedEffect(Unit) {
+                            delay(500)
+                            armed = true
+                        }
+                        Column(Modifier.testTag(Tags.REQUEST).bringIntoViewRequester(intoView), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            RequestQuote(state, request, onPass = { if (armed) onPass(request) }, onSend = { if (armed) onSend(request, it) })
+                        }
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Column(Modifier.weight(1f)) {
+                                Text(shortAddress(request.rider), Modifier.testTag(Tags.requestEntryRider(request.id.toString(16))), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                                state.regions[request.id]?.let { regions ->
+                                    val from = regions.pickupName
+                                    val to = regions.dropoffName
+                                    if (from != null && to != null) Muted("$from → $to", size = 13.sp)
+                                }
+                                Muted(routeLabel(request.route.distanceM, request.route.durationS), size = 13.sp)
+                                state.myOffers[request.id]?.let {
+                                    Text(stringResource(R.string.your_offer, brl(coin, it.fare)), fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
+                                }
+                            }
+                            Text(brl(coin, request.maxFare), fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+        if (requests.size > listed.size) {
+            Muted(pluralStringResource(R.plurals.requests_more, requests.size - listed.size, requests.size - listed.size), Modifier.testTag(Tags.GO_ONLINE_REQUESTS_MORE), size = 12.sp)
+        }
+    }
+}
+
+/** A request in full, and the quote for it: the rider's price to start with, moved in steps of R$ 0,50. */
+@Composable
+private fun RequestQuote(state: UiState, request: RideRequest, onPass: () -> Unit, onSend: (BigDecimal) -> Unit) {
+    val coin = coinOf(state, request.token)
+    val mine = state.myOffers[request.id]
+    var price by rememberSaveable(request.id.toString()) { mutableStateOf(mine?.fare ?: request.maxFare) }
+    val fee = state.fees[coin]
+    val step = coin.toBaseUnits(BigDecimal("0.50"))
+    // The fare guide lets a driver go a set share under the rider's price, or above it up to the top of the
+    // range for the trip. Without the guide the rider's price is the most that can be asked.
+    val floor = state.tariff?.driverFloor(request.maxFare) ?: BigInteger.ZERO
+    val ceiling = state.tariff?.let { coin.fromCentavos(it.driverCeiling(request.route.distanceM, request.route.durationS)) } ?: request.maxFare
+    val recommended = state.tariff?.let { coin.fromCentavos(it.recommended(request.route.distanceM, request.route.durationS)) }
+    // What the escrow would take from this quote for the government when the ride opens.
+    val tax = price * BigInteger.valueOf(state.taxBps.toLong()) / BigInteger.valueOf(10_000)
+    val valid = fee != null && price > fee + tax && price <= ceiling && price >= floor
+
+    run {
         Column {
             KeyValue(stringResource(R.string.role_rider_short), shortAddress(request.rider), strong = true, tag = Tags.REQUEST_RIDER)
             // Roughly where the trip starts and ends: the regions shaded on the map, by neighbourhood name.
@@ -359,7 +491,18 @@ private fun IncomingRequest(state: UiState, request: RideRequest, onPass: () -> 
                     size = 12.sp,
                 )
                 if (fee != null) {
-                    Muted(stringResource(R.string.you_receive, brl(coin, price - fee), brl(coin, fee)), size = 12.sp, align = TextAlign.Center)
+                    Muted(
+                        stringResource(R.string.you_receive, brl(coin, price - fee - tax), brl(coin, fee)),
+                        Modifier.testTag(Tags.REQUEST_RECEIVE),
+                        size = 12.sp,
+                        align = TextAlign.Center,
+                    )
+                    Muted(
+                        stringResource(R.string.tax_and_network, percent(state.taxBps), brl(coin, tax), state.infrastructure?.let { "≈ " + brlFine(it) } ?: "—"),
+                        Modifier.testTag(Tags.REQUEST_COSTS),
+                        size = 12.sp,
+                        align = TextAlign.Center,
+                    )
                 }
                 if (mine != null) {
                     Text(

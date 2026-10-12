@@ -29,7 +29,15 @@ class CreateAccount(phone: Phone) : Component(phone, Tags.CREATE_ACCOUNT) {
 }
 
 /** What a finished ride shows, to the rider who pays by confirming and to either side when rating. */
-data class RideEndInfo(val ride: String, val amount: BigDecimal, val paid: Boolean)
+data class RideEndInfo(
+    val ride: String,
+    val amount: BigDecimal,
+    val paid: Boolean,
+    /** The government's tax on the ride. */
+    val tax: BigDecimal,
+    /** What the ride cost the network on this side, as shown: exact once this phone paid, "≈" before. Or null. */
+    val infrastructure: String?,
+)
 
 /** The end of a ride, for both sides: the rider confirms arrival and pays, and each rates the other. */
 class RideEnd(phone: Phone) : Component(phone, Tags.RIDE_END) {
@@ -39,6 +47,8 @@ class RideEnd(phone: Phone) : Component(phone, Tags.RIDE_END) {
             ride = Regex("""\d+""").find(read(Tags.RIDE_END_RIDE))?.value ?: "",
             amount = reais(read(Tags.RIDE_END_AMOUNT)),
             paid = phone.find(Tags.RIDE_END_RATE) != null,
+            tax = reais(read(Tags.RIDE_END_TAX)),
+            infrastructure = phone.find(Tags.RIDE_END_INFRASTRUCTURE)?.text,
         )
     }
 

@@ -49,23 +49,34 @@ abstract class Scenario {
 
     fun stranger(): Stranger = Stranger(stack).also { opened += it }
 
+    /** What the government's tax collector holds of a coin. */
+    fun taxCollected(coin: org.klippelgo.chain.Coin): java.math.BigInteger = chain.balanceOf(coin, stack.deployment.taxCollector)
+
     /** The account the app has when it is opened as a rider, and as a driver. */
     val appRider: String by lazy { stack.client(DevAccount.RIDER).address }
     val appDriver: String by lazy { stack.client(DevAccount.DRIVER).address }
 
     /**
-     * The app as it is on the day it was installed, taken through onboarding by hand as a rider, up to the home
-     * screen with the map pack on the phone.
+     * The app as it is on the day it was installed, taken through onboarding by hand as a rider standing in the
+     * centre of Cascavel, up to the home screen with the map pack on the phone and the pickup pin on the rider.
      */
     fun freshRider(name: String = "Ana") {
         phone.launch(fresh = true)
+        phone.locate(Places.CENTRE.latE7 / 1e7, Places.CENTRE.lonE7 / 1e7)
         app.welcome.start()
         app.createAccount.fill(name, "rider", stack.rpcFromPhone)
         app.createAccount.submit()
         app.funding.skip()
         app.whereTo.shown()
         app.mapNotice.download()
+        // The pin goes to where the phone is once the map is there. Only then is the home screen at rest.
+        val here = named(Places.CENTRE)
+        waitUntil("the pickup pin to be where the phone is, at $here", 60_000) { true.takeIf { app.whereTo.pickup() == here } }
     }
+
+    /** What the map pack calls a spot: what the app shows for a pin there. */
+    fun named(at: org.klippelgo.core.Coordinate): String =
+        stack.pack.reverse(at)?.name ?: error("the map pack has no name for ${at.latE7 / 1e7}, ${at.lonE7 / 1e7}")
 
     /** The same for a driver, placed in the centre of Cascavel, up to the offline home screen. */
     fun freshDriver(name: String = "Bruno") {

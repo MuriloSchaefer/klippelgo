@@ -20,6 +20,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.abs
 import org.klippelgo.app.R
 import org.klippelgo.app.ui.tags.Tags
 import androidx.compose.foundation.layout.Box
@@ -74,7 +75,75 @@ enum class LineKind {
     LINK,
 }
 
-data class MapLine(val points: List<Coordinate>, val kind: LineKind)
+/**
+ * A route on the map. `ahead` is what is left of it once a car is on it: only that part is drawn, and the
+ * whole route is still what the map frames.
+ */
+data class MapLine(val points: List<Coordinate>, val kind: LineKind, val ahead: List<Coordinate>? = null)
+
+/** How far off a route a car may be and still be taken as driving it, in metres. */
+private const val ON_ROUTE_M = 150.0
+
+/** How far ahead of where the car last was it is looked for first, in metres: half a minute of fast road. */
+private const val LOOK_AHEAD_M = 800.0
+
+private fun metres(a: Coordinate, b: Coordinate): Double {
+    val north = (b.latE7 - a.latE7) * 0.0111195
+    val east = (b.lonE7 - a.lonE7) * 0.0111195 * kotlin.math.cos(Math.toRadians(a.latE7 / 1e7))
+    return kotlin.math.hypot(north, east)
+}
+
+/**
+ * How far along a route a car has got. It only goes forward, and looks for the car just ahead of where it last
+ * was before anywhere else: a route that comes back past the same place (down an avenue and back, round a
+ * block) would otherwise lose, on one imprecise fix, the stretch still to be driven. A car found further on
+ * than that is drawn there but not remembered there, so one wrong position does not shorten the route for
+ * the rest of the ride.
+ */
+class RouteProgress(private val route: List<Coordinate>) {
+    private var segment = 0
+
+    /**
+     * The part of the route still ahead of a car at `at`: from the point of the route nearest the car to its
+     * end. Null when there is no position or it is not on the route, so a position that is wrong, or a lie,
+     * leaves the whole route on the map instead of erasing it.
+     */
+    fun ahead(at: Coordinate?): List<Coordinate>? {
+        if (at == null || route.size < 2) return null
+        var best: Triple<Double, Int, Double>? = null
+        var gone = 0.0
+        var within = true
+        for (i in segment until route.size - 1) {
+            // Past the stretch just ahead, the search goes on only while the car has not been found.
+            if (within && gone > LOOK_AHEAD_M) {
+                if (best != null && best.first <= ON_ROUTE_M) break
+                // Not there: the nearest point of all the road left, wherever it is.
+                within = false
+            }
+            val a = route[i]
+            val b = route[i + 1]
+            // Metres on a flat sheet around the car: good to centimetres over the length of a street.
+            val east = 0.0111195 * kotlin.math.cos(Math.toRadians(at.latE7 / 1e7))
+            val ax = (a.lonE7 - at.lonE7) * east
+            val ay = (a.latE7 - at.latE7) * 0.0111195
+            val dx = (b.lonE7 - a.lonE7) * east
+            val dy = (b.latE7 - a.latE7) * 0.0111195
+            val length = dx * dx + dy * dy
+            val t = if (length == 0.0) 0.0 else (-(ax * dx + ay * dy) / length).coerceIn(0.0, 1.0)
+            val distance = kotlin.math.hypot(ax + dx * t, ay + dy * t)
+            if (best == null || distance < best.first) best = Triple(distance, i, t)
+            gone += metres(a, b)
+        }
+        val (distance, found, share) = best ?: return null
+        if (distance > ON_ROUTE_M) return null
+        // Remembered only when it is a step the car could have made.
+        if (within) segment = found
+        val a = route[found]
+        val b = route[found + 1]
+        val here = Coordinate((a.latE7 + (b.latE7 - a.latE7) * share).toInt(), (a.lonE7 + (b.lonE7 - a.lonE7) * share).toInt())
+        return listOf(here) + route.subList(found + 1, route.size)
+    }
+}
 
 /** A region shaded on the map: where a requested trip starts or ends, to about a square kilometre. */
 data class MapArea(val bounds: Bounds, val pickup: Boolean)
@@ -127,10 +196,11 @@ private fun sceneGeoJson(lines: List<MapLine>, areas: List<MapArea>, me: Coordin
         """{"type":"Feature","properties":{"point":"$kind"},"geometry":{"type":"Point","coordinates":${at.json()}}}"""
     for (line in lines.filter { it.points.size >= 2 }) {
         val kind = line.kind.name
-        features += """{"type":"Feature","properties":{"line":"$kind"},"geometry":{"type":"LineString","coordinates":[${line.points.joinToString(",") { it.json() }}]}}"""
+        features += """{"type":"Feature","properties":{"line":"$kind"},"geometry":{"type":"LineString","coordinates":[${(line.ahead ?: line.points).joinToString(",") { it.json() }}]}}"""
         if (line.kind != LineKind.LINK) {
             val next = line.kind == LineKind.NEXT
-            features += point(line.points.first(), if (next) "next-pickup" else "pickup")
+            // A ride being driven has left its pickup behind: the car is where the route now starts.
+            if (line.kind != LineKind.UNDER_WAY) features += point(line.points.first(), if (next) "next-pickup" else "pickup")
             features += point(line.points.last(), if (next) "next-dropoff" else "dropoff")
         }
     }
@@ -158,6 +228,14 @@ fun PackMap(scene: MapScene, ink: Color, accent: Color, ring: Color, muted: Colo
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val onCentre by rememberUpdatedState(scene.onCentre)
     var ready by remember { mutableStateOf<Pair<MapLibreMap, Style>?>(null) }
+    // Whether a hand has moved or zoomed the map since it last framed something new. While it has, the map
+    // is the user's: it frames nothing by itself.
+    val byHandSinceFramed = remember { booleanArrayOf(false) }
+    // Where a hand last left the middle of the map: that centre came from the map and is not given back to it.
+    val centredByHand = remember { arrayOfNulls<Coordinate>(1) }
+    // Whether the move the map is making was started by a hand, and whether a finger is on the map now.
+    val byHand = remember { booleanArrayOf(false) }
+    val fingerDown = remember { booleanArrayOf(false) }
 
     val view = remember(scene.basemap) {
         MapLibre.getInstance(context)
@@ -167,6 +245,10 @@ fun PackMap(scene: MapScene, ink: Color, accent: Color, ring: Color, muted: Colo
             setOnTouchListener { view, event ->
                 if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
                     view.parent?.requestDisallowInterceptTouchEvent(true)
+                }
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> fingerDown[0] = true
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> fingerDown[0] = false
                 }
                 false
             }
@@ -182,14 +264,16 @@ fun PackMap(scene: MapScene, ink: Color, accent: Color, ring: Color, muted: Colo
                 map.setMaxZoomPreference(MAX_ZOOM)
                 map.cameraPosition = CameraPosition.Builder().target(scene.centre.latLng()).zoom(15.0).build()
                 // Only a hand moving the map moves the pin. The map framing a route by itself must not.
-                var byHand = false
                 map.addOnCameraMoveStartedListener { reason ->
-                    byHand = reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE
+                    byHand[0] = reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE
+                    if (byHand[0]) byHandSinceFramed[0] = true
                 }
                 map.addOnCameraIdleListener {
-                    if (!byHand) return@addOnCameraIdleListener
+                    if (!byHand[0]) return@addOnCameraIdleListener
                     val target = map.cameraPosition.target ?: return@addOnCameraIdleListener
-                    onCentre?.invoke(Coordinate((target.latitude * 1e7).toInt(), (target.longitude * 1e7).toInt()))
+                    val at = Coordinate((target.latitude * 1e7).toInt(), (target.longitude * 1e7).toInt())
+                    centredByHand[0] = at
+                    onCentre?.invoke(at)
                 }
                 map.setStyle(Style.Builder().fromJson(styleJson(context, scene.basemap))) { style ->
                     style.addSource(GeoJsonSource(SOURCE, sceneGeoJson(emptyList(), emptyList(), null)))
@@ -304,19 +388,51 @@ fun PackMap(scene: MapScene, ink: Color, accent: Color, ring: Color, muted: Colo
         val (_, style) = ready ?: return@LaunchedEffect
         style.getSourceAs<GeoJsonSource>(SOURCE)?.setGeoJson(sceneGeoJson(scene.lines, scene.areas, scene.me, scene.driver))
     }
-    // Frame the routes when they change, and the driver with them. Following every move of the driver would
-    // fight the hand that is moving the map.
-    val located = scene.me != null || scene.driver != null
-    LaunchedEffect(ready, scene.lines, scene.areas, located) {
+    // Under a pin the middle of the map is the place meant. When that place moves without a hand on the map,
+    // as when the pickup follows the phone, the map goes there, or the pin would point somewhere else.
+    val pinned = scene.onCentre != null
+    LaunchedEffect(ready, pinned, scene.centre) {
         val (map, _) = ready ?: return@LaunchedEffect
-        val points = scene.lines.flatMap { it.points } + scene.areas.flatMap { it.bounds.corners() } + listOfNotNull(scene.me, scene.driver)
+        // With a finger on the map the hand decides: where it lets go becomes the pickup.
+        if (!pinned || fingerDown[0] || scene.centre == centredByHand[0]) return@LaunchedEffect
+        val target = map.cameraPosition.target ?: return@LaunchedEffect
+        if (abs(target.latitude * 1e7 - scene.centre.latE7) < 10 && abs(target.longitude * 1e7 - scene.centre.lonE7) < 10) return@LaunchedEffect
+        // At once and not as a hand's move: an animation would leave a moment in which a drag starting, or a
+        // fling still running, is taken for the other, and the pin would name one place and point at another.
+        byHand[0] = false
+        centredByHand[0] = null
+        map.moveCamera(CameraUpdateFactory.newLatLng(scene.centre.latLng()))
+    }
+    // The map frames what it shows when there is something new to show: a ride's route appearing, leaving or
+    // changing state, or the regions of a request. Not when a position moves, and not when the way to a pickup
+    // is drawn again from where the car now is, which happens every hundred metres of driving: following
+    // those would take the map out of the hand that zoomed or moved it, every few seconds, for a whole ride.
+    val latest by rememberUpdatedState(scene)
+    fun frame(map: MapLibreMap) {
+        val s = latest
+        val points = s.lines.flatMap { it.points } + s.areas.flatMap { it.bounds.corners() } + listOfNotNull(s.me, s.driver)
         when {
             points.size >= 2 -> {
                 val bounds = LatLngBounds.Builder().includes(points.map { it.latLng() }).build()
-                map.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 120))
+                // More room at the bottom: the sheet's round button and its corners lie over that edge of the map.
+                map.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 120, 120, 120, 260))
             }
             points.size == 1 -> map.animateCamera(CameraUpdateFactory.newLatLngZoom(points[0].latLng(), 15.0))
         }
+    }
+    // A ride by its whole route and its state: the part already driven coming off it is no news to frame.
+    val rides = scene.lines.filter { it.kind != LineKind.LINK }.map { it.points to it.kind }
+    LaunchedEffect(ready, rides, scene.areas) {
+        val (map, _) = ready ?: return@LaunchedEffect
+        byHandSinceFramed[0] = false
+        frame(map)
+    }
+    // A position showing up for the first time, this phone's or the driver's, is worth a look too, unless the
+    // user has taken the map in hand. A position that comes and goes with the signal must not move it each time.
+    val located = scene.me != null || scene.driver != null
+    LaunchedEffect(ready, located) {
+        val (map, _) = ready ?: return@LaunchedEffect
+        if (!byHandSinceFramed[0]) frame(map)
     }
 
     // The tag goes on the box: the map itself is an Android view, which takes no tag from Compose.
@@ -326,8 +442,15 @@ fun PackMap(scene: MapScene, ink: Color, accent: Color, ring: Color, muted: Colo
             Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            ZoomButton("+", stringResource(R.string.zoom_in), Tags.MAP_ZOOM_IN) { ready?.first?.animateCamera(CameraUpdateFactory.zoomIn()) }
-            ZoomButton("−", stringResource(R.string.zoom_out), Tags.MAP_ZOOM_OUT) { ready?.first?.animateCamera(CameraUpdateFactory.zoomOut()) }
+            // The buttons are a hand on the map as much as a pinch is.
+            ZoomButton("+", stringResource(R.string.zoom_in), Tags.MAP_ZOOM_IN) {
+                byHandSinceFramed[0] = true
+                ready?.first?.animateCamera(CameraUpdateFactory.zoomIn())
+            }
+            ZoomButton("−", stringResource(R.string.zoom_out), Tags.MAP_ZOOM_OUT) {
+                byHandSinceFramed[0] = true
+                ready?.first?.animateCamera(CameraUpdateFactory.zoomOut())
+            }
         }
     }
 }

@@ -129,11 +129,16 @@ up() {
   [ "$(cast chain-id --rpc-url "$RPC")" = 31337 ] || die "The chain at $RPC is not a local testnet (chain id 31337). The tests sign with anvil's public keys and will not touch anything else."
 
   # ---- contracts
-  if [ -f "$DEPLOYMENT" ] && [ "$(cast code --rpc-url "$RPC" "$(jq -er .RideEscrow "$DEPLOYMENT")")" != 0x ]; then
+  # Deployed, and from the contracts as they are now: the tests would otherwise run the app against an older
+  # protocol. What was deployed is remembered by the hash of the sources and the escrow it produced.
+  CONTRACTS_NOW="$(cd "$ROOT/contracts" && find src script -name '*.sol' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+  if [ -f "$DEPLOYMENT" ] && [ "$(cast code --rpc-url "$RPC" "$(jq -er .RideEscrow "$DEPLOYMENT")")" != 0x ] \
+     && [ "$(cat "$RUN/contracts.deployed" 2>/dev/null)" = "$CONTRACTS_NOW $(jq -er .RideEscrow "$DEPLOYMENT")" ]; then
     say "contracts  already deployed ($(basename "$DEPLOYMENT"))"
   else
-    say "contracts  deploying and seeding the test accounts"
+    say "contracts  deploying this code's contracts and seeding the test accounts"
     RPC_URL="$RPC" "$ROOT/testnet/deploy.sh" >"$RUN/deploy.log" 2>&1 || die "Deploy failed. See tests/.run/deploy.log"
+    echo "$CONTRACTS_NOW $(jq -er .RideEscrow "$DEPLOYMENT")" >"$RUN/contracts.deployed"
   fi
 
   # ---- map pack

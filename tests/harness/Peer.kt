@@ -174,11 +174,14 @@ class Peer(private val stack: Stack, val account: DevAccount) : AutoCloseable {
         client.start(ride, Hash.sha3("pickup of ride $ride".toByteArray()))
     }
 
-    /** Tells the rider of this ride where the driver is. Goes out at most every few seconds, as from a phone. */
-    fun sharePosition(ride: BigInteger, at: Coordinate) {
+    /**
+     * Tells the rider of this ride where the driver is. Goes out at most every few seconds, as from a phone, or
+     * every second with `onTheRide`, as a phone does once the ride has started.
+     */
+    fun sharePosition(ride: BigInteger, at: Coordinate, onTheRide: Boolean = false) {
         val quoteHash = client.ride(ride).quoteHash
         val key = match.riderKey(quoteHash) ?: error("the rider's position key has not arrived")
-        match.sharePosition(quoteHash, key, at.latE7, at.lonE7)
+        match.sharePosition(quoteHash, key, at.latE7, at.lonE7, onTheRide)
     }
 
     // ---------------------------------------------------------------- either
