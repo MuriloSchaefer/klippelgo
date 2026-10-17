@@ -115,6 +115,7 @@
     <string name="blocked_credential">A credential the policy requires is missing.</string>
     <string name="blocked_role">This account is not registered as a driver.</string>
     <string name="blocked_age">Your account is too new to accept rides.</string>
+    <string name="blocked_account">This account was blocked by Instituto Klippel.</string>
     <string name="new_request">New request</string>
     <string name="pays_at_most">Rider proposes</string>
     <string name="lower_offer">Lower offer</string>

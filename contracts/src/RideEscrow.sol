@@ -69,6 +69,9 @@ contract RideEscrow is Governed, ReentrancyGuard {
     uint256 public nextRideId = 1;
     mapping(uint256 => Ride) internal _rides;
     mapping(IERC20 => TokenConfig) public tokenConfig;
+    /// @notice The court that froze a ride, and the only one that may resolve it. A dispute keeps its court
+    /// when the escrow is given another.
+    mapping(uint256 rideId => address) public courtOf;
 
     event RideOpened(
         uint256 indexed rideId,
@@ -82,6 +85,7 @@ contract RideEscrow is Governed, ReentrancyGuard {
     event RideStarted(uint256 indexed rideId, bytes32 pickupProofHash);
     event ReceiptSubmitted(uint256 indexed rideId, address indexed by, bytes32 receiptHash);
     event RideCompleted(uint256 indexed rideId, uint256 driverPayout, uint256 fee, uint256 tax);
+    event CompletionNotRecorded(uint256 indexed rideId);
     event RideCancelled(uint256 indexed rideId, address indexed by);
     event RideDisputed(uint256 indexed rideId);
     event RideResolved(
@@ -242,6 +246,7 @@ contract RideEscrow is Governed, ReentrancyGuard {
         Ride storage r = _rides[rideId];
         if (r.status != Status.Accepted && r.status != Status.Started) revert WrongStatus(r.status);
         r.status = Status.Disputed;
+        courtOf[rideId] = msg.sender;
         emit RideDisputed(rideId);
     }
 
@@ -249,7 +254,7 @@ contract RideEscrow is Governed, ReentrancyGuard {
     /// keeps, in the proportion the ride opened with. The fee is charged only when what is left of the driver's
     /// share covers it. Both bonds are returned.
     function resolve(uint256 rideId, uint256 riderBps) external nonReentrant {
-        if (msg.sender != court) revert NotCourt();
+        if (msg.sender != courtOf[rideId]) revert NotCourt();
         if (riderBps > BPS) revert InvalidBps();
         Ride storage r = _rides[rideId];
         if (r.status != Status.Disputed) revert WrongStatus(r.status);
@@ -321,7 +326,12 @@ contract RideEscrow is Governed, ReentrancyGuard {
         if (r.tax > 0) r.token.safeTransfer(r.taxCollector, r.tax);
         r.token.safeTransfer(r.driver, driverPayout + r.driverBond);
         if (r.riderBond > 0) r.token.safeTransfer(r.rider, r.riderBond);
-        reputation.recordCompletion(rideId, r.rider, r.driver);
+        // Everyone is paid by now. Whether the ride also counts towards reputation is the ledger's to say:
+        // an escrow it no longer listens to still settles the rides it holds.
+        try reputation.recordCompletion(rideId, r.rider, r.driver) {}
+        catch {
+            emit CompletionNotRecorded(rideId);
+        }
         emit RideCompleted(rideId, driverPayout, r.fee, r.tax);
     }
 }

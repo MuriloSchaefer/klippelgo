@@ -70,6 +70,46 @@ class ForgedRequestsTest : Scenario() {
         saying.interrupt()
     }
 
+    /**
+     * The `request` row again: its signer must pass the policy on `RideEscrow.open`, which an account
+     * Instituto Klippel blocked does not, whatever its role. The escrow would refuse the ride, so the driver is not
+     * asked to quote it.
+     */
+    @Test
+    fun `a rider Instituto Klippel blocked is not shown to a driver`() {
+        val stranger = stranger()
+        val honest = peer(DevAccount.RIDER)
+        val blocked = blockedRider()
+        freshDriver()
+        app.goOnline.goOnline()
+
+        val measured = honest.route(Places.CENTRE, Places.LAKE)
+        val route = honest.summary(measured, ByteArray(32).also { SecureRandom().nextBytes(it) })
+        val fair = honest.recommended(measured)
+        // Signed by the blocked rider's own key, and right in everything else.
+        val refused = stranger.request(blocked, blocked.brz, fair, route).second
+        stranger.say(refused, seconds = 8)
+        assertTrue(app.goOnline.visible() && !app.request.visible(), "the driver was shown the request of a blocked rider")
+
+        // The same trip from a rider in good standing, said alongside the blocked one. It is shown, so the app
+        // is listening while the blocked rider's request keeps arriving, and it is the only one listed.
+        val victim = stack.client(DevAccount.RIDER_2)
+        val (wellFormed, message) = stranger.request(victim, victim.brz, fair, route)
+        val saying = Thread {
+            runCatching {
+                repeat(30) {
+                    stranger.sayOnce(refused)
+                    stranger.sayOnce(message)
+                    Thread.sleep(1_000)
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        app.request.awaitFrom(Peer.short(wellFormed.rider))
+        Thread.sleep(4_000)
+        assertEquals(1, app.request.count(), "the blocked rider's request was listed next to the honest one")
+        saying.interrupt()
+    }
+
     @Test
     fun `nobody but its rider can withdraw a request`() {
         val stranger = stranger()

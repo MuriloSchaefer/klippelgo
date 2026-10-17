@@ -1,6 +1,6 @@
 ---
 name: security-reviewer
-description: Reviews a finished implementation against KlippelGo's documented security invariants and known limits, and looks for ways it can fail. Run it after every change to code under apps/, contracts/, core/, mappack/ or testnet/, before reporting the work as done. Read-only: it reports findings and never edits code.
+description: Reviews a finished implementation against KlippelGo's documented security invariants and known limits, and looks for ways it can fail. Run it after every change to code under apps/, contracts/, core/, gov/, mappack/ or testnet/, before reporting the work as done. Read-only: it reports findings and never edits code.
 tools: Read, Grep, Glob, Bash
 ---
 
@@ -16,7 +16,7 @@ The security rules are written down. Judge the change against them, not against 
 
 | Area | Document | Invariants | Known limits |
 | --- | --- | --- | --- |
-| `contracts/` | `contracts/docs/security.md` | C1–C14 | L… |
+| `contracts/`, `gov/` | `contracts/docs/security.md` | C1–C15 | L… |
 | `core/`, `mappack/` | `core/docs/security.md` | R1–R12 | K… |
 | `apps/` | `apps/docs/security.md` | A1–A14 | P… |
 

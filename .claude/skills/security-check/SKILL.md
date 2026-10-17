@@ -1,6 +1,6 @@
 ---
 name: security-check
-description: Use after implementing any change to code under apps/, contracts/, core/, mappack/ or testnet/, and whenever the user asks whether something is safe. Maps the change to the documented invariants and known limits, then hands it to the security-reviewer agent.
+description: Use after implementing any change to code under apps/, contracts/, core/, gov/, mappack/ or testnet/, and whenever the user asks whether something is safe. Maps the change to the documented invariants and known limits, then hands it to the security-reviewer agent.
 ---
 
 # Security check
@@ -10,7 +10,7 @@ to the reviewer. It adds no rule of its own.
 
 | Area changed | Document | Invariants | Known limits |
 | --- | --- | --- | --- |
-| `contracts/` | `contracts/docs/security.md` | C1 to C14 | L1 to L15 |
+| `contracts/`, `gov/` | `contracts/docs/security.md` | C1 to C15 | L1 to L22 |
 | `core/`, `mappack/` | `core/docs/security.md` | R1 to R12 | K1 to K10 |
 | `apps/` | `apps/docs/security.md` | A1 to A14 | P1 to P17 |
 

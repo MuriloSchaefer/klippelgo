@@ -37,6 +37,9 @@ contract IdentityRegistry is Governed {
     mapping(address => Identity) internal _identities;
     mapping(address subject => mapping(bytes32 kind => Credential)) public credentials;
     mapping(address => bool) public trustedAttester;
+    /// @notice Accounts governance has blocked. The governor's policies refuse them, so they start nothing new;
+    /// nothing here stops a blocked account from finishing a ride under way or taking its stake out.
+    mapping(address => bool) public blocked;
 
     event Registered(address indexed subject, uint8 roles);
     event Staked(address indexed subject, uint256 amount, uint256 total);
@@ -46,6 +49,7 @@ contract IdentityRegistry is Governed {
     event Revoked(address indexed subject, bytes32 indexed kind, address by);
     event AttesterSet(address indexed attester, bool trusted);
     event UnbondingPeriodSet(uint64 period);
+    event BlockedSet(address indexed subject, bool blocked);
 
     error InvalidRoles();
     error NotRegistered();
@@ -104,6 +108,11 @@ contract IdentityRegistry is Governed {
     function attest(address subject, bytes32 kind, bytes32 hash, uint64 expiresAt) external {
         if (!trustedAttester[msg.sender]) revert UntrustedAttester();
         if (_identities[subject].registeredAt == 0) revert NotRegistered();
+        // One attester cannot take over a credential another issued while it still counts: it could then
+        // revoke it, which only the issuer and governance may.
+        if (credentials[subject][kind].attester != msg.sender && hasCredential(subject, kind)) {
+            revert NotIssuer();
+        }
         credentials[subject][kind] = Credential(hash, msg.sender, expiresAt, false);
         emit Attested(subject, kind, hash, msg.sender);
     }
@@ -146,6 +155,12 @@ contract IdentityRegistry is Governed {
     function setAttester(address attester, bool trusted) external onlyGovernor {
         trustedAttester[attester] = trusted;
         emit AttesterSet(attester, trusted);
+    }
+
+    /// @notice Block or unblock an account. It applies to every action gated by a policy, from now on.
+    function setBlocked(address subject, bool blocked_) external onlyGovernor {
+        blocked[subject] = blocked_;
+        emit BlockedSet(subject, blocked_);
     }
 
     function setUnbondingPeriod(uint64 period) external onlyGovernor {

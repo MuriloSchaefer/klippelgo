@@ -1,0 +1,1122 @@
+#!/usr/bin/env bash
+# klippel-gov: what Instituto Klippel uses to take part in KlippelGo's governance.
+#
+# It holds no power of its own. The contracts have no admin key (contracts/docs/security.md, C1), so this tool
+# does the two things any account in the same position can do:
+#
+#   - as a trusted attester, approve or revoke a credential (a driving licence, KYC). This takes effect at once.
+#   - as a registered account, write a proposal (a setting, a block, a policy), vote on it, queue it and
+#     execute it. A proposal takes effect only if the community votes it through and the timelock passes.
+#
+# See gov/README.md. Needs Foundry's `cast` and `jq`.
+set -euo pipefail
+
+ANVIL_MNEMONIC="test test test test test test test test test test test junk"
+ZERO_ADDRESS=0x0000000000000000000000000000000000000000
+ZERO_32=0x0000000000000000000000000000000000000000000000000000000000000000
+PROPOSAL_CREATED='ProposalCreated(uint256 indexed,address indexed,address[],uint256[],bytes[],string)'
+
+# Every call governance is expected to make, by the contract it belongs to. A proposal that calls anything
+# else is shown as unknown, so a voter never mistakes it for a routine change.
+KNOWN_CALLS=(
+  "IdentityRegistry|setBlocked(address,bool)"
+  "IdentityRegistry|setAttester(address,bool)"
+  "IdentityRegistry|setUnbondingPeriod(uint64)"
+  "IdentityRegistry|revoke(address,bytes32)"
+  "RideEscrow|setToken(address,uint256,uint256,uint256)"
+  "RideEscrow|setTax(uint16,address)"
+  "RideEscrow|setCompletionTimeout(uint64)"
+  "RideEscrow|setModules(address,address,address)"
+  "FeeVault|setBeneficiary(address)"
+  "FeeVault|payClaim(address,address,uint256)"
+  "FareGuide|setTariff((uint32,uint32,uint32,uint32,uint16,uint16))"
+  "FareGuide|setNativeCoinPrice(uint256)"
+  "DisputeCourt|setPeriods(uint64,uint64)"
+  "MapRegistry|activate(bytes32,(string,uint32,uint64,bytes32,bytes32,string,uint64,uint64))"
+  "MapRegistry|retire(bytes32,uint64)"
+  "MapRegistry|setRebuildQuorum(uint32)"
+  "MapRegistry|setGracePeriod(uint64)"
+  "MapRegistry|setVerifierParams((uint32,uint32,uint32,uint32,uint32,uint32,uint32,uint32))"
+  "Reputation|setEscrow(address)"
+  "PBACGovernor|setPolicy(address,bytes4,(bool,uint8,uint16,uint32,uint256,bytes32))"
+  "PBACGovernor|setParams((uint64,uint64,uint256,uint256,uint256))"
+  "PBACGovernor|setModules(address,address)"
+)
+# Of those, the ones that move money, rewire the protocol or change who decides.
+SENSITIVE_CALLS=" setModules setEscrow payClaim setBeneficiary setParams setPolicy setAttester setToken "
+CONTRACTS=(PBACGovernor IdentityRegistry Reputation FeeVault RideEscrow DisputeCourt MapRegistry FareGuide)
+# The functions a policy guards, for `propose policy` and `account`.
+POLICIES=(
+  "RideEscrow.open|open(address,address,uint256,bytes32)"
+  "RideEscrow.accept|accept(uint256)"
+  "DisputeCourt.commit|commit(uint256,bytes32)"
+  "MapRegistry.attest|attest(bytes32,bytes32)"
+  "PBACGovernor.propose|propose(address[],uint256[],bytes[],string)"
+)
+# Reverts a person at this tool can run into, so a failed transaction reads as its reason.
+ERRORS=(
+  "NotPermitted(address,bytes4)" "NotGovernor()" "NotSelf()" "InvalidProposal()" "VotingClosed()"
+  "VotingOpen()" "AlreadyVoted()" "NoVotingWeight()" "Defeated()" "NotQueued()" "AlreadyQueued()"
+  "TimelockActive()" "CallFailed(uint256,bytes)" "UntrustedAttester()" "NotRegistered()" "NotIssuer()"
+  "InvalidRoles()" "InvalidBps()" "NoTaxCollector()" "InvalidTariff()" "QuorumNotReached(uint32,uint32)"
+  "AlreadyActivated()" "UnknownPack()" "InvalidRoot()"
+)
+
+die() { echo "klippel-gov: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+klippel-gov: Instituto Klippel's part in KlippelGo's governance.
+
+Reading (no key needed)
+  status                              every setting of every contract, and whether the deployment is sound
+  account <address>                   roles, stake, credentials, score, block, and what the account may do
+  proposals [n]                       the last n proposals (10)
+  proposal <id>                       one proposal: what it calls, the votes, where it stands
+
+As a trusted attester (takes effect at once)
+  cnh approve <address> <file | 0x hash> [--expires YYYY-MM-DD] [--salt 0x...]
+  cnh revoke <address>
+  kyc approve | revoke ...            the same, for the KYC credential
+
+Proposals (take effect only after the community's vote and the timelock)
+  propose block <address>             the account passes no policy: no new rides, votes on disputes or proposals
+  propose unblock <address>
+  propose revoke <address> <CNH|KYC>  revoke a credential another attester issued
+  propose attester <address> on|off   who may issue credentials
+  propose tax <percent> [collector]   the government's share of each fare
+  propose token <coin> [fee=] [riderBond=] [driverBond=]      in reais; fee=0 takes the coin off the list
+  propose tariff [base=] [perKm=] [perMinute=] [minimum=] [riderRange=] [driverDiscount=]
+  propose native-coin-price <reais>   what one native coin is worth, for showing gas in reais
+  propose completion-timeout <time>   how long a driver's receipt stands before anyone may settle
+  propose dispute-periods <commit> <reveal>
+  propose unbonding-period <time>
+  propose beneficiary <address>       where FeeVault.sweep sends the R$ 1,00 per ride
+  propose voting [votingPeriod=] [timelock=] [quorum=] [rideWeight=] [stakeUnit=]
+  propose policy <Contract.function> [enabled=] [roles=] [minScore=] [minAccountAge=] [minStake=] [credential=]
+  propose map-quorum <n> | map-grace <time>
+  propose verifier [endpointToleranceM=] [distanceToleranceBps=] [traceMarginM=] [maxAccuracyM=]
+                   [detourToleranceBps=] [maxSpeedCmS=] [maxAccelCmS2=] [maxHeadIntervalMs=]
+  propose call <Contract | address> '<signature>' [args...]   anything else, shown to voters as written
+      add --description "text" to any of them. It is public and permanent: no names, no documents.
+  vote <id> for | against
+  queue <id>                          once the vote passed
+  execute <id>                        once the timelock is over
+
+Other
+  register                            register the signing account, so it may write proposals
+  sweep <coin>                        send the collected fees of a coin to the beneficiary (anyone may)
+
+Amounts are reais (1,50 or 1.50). Percentages are per cent (5 or 2,5). Times are 90s, 30m, 2h, 7d or seconds.
+A coin is its name in the deployment file (BRLA, BRZ) or its address.
+
+Options and environment (options go before the command: klippel-gov --safe 0x... cnh revoke 0x...)
+  --rpc <url>          KLIPPEL_GOV_RPC          chain node (http://127.0.0.1:8545)
+  --deployment <file>  KLIPPEL_GOV_DEPLOYMENT   contract addresses (deployments/local.json)
+  --yes                                         do not ask before sending
+  --safe <address>     KLIPPEL_GOV_SAFE         act as this multisig: every check is made for it, and instead
+                                                of sending, the transaction is written out for its owners to
+                                                approve (a file the Safe Transaction Builder loads)
+                       KLIPPEL_GOV_OUT          where those files go (the current folder)
+  KLIPPEL_GOV_WALLET   how cast signs: "--ledger", "--trezor" or "--account <keystore name>".
+                       On the local testnet it defaults to the seeded Instituto Klippel account (#1).
+  KLIPPEL_GOV_FROM_BLOCK   where to start reading proposals from (the block the governor was deployed at)
+EOF
+}
+
+# ---------------------------------------------------------------- chain access
+
+# Calls a view and prints what it returned as a flat JSON array of strings.
+q() {
+  local out
+  out=$(cast call --json --rpc-url "$RPC" "$@" 2>&1) || die "could not read $2 from $1: $out"
+  jq -c 'if type == "object" then .data else . end | [.. | scalars | tostring]' <<<"$out"
+}
+
+q1() { q "$@" | jq -r '.[0]'; }
+
+# qa <array name> <address> <signature> [args...]: the same, into a bash array.
+qa() {
+  local -n _into=$1
+  shift
+  local out
+  out=$(q "$@")
+  mapfile -t _into < <(jq -r '.[]' <<<"$out")
+}
+
+addr_of() {
+  jq -er --arg k "$1" '.[$k] | select(type == "string")' "$DEPLOYMENT" 2>/dev/null \
+    || die "$DEPLOYMENT has no '$1'"
+}
+
+# The name the deployment file gives an address, or nothing.
+name_of() {
+  jq -r --arg a "${1,,}" 'to_entries[] | select((.value | tostring | ascii_downcase) == $a) | .key' \
+    "$DEPLOYMENT" | head -n 1
+}
+
+label() {
+  local name
+  name=$(name_of "$1")
+  if [ -n "$name" ]; then echo "$1 ($name)"; else echo "$1"; fi
+}
+
+address() {
+  [[ $1 =~ ^0x[0-9a-fA-F]{40}$ ]] || die "'$1' is not an address"
+  cast to-check-sum-address "$1"
+}
+
+# A contract or coin by its name in the deployment file, or an address.
+resolve() {
+  if [[ $1 == 0x* ]]; then address "$1"; else addr_of "$1"; fi
+}
+
+now() { cast block --rpc-url "$RPC" latest -f timestamp; }
+
+# ---------------------------------------------------------------- reading and printing values
+
+# to_units <amount> <decimals>: "1,50" or "1.50" into base units. A separator followed by exactly three digits
+# is refused: 1.000 is one in English and a thousand in Portuguese.
+to_units() {
+  local s=${1//,/.}
+  [[ $s =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "'$1' is not an amount. Write it like 1,50 or 1.50"
+  [[ ! $s =~ \.[0-9]{3}$ ]] || die "'$1' is ambiguous. Write a thousand as 1000 and one as 1,00"
+  cast parse-units "$s" "$2" 2>/dev/null || die "'$1' has more decimal places than the $2 this value keeps"
+}
+
+# from_units <base units> <decimals>: the same value back, with a comma and at least two decimal places.
+from_units() {
+  local v
+  v=$(cast format-units "$1" "$2")
+  [[ $v == *.* ]] || v+=".00"
+  [[ $v =~ \.[0-9]$ ]] && v+="0"
+  while [[ $v =~ \.[0-9]{3,}$ && $v == *0 ]]; do v=${v%0}; done
+  echo "${v/./,}"
+}
+
+decimals_of() { q1 "$1" 'decimals()(uint8)'; }
+brl() { echo "R\$ $(from_units "$1" "$2")"; }
+centavos() { to_units "$1" 2; }
+percent() { echo "$(from_units "$1" 2)%"; }
+
+to_bps() {
+  local bps
+  bps=$(to_units "$1" 2)
+  [ "$bps" -lt 10000 ] || die "'$1' per cent is not under 100"
+  echo "$bps"
+}
+
+to_seconds() {
+  [[ $1 =~ ^([0-9]{1,9})([smhd]?)$ ]] || die "'$1' is not a time. Write it like 90s, 30m, 2h or 7d"
+  # 10#: a leading zero is still a decimal number, not an octal one.
+  local n=$((10#${BASH_REMATCH[1]}))
+  case "${BASH_REMATCH[2]}" in
+    m) echo $((n * 60)) ;;
+    h) echo $((n * 3600)) ;;
+    d) echo $((n * 86400)) ;;
+    *) echo "$n" ;;
+  esac
+}
+
+duration() {
+  local s=$1
+  if [ "$s" -ne 0 ] && [ $((s % 86400)) -eq 0 ]; then echo "$((s / 86400)) d"
+  elif [ "$s" -ne 0 ] && [ $((s % 3600)) -eq 0 ]; then echo "$((s / 3600)) h"
+  elif [ "$s" -ne 0 ] && [ $((s % 60)) -eq 0 ]; then echo "$((s / 60)) min"
+  else echo "$s s"; fi
+}
+
+when() {
+  if [ "$1" = 0 ]; then echo never; else date -u -d "@$1" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || echo "timestamp $1"; fi
+}
+
+uint() {
+  [[ $1 =~ ^[0-9]+$ ]] || die "'$1' is not a whole number"
+  echo "$1"
+}
+
+roles_text() {
+  local r=$1 out=()
+  [ $((r & 1)) -eq 0 ] || out+=(rider)
+  [ $((r & 2)) -eq 0 ] || out+=(driver)
+  [ $((r & 4)) -eq 0 ] || out+=(validator)
+  if [ ${#out[@]} -eq 0 ]; then echo none; else (IFS=,; echo "${out[*]}"); fi
+}
+
+roles_bits() {
+  local bits=0 r
+  [ "$1" = none ] && { echo 0; return; }
+  for r in ${1//,/ }; do
+    case "$r" in
+      rider) bits=$((bits | 1)) ;;
+      driver) bits=$((bits | 2)) ;;
+      validator) bits=$((bits | 4)) ;;
+      *) die "'$r' is not a role. Use rider, driver, validator or none" ;;
+    esac
+  done
+  echo "$bits"
+}
+
+credential_kind() {
+  case "$1" in
+    CNH | cnh) cast keccak "klippelgo.credential.CNH" ;;
+    KYC | kyc) cast keccak "klippelgo.credential.KYC" ;;
+    none) echo "$ZERO_32" ;;
+    0x*) [[ $1 =~ ^0x[0-9a-fA-F]{64}$ ]] || die "'$1' is not a credential kind"; echo "$1" ;;
+    *) die "'$1' is not a credential kind. Use CNH, KYC, none or a 32-byte hash" ;;
+  esac
+}
+
+credential_name() {
+  if [ "$1" = "$(credential_kind CNH)" ]; then echo CNH
+  elif [ "$1" = "$(credential_kind KYC)" ]; then echo KYC
+  elif [ "$1" = "$ZERO_32" ]; then echo none
+  else echo "$1"; fi
+}
+
+# parse_kv "<allowed keys>" key=value...: into KV.
+declare -A KV
+parse_kv() {
+  local allowed=" $1 " arg key
+  shift
+  KV=()
+  for arg in "$@"; do
+    [[ $arg == *=* ]] || die "'$arg' is not key=value. Keys:$allowed"
+    key=${arg%%=*}
+    [[ $allowed == *" $key "* ]] || die "'$key' is not one of:$allowed"
+    KV[$key]=${arg#*=}
+  done
+  [ ${#KV[@]} -gt 0 ] || die "nothing to change. Keys:$allowed"
+}
+
+join() { local IFS=,; echo "[$*]"; }
+
+# ---------------------------------------------------------------- signing and sending
+
+WALLET=()
+SIGNER=""
+
+need_wallet() {
+  [ -z "$SIGNER" ] || return 0
+  # A multisig is the account that acts, and no key of this tool's signs for it.
+  if [ -n "$SAFE" ]; then
+    SIGNER=$SAFE
+    return 0
+  fi
+  if [ -n "${KLIPPEL_GOV_WALLET:-}" ]; then
+    read -ra WALLET <<<"$KLIPPEL_GOV_WALLET"
+    # A key on a command line is in the shell's history and in `ps` for every user of the machine.
+    if [ "$CHAIN" != 31337 ] && [[ " ${WALLET[*]} " =~ \ --(private-key|mnemonic|mnemonic-passphrase|password)[=\ ] ]]; then
+      die "a raw key, mnemonic or password is accepted only on the local testnet (a password can come from --password-file). Use --ledger, --trezor, or a keystore: cast wallet import instituto --interactive, then KLIPPEL_GOV_WALLET='--account instituto'"
+    fi
+  elif [ "$CHAIN" = 31337 ]; then
+    WALLET=(--private-key "$(cast wallet private-key --mnemonic "$ANVIL_MNEMONIC" --mnemonic-index 1)")
+  else
+    die "set KLIPPEL_GOV_WALLET to how cast should sign: --ledger, --trezor or --account <keystore name>"
+  fi
+  SIGNER=$(cast wallet address "${WALLET[@]}") || die "could not open the wallet (${KLIPPEL_GOV_WALLET:-local testnet account #1})"
+}
+
+confirm() {
+  # With a multisig nothing is sent here: its owners are the ones who confirm.
+  [ -z "$SAFE" ] || return 0
+  [ "$YES" = 1 ] && return 0
+  [ "$CHAIN" = 31337 ] && return 0
+  [ -t 0 ] || die "refusing to send without a person to confirm. Pass --yes to send anyway"
+  local answer
+  read -r -p "Send this from $SIGNER on chain $CHAIN? Type yes: " answer
+  [ "$answer" = yes ] || die "nothing sent"
+}
+
+# Turns the four bytes of a custom error in cast's output into its name.
+explain() {
+  local data sig
+  data=$(grep -oE '0x[0-9a-fA-F]{8,}' "$1" | head -n 1 || true)
+  [ -n "$data" ] || return 0
+  for sig in "${ERRORS[@]}"; do
+    if [ "$(cast sig "$sig")" = "${data:0:10}" ]; then echo "The contract refused it: ${sig%%(*}" >&2; fi
+  done
+}
+
+# Whether this run only prepared a transaction for a multisig. Whoever called `send` stops there: there is
+# no receipt to read and nothing happened yet.
+prepared() { [ -n "$SAFE" ]; }
+
+# prepare <address> <signature> [args...]: writes the transaction out for the owners of the multisig, as a
+# file the Safe Transaction Builder loads and as the three values any other multisig asks for.
+prepare() {
+  local to=$1 data file
+  shift
+  data=$(cast calldata "$@") || die "could not encode $1"
+  # A name no other run has, and a file that is only ever created: two transactions prepared in the same
+  # second must not leave one file, and a file or link someone put there first must not be written through.
+  file="${KLIPPEL_GOV_OUT:-.}/klippel-gov-$CHAIN-$(date -u +%Y%m%d-%H%M%S)-${data:2:8}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n').json"
+  (
+    umask 077
+    set -o noclobber
+    jq -n --arg chain "$CHAIN" --arg to "$to" --arg data "$data" --arg safe "$SAFE" --arg what "$1" \
+      --argjson at "$(date +%s)000" '{
+        version: "1.0", chainId: $chain, createdAt: $at,
+        meta: {name: "klippel-gov", description: $what, createdFromSafeAddress: $safe},
+        transactions: [{to: $to, value: "0", data: $data, contractMethod: null, contractInputsValues: null}]
+      }' >"$file"
+  ) 2>/dev/null || die "could not create $file. Nothing was prepared"
+  {
+    echo "Nothing was sent. For the multisig $SAFE to do this, its owners approve one transaction:"
+    echo "  to     $to"
+    echo "  value  0"
+    echo "  data   $data"
+    echo "  check  $(cast keccak "$data")   (the hash of data: a short value for owners to compare)"
+    echo "  file   $file   (in Safe: Apps, Transaction Builder, load this file)"
+    echo "Every owner compares 'to' and 'data' with what the Safe page shows before approving."
+    echo "Delete the file once the transaction is executed: loaded again, it would do the same thing again."
+  } >&3
+}
+
+# send <address> <signature> [args...]: sends one transaction, waits for it and prints its receipt as JSON.
+send() {
+  local out errors
+  if prepared; then
+    prepare "$@"
+    return 0
+  fi
+  errors=$(mktemp)
+  if ! out=$(cast send --json --rpc-url "$RPC" "${WALLET[@]}" --from "$SIGNER" "$@" 2> >(tee "$errors" >&2)); then
+    explain "$errors"
+    rm -f "$errors"
+    die "the transaction was not sent"
+  fi
+  rm -f "$errors"
+  # Newer versions of cast wrap what they print in an envelope.
+  out=$(jq -c 'if has("data") and has("schema_version") then .data else . end' <<<"$out")
+  [ "$(jq -r '.status' <<<"$out")" = 0x1 ] || die "transaction $(jq -r '.transactionHash' <<<"$out") reverted"
+  echo "$out"
+}
+
+# ---------------------------------------------------------------- proposals
+
+# What a proposal calls: PT targets, PV values, PC calldatas, PDESC its description. They are read from the
+# governor's own event and checked against the hash the governor stored, which is what `execute` checks too.
+PT=() PV=() PC=() PDESC=""
+load_calls() {
+  local id=$1 hash=$2 logs data decoded
+  logs=$(cast logs --json --rpc-url "$RPC" --from-block "$FROM_BLOCK" --address "$GOV" "$PROPOSAL_CREATED" "$id") \
+    || die "could not read the governor's events. If the node limits how far back it searches, set KLIPPEL_GOV_FROM_BLOCK"
+  data=$(jq -r '.[0].data // empty' <<<"$logs")
+  [ -n "$data" ] || die "proposal $id is not in the events since block $FROM_BLOCK. Set KLIPPEL_GOV_FROM_BLOCK to an earlier block"
+  decoded=$(cast decode-abi --json 'f()(address[],uint256[],bytes[],string)' "$data" \
+    | jq -c 'if type == "object" then .data else . end')
+  mapfile -t PT < <(jq -r '.[0][]' <<<"$decoded")
+  mapfile -t PV < <(jq -r '.[1][] | tostring' <<<"$decoded")
+  mapfile -t PC < <(jq -r '.[2][]' <<<"$decoded")
+  # Whoever proposed wrote the description. Control and formatting characters of every kind (among them the
+  # terminal's own escape codes and the ones that reverse the direction of text) become spaces, runs of
+  # spaces become one, and it is cut short: it cannot redraw or hide the lines above it. It can still say
+  # anything in words, which is why it is shown last and labelled as the proposer's.
+  PDESC=$(jq -r '.[3] | gsub("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]"; " ") | gsub("\\s+"; " ") | .[0:60]' <<<"$decoded")
+  local encoded
+  encoded=$(cast abi-encode 'f(address[],uint256[],bytes[])' "$(join "${PT[@]}")" "$(join "${PV[@]}")" "$(join "${PC[@]}")")
+  [ "$(cast keccak "$encoded")" = "$hash" ] || die "the calls the node reports for proposal $id do not match the hash the governor stored. Do not trust this node"
+}
+
+# Prints one call of a proposal the way a voter should read it.
+describe_call() {
+  local target=$1 value=$2 data=$3 name entry sig fn args
+  name=$(name_of "$target")
+  [ "$value" = 0 ] || echo "      !! sends $value wei of the governor's native coin"
+  if [ -z "$name" ]; then
+    echo "      !! UNKNOWN CONTRACT $target"
+    echo "         data $data"
+    return
+  fi
+  for entry in "${KNOWN_CALLS[@]}"; do
+    sig=${entry#*|}
+    if [ "${entry%%|*}" = "$name" ] && [ "$(cast sig "$sig")" = "${data:0:10}" ]; then
+      fn=${sig%%(*}
+      args=$(cast decode-calldata "$sig" "$data" | paste -sd ' ' -)
+      echo "      $name.$fn  $args"
+      [[ $SENSITIVE_CALLS != *" $fn "* ]] || echo "      !! $fn moves funds, rewires the protocol or changes who decides. Read every argument"
+      return
+    fi
+  done
+  echo "      !! UNKNOWN CALL on $name: selector ${data:0:10}"
+  echo "         data $data"
+}
+
+# The state of a proposal from its fields: proposals(id) in P, the governor's params in GP.
+state_of() {
+  local t
+  t=$(now)
+  if [ "${P[3]}" = true ]; then echo executed
+  elif [ "${P[2]}" != 0 ]; then
+    if [ "$t" -ge "${P[2]}" ]; then echo "ready to execute"; else echo "in the timelock until $(when "${P[2]}")"; fi
+  elif [ "$t" -lt "${P[1]}" ]; then echo "voting until $(when "${P[1]}")"
+  elif [ "${P[4]}" -gt "${P[5]}" ] && [ "${P[4]}" -ge "${GP[2]}" ]; then echo "passed, waiting to be queued"
+  else echo defeated; fi
+}
+
+P=() GP=()
+load_proposal() {
+  qa P "$GOV" 'proposals(uint256)(address,uint64,uint64,bool,uint256,uint256,bytes32)' "$(uint "$1")"
+  [ "${P[0]}" != "$ZERO_ADDRESS" ] || die "there is no proposal $1"
+  qa GP "$GOV" 'params()(uint64,uint64,uint256,uint256,uint256)'
+  load_calls "$1" "${P[6]}"
+}
+
+show_proposal() {
+  local i
+  load_proposal "$1"
+  echo "Proposal $1"
+  echo "  by       $(label "${P[0]}")"
+  echo "  state    $(state_of)"
+  echo "  votes    ${P[4]} for, ${P[5]} against (quorum ${GP[2]} for)"
+  echo "  calls"
+  for i in "${!PT[@]}"; do describe_call "${PT[$i]}" "${PV[$i]}" "${PC[$i]}"; done
+  echo "  its proposer describes it as: $PDESC"
+}
+
+# What `propose` is about to send: T targets, C calldatas, TITLE the default description, LINES what it does
+# in plain words, WARNINGS what the person should think twice about.
+T=() C=() TITLE="" LINES=() WARNINGS=()
+
+add_call() {
+  local target=$1
+  shift
+  T+=("$target")
+  C+=("$(cast calldata "$@")") || die "could not encode $1"
+}
+
+# Limit L6 of contracts/docs/security.md: votes are weighed when cast, so stake must not be able to leave
+# and come back under another account within one vote.
+check_unbonding_outlasts_voting() {
+  [ "$1" -gt "$2" ] || die "the unbonding period ($(duration "$1")) must stay longer than the voting period ($(duration "$2")), or stake could vote twice"
+}
+
+build_proposal() {
+  local what=${1:-}
+  [ -n "$what" ] || die "propose what? See klippel-gov help"
+  shift
+  local REG ESC who kind token d cur new key bps collector seconds
+  REG=$(addr_of IdentityRegistry)
+  ESC=$(addr_of RideEscrow)
+  case "$what" in
+    block | unblock)
+      who=$(address "${1:-}")
+      new=$([ "$what" = block ] && echo true || echo false)
+      [ "$(q1 "$REG" 'blocked(address)(bool)' "$who")" != "$new" ] || die "$who is already ${what}ed"
+      add_call "$REG" 'setBlocked(address,bool)' "$who" "$new"
+      TITLE="${what^} $who"
+      if [ "$what" = block ]; then
+        LINES+=("Block $who: it passes no policy, so it opens and accepts no ride, judges no dispute, attests no map and writes no proposal.")
+        LINES+=("Rides it has under way still settle, its stake can still leave, and it can still vote.")
+        [ "$(q1 "$REG" 'registeredAt(address)(uint64)' "$who")" != 0 ] || WARNINGS+=("$who never registered. Check the address.")
+        [ "$(q1 "$REG" 'trustedAttester(address)(bool)' "$who")" = false ] || WARNINGS+=("$who is a trusted attester, and a block does not stop it issuing or revoking credentials. Propose 'attester $who off' as well.")
+        WARNINGS+=("A block follows an address, not a person: a rider needs no credential and can register another address. To stop a driver at once, revoke the CNH (klippel-gov cnh revoke).")
+      else
+        LINES+=("Unblock $who: the policies apply to it again as to anyone.")
+      fi
+      ;;
+    revoke)
+      who=$(address "${1:-}")
+      kind=$(credential_kind "${2:-}")
+      [ "$kind" != "$ZERO_32" ] || die "revoke which credential? CNH or KYC"
+      add_call "$REG" 'revoke(address,bytes32)' "$who" "$kind"
+      TITLE="Revoke the $(credential_name "$kind") credential of $who"
+      LINES+=("$TITLE, whoever issued it.")
+      ;;
+    attester)
+      who=$(address "${1:-}")
+      case "${2:-}" in on) new=true ;; off) new=false ;; *) die "attester <address> on|off" ;; esac
+      add_call "$REG" 'setAttester(address,bool)' "$who" "$new"
+      if [ "$new" = true ]; then
+        TITLE="Trust $who as an attester"
+        LINES+=("$who may issue and revoke credentials, among them the CNH a driver needs to accept rides.")
+      else
+        TITLE="Stop trusting $who as an attester"
+        LINES+=("Every credential $who issued stops counting at once, and it can issue no more.")
+        WARNINGS+=("Drivers whose CNH came from this attester can no longer accept rides until another attester approves them.")
+      fi
+      ;;
+    tax)
+      bps=$(to_bps "${1:-}")
+      qa cur "$ESC" 'taxBps()(uint16)'
+      collector=$(q1 "$ESC" 'taxCollector()(address)')
+      [ -z "${2:-}" ] || collector=$(address "$2")
+      [ "$bps" = 0 ] || [ "$collector" != "$ZERO_ADDRESS" ] || die "a tax needs a collector: propose tax <percent> <collector>"
+      add_call "$ESC" 'setTax(uint16,address)' "$bps" "$collector"
+      TITLE="Set the tax to $(percent "$bps") of each fare"
+      LINES+=("Tax: $(percent "${cur[0]}") -> $(percent "$bps") of each fare, paid to $collector. Rides already open keep theirs.")
+      # Limit L13: a collector that cannot receive the coin blocks the settlement of the rides that name it.
+      [ "$(cast code --rpc-url "$RPC" "$collector")" = 0x ] || WARNINGS+=("The collector is a contract. If it cannot receive the coin, the rides that name it cannot settle. Name a plain account.")
+      ;;
+    token)
+      token=$(resolve "${1:-}")
+      shift
+      d=$(decimals_of "$token")
+      qa cur "$ESC" 'tokenConfig(address)(uint256,uint256,uint256)' "$token"
+      parse_kv "fee riderBond driverBond" "$@"
+      new=("${cur[@]}")
+      [ -z "${KV[fee]:-}" ] || new[0]=$(to_units "${KV[fee]}" "$d")
+      [ -z "${KV[riderBond]:-}" ] || new[1]=$(to_units "${KV[riderBond]}" "$d")
+      [ -z "${KV[driverBond]:-}" ] || new[2]=$(to_units "${KV[driverBond]}" "$d")
+      add_call "$ESC" 'setToken(address,uint256,uint256,uint256)' "$token" "${new[@]}"
+      TITLE="Set the fee and bonds of $(label "$token")"
+      LINES+=("Coin $(label "$token"), $d decimals. Rides already open keep theirs.")
+      LINES+=("  fee to Instituto Klippel: $(brl "${cur[0]}" "$d") -> $(brl "${new[0]}" "$d")")
+      LINES+=("  rider bond:               $(brl "${cur[1]}" "$d") -> $(brl "${new[1]}" "$d")")
+      LINES+=("  driver bond:              $(brl "${cur[2]}" "$d") -> $(brl "${new[2]}" "$d")")
+      [ "${new[0]}" != 0 ] || WARNINGS+=("A fee of zero takes the coin off the allow-list: no new ride can be paid in it.")
+      # Limit L10: the escrow assumes a plain ERC-20.
+      [ "${cur[0]}" != 0 ] || WARNINGS+=("This puts a new coin on the allow-list. It must be a plain ERC-20: a coin that charges on transfer, rebases or calls back breaks the escrow.")
+      ;;
+    tariff)
+      local FARES
+      FARES=$(addr_of FareGuide)
+      qa cur "$FARES" 'tariff()(uint32,uint32,uint32,uint32,uint16,uint16)'
+      parse_kv "base perKm perMinute minimum riderRange driverDiscount" "$@"
+      new=("${cur[@]}")
+      [ -z "${KV[base]:-}" ] || new[0]=$(centavos "${KV[base]}")
+      [ -z "${KV[perKm]:-}" ] || new[1]=$(centavos "${KV[perKm]}")
+      [ -z "${KV[perMinute]:-}" ] || new[2]=$(centavos "${KV[perMinute]}")
+      [ -z "${KV[minimum]:-}" ] || new[3]=$(centavos "${KV[minimum]}")
+      [ -z "${KV[riderRange]:-}" ] || new[4]=$(to_bps "${KV[riderRange]}")
+      [ -z "${KV[driverDiscount]:-}" ] || new[5]=$(to_bps "${KV[driverDiscount]}")
+      add_call "$FARES" 'setTariff((uint32,uint32,uint32,uint32,uint16,uint16))' "($(IFS=,; echo "${new[*]}"))"
+      TITLE="Change the tariff"
+      LINES+=("  base:             $(brl "${cur[0]}" 2) -> $(brl "${new[0]}" 2)")
+      LINES+=("  per km:           $(brl "${cur[1]}" 2) -> $(brl "${new[1]}" 2)")
+      LINES+=("  per minute:       $(brl "${cur[2]}" 2) -> $(brl "${new[2]}" 2)")
+      LINES+=("  minimum:          $(brl "${cur[3]}" 2) -> $(brl "${new[3]}" 2)")
+      LINES+=("  rider range:      $(percent "${cur[4]}") -> $(percent "${new[4]}") either side of the recommended price")
+      LINES+=("  driver discount:  $(percent "${cur[5]}") -> $(percent "${new[5]}") under the rider's price")
+      ;;
+    native-coin-price)
+      local FARES
+      FARES=$(addr_of FareGuide)
+      new=$(centavos "${1:-}")
+      cur=$(q1 "$FARES" 'nativeCoinCentavos()(uint256)')
+      add_call "$FARES" 'setNativeCoinPrice(uint256)' "$new"
+      TITLE="Set the native coin's price to $(brl "$new" 2)"
+      LINES+=("One native coin: $(brl "$cur" 2) -> $(brl "$new" 2). It only changes the infrastructure cost the app shows.")
+      ;;
+    completion-timeout)
+      seconds=$(to_seconds "${1:-}")
+      cur=$(q1 "$ESC" 'completionTimeout()(uint64)')
+      add_call "$ESC" 'setCompletionTimeout(uint64)' "$seconds"
+      TITLE="Set the completion timeout to $(duration "$seconds")"
+      LINES+=("How long a driver's receipt stands before anyone may settle the ride: $(duration "$cur") -> $(duration "$seconds").")
+      [ "$seconds" -ge 300 ] || WARNINGS+=("Under five minutes leaves a rider little time to contest a receipt before the driver is paid.")
+      ;;
+    dispute-periods)
+      local COURT commit reveal
+      COURT=$(addr_of DisputeCourt)
+      commit=$(to_seconds "${1:-}")
+      reveal=$(to_seconds "${2:-}")
+      qa cur "$COURT" 'commitPeriod()(uint64)'
+      add_call "$COURT" 'setPeriods(uint64,uint64)' "$commit" "$reveal"
+      TITLE="Set the dispute periods to $(duration "$commit") and $(duration "$reveal")"
+      LINES+=("Jurors commit for $(duration "$commit") (now $(duration "${cur[0]}")) and reveal for $(duration "$reveal") (now $(duration "$(q1 "$COURT" 'revealPeriod()(uint64)')")).")
+      ;;
+    unbonding-period)
+      seconds=$(to_seconds "${1:-}")
+      cur=$(q1 "$REG" 'unbondingPeriod()(uint64)')
+      qa GP "$GOV" 'params()(uint64,uint64,uint256,uint256,uint256)'
+      check_unbonding_outlasts_voting "$seconds" "${GP[0]}"
+      add_call "$REG" 'setUnbondingPeriod(uint64)' "$seconds"
+      TITLE="Set the unbonding period to $(duration "$seconds")"
+      LINES+=("How long stake waits before it can leave: $(duration "$cur") -> $(duration "$seconds").")
+      ;;
+    beneficiary)
+      local VAULT
+      VAULT=$(addr_of FeeVault)
+      who=$(address "${1:-}")
+      [ "$who" != "$ZERO_ADDRESS" ] || die "the beneficiary cannot be the zero address: the fees would be burnt"
+      add_call "$VAULT" 'setBeneficiary(address)' "$who"
+      TITLE="Send the fees to $who"
+      LINES+=("FeeVault.sweep pays the R\$ 1,00 per ride to $who instead of $(q1 "$VAULT" 'beneficiary()(address)').")
+      ;;
+    voting)
+      local stake
+      stake=$(q1 "$REG" 'stakeToken()(address)')
+      d=$(decimals_of "$stake")
+      qa cur "$GOV" 'params()(uint64,uint64,uint256,uint256,uint256)'
+      parse_kv "votingPeriod timelock quorum rideWeight stakeUnit" "$@"
+      new=("${cur[@]}")
+      [ -z "${KV[votingPeriod]:-}" ] || new[0]=$(to_seconds "${KV[votingPeriod]}")
+      [ -z "${KV[timelock]:-}" ] || new[1]=$(to_seconds "${KV[timelock]}")
+      [ -z "${KV[quorum]:-}" ] || new[2]=$(uint "${KV[quorum]}")
+      [ -z "${KV[rideWeight]:-}" ] || new[3]=$(uint "${KV[rideWeight]}")
+      [ -z "${KV[stakeUnit]:-}" ] || new[4]=$(to_units "${KV[stakeUnit]}" "$d")
+      # Each of these would end governance for good: nobody could vote again, so nobody could undo it.
+      [ "${new[0]}" != 0 ] || die "a voting period of zero closes every vote before it opens, and no proposal could ever change it back"
+      [ "${new[4]}" != 0 ] || die "a stake unit of zero makes every vote revert, and no proposal could ever change it back"
+      check_unbonding_outlasts_voting "$(q1 "$REG" 'unbondingPeriod()(uint64)')" "${new[0]}"
+      add_call "$GOV" 'setParams((uint64,uint64,uint256,uint256,uint256))' "($(IFS=,; echo "${new[*]}"))"
+      TITLE="Change how governance votes"
+      LINES+=("  voting period:  $(duration "${cur[0]}") -> $(duration "${new[0]}")")
+      LINES+=("  timelock:       $(duration "${cur[1]}") -> $(duration "${new[1]}")")
+      LINES+=("  quorum:         ${cur[2]} -> ${new[2]} votes for")
+      LINES+=("  ride weight:    ${cur[3]} -> ${new[3]} votes per completed ride")
+      LINES+=("  stake unit:     $(brl "${cur[4]}" "$d") -> $(brl "${new[4]}" "$d") of stake per vote")
+      [ "${new[1]}" != 0 ] || WARNINGS+=("With no timelock a passed proposal takes effect the moment it is queued: nobody has time to leave first.")
+      WARNINGS+=("This changes who decides everything else. A quorum nobody can reach, or a weight of zero, can end governance.")
+      ;;
+    policy)
+      local fn entry sig="" target stake
+      fn=${1:-}
+      shift || true
+      for entry in "${POLICIES[@]}"; do [ "${entry%%|*}" != "$fn" ] || sig=${entry#*|}; done
+      [ -n "$sig" ] || die "'$fn' is not a function a policy guards. One of: $(printf '%s ' "${POLICIES[@]%%|*}")"
+      target=$(addr_of "${fn%%.*}")
+      stake=$(q1 "$REG" 'stakeToken()(address)')
+      d=$(decimals_of "$stake")
+      qa cur "$GOV" 'policy(address,bytes4)((bool,uint8,uint16,uint32,uint256,bytes32))' "$target" "$(cast sig "$sig")"
+      parse_kv "enabled roles minScore minAccountAge minStake credential" "$@"
+      new=("${cur[@]}")
+      if [ -n "${KV[enabled]:-}" ]; then
+        [[ ${KV[enabled]} == true || ${KV[enabled]} == false ]] || die "enabled is true or false"
+        new[0]=${KV[enabled]}
+      fi
+      [ -z "${KV[roles]:-}" ] || new[1]=$(roles_bits "${KV[roles]}")
+      [ -z "${KV[minScore]:-}" ] || new[2]=$(to_units "${KV[minScore]}" 2)
+      [ -z "${KV[minAccountAge]:-}" ] || new[3]=$(to_seconds "${KV[minAccountAge]}")
+      [ -z "${KV[minStake]:-}" ] || new[4]=$(to_units "${KV[minStake]}" "$d")
+      [ -z "${KV[credential]:-}" ] || new[5]=$(credential_kind "${KV[credential]}")
+      [ "${new[2]}" -le 500 ] || die "a score is at most 5,00"
+      # A disabled policy lets nobody through. On propose that ends governance: nothing could enable it again.
+      [ "$fn" != PBACGovernor.propose ] || [ "${new[0]}" = true ] || die "disabling the policy on propose would end governance: nobody could propose enabling it again"
+      add_call "$GOV" 'setPolicy(address,bytes4,(bool,uint8,uint16,uint32,uint256,bytes32))' "$target" "$(cast sig "$sig")" "($(IFS=,; echo "${new[*]}"))"
+      TITLE="Change who may call $fn"
+      LINES+=("  enabled:          ${cur[0]} -> ${new[0]}")
+      LINES+=("  roles (any of):   $(roles_text "${cur[1]}") -> $(roles_text "${new[1]}")")
+      LINES+=("  minimum score:    $(from_units "${cur[2]}" 2) -> $(from_units "${new[2]}" 2)")
+      LINES+=("  minimum age:      $(duration "${cur[3]}") -> $(duration "${new[3]}")")
+      LINES+=("  minimum stake:    $(brl "${cur[4]}" "$d") -> $(brl "${new[4]}" "$d")")
+      LINES+=("  credential:       $(credential_name "${cur[5]}") -> $(credential_name "${new[5]}")")
+      [ "${new[0]}" = true ] || WARNINGS+=("A disabled policy lets nobody call $fn.")
+      [ "$fn" != PBACGovernor.propose ] || WARNINGS+=("This decides who may write proposals. If nobody qualifies, governance ends.")
+      ;;
+    map-quorum)
+      local MAPS
+      MAPS=$(addr_of MapRegistry)
+      new=$(uint "${1:-}")
+      [ "$new" != 0 ] || die "a quorum of zero would let a map pack be activated with a root nobody rebuilt"
+      add_call "$MAPS" 'setRebuildQuorum(uint32)' "$new"
+      TITLE="Set the map rebuild quorum to $new"
+      LINES+=("Validators that must rebuild a map pack to the same root: $(q1 "$MAPS" 'rebuildQuorum()(uint32)') -> $new.")
+      ;;
+    map-grace)
+      local MAPS
+      MAPS=$(addr_of MapRegistry)
+      seconds=$(to_seconds "${1:-}")
+      add_call "$MAPS" 'setGracePeriod(uint64)' "$seconds"
+      TITLE="Set the map grace period to $(duration "$seconds")"
+      LINES+=("How long a map pack outlives its replacement: $(duration "$(q1 "$MAPS" 'gracePeriod()(uint64)')") -> $(duration "$seconds").")
+      ;;
+    verifier)
+      local MAPS keys i
+      MAPS=$(addr_of MapRegistry)
+      keys=(endpointToleranceM distanceToleranceBps traceMarginM maxAccuracyM detourToleranceBps maxSpeedCmS maxAccelCmS2 maxHeadIntervalMs)
+      qa cur "$MAPS" 'verifierParams()(uint32,uint32,uint32,uint32,uint32,uint32,uint32,uint32)'
+      parse_kv "${keys[*]}" "$@"
+      new=("${cur[@]}")
+      TITLE="Change the proof verifier's tolerances"
+      for i in "${!keys[@]}"; do
+        [ -z "${KV[${keys[$i]}]:-}" ] || new[i]=$(uint "${KV[${keys[$i]}]}")
+        LINES+=("  ${keys[$i]}: ${cur[$i]} -> ${new[$i]}")
+      done
+      add_call "$MAPS" 'setVerifierParams((uint32,uint32,uint32,uint32,uint32,uint32,uint32,uint32))' "($(IFS=,; echo "${new[*]}"))"
+      WARNINGS+=("Jurors and phones must run a verifier with the same numbers (core/verify).")
+      ;;
+    call)
+      local target
+      target=$(resolve "${1:-}")
+      [ -n "${2:-}" ] || die "propose call <Contract | address> '<signature>' [args...]"
+      shift
+      add_call "$target" "$@"
+      TITLE="Call ${1%%(*} on $(label "$target")"
+      WARNINGS+=("A raw call. Voters see it exactly as the lines under 'calls' here.")
+      ;;
+    *) die "'$what' is not something klippel-gov can propose. See klippel-gov help" ;;
+  esac
+}
+
+cmd_propose() {
+  local description="" args=() out id i
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --description | -m) description=${2:-}; shift 2 || die "--description needs a text" ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  need_wallet
+  build_proposal "${args[@]}"
+  [ -n "$description" ] || description=$TITLE
+
+  if [ "$(q1 "$GOV" 'hasPermission(address,address,bytes4)(bool)' "$SIGNER" "$GOV" "$(cast sig 'propose(address[],uint256[],bytes[],string)')")" != true ]; then
+    die "$SIGNER may not write proposals. It must be registered (klippel-gov register), not blocked, and meet the policy on PBACGovernor.propose (klippel-gov account $SIGNER)"
+  fi
+  qa GP "$GOV" 'params()(uint64,uint64,uint256,uint256,uint256)'
+
+  echo "Proposal: $description"
+  [ ${#LINES[@]} -eq 0 ] || printf '  %s\n' "${LINES[@]}"
+  echo "  calls"
+  for i in "${!T[@]}"; do describe_call "${T[$i]}" 0 "${C[$i]}"; done
+  [ ${#WARNINGS[@]} -eq 0 ] || printf '  !! %s\n' "${WARNINGS[@]}"
+  echo "  The description is public and permanent. It must name no person and no document."
+  echo "  It takes effect only after a vote of $(duration "${GP[0]}") with at least ${GP[2]} votes for, and a timelock of $(duration "${GP[1]}")."
+  confirm
+
+  local zeros=()
+  for i in "${!T[@]}"; do zeros+=(0); done
+  out=$(send "$GOV" 'propose(address[],uint256[],bytes[],string)' "$(join "${T[@]}")" "$(join "${zeros[@]}")" "$(join "${C[@]}")" "$description")
+  if prepared; then
+    echo "Once the owners have executed it, klippel-gov proposals shows the proposal and its number."
+    return 0
+  fi
+  id=$(jq -r --arg t "$(cast sig-event "$PROPOSAL_CREATED")" '.logs[] | select(.topics[0] == $t) | .topics[1]' <<<"$out")
+  id=$(cast to-dec "$id")
+  echo "Proposal $id is open for votes (transaction $(jq -r '.transactionHash' <<<"$out"))."
+  echo "  klippel-gov vote $id for      while the vote is open"
+  echo "  klippel-gov queue $id         once it passed"
+  echo "  klippel-gov execute $id       once the timelock is over"
+}
+
+cmd_vote() {
+  local id=${1:-} side=${2:-} support weight
+  case "$side" in for) support=true ;; against) support=false ;; *) die "vote <id> for|against" ;; esac
+  need_wallet
+  show_proposal "$id"
+  [ "$(now)" -lt "${P[1]}" ] || die "the vote on proposal $id is closed"
+  [ "$(q1 "$GOV" 'hasVoted(uint256,address)(bool)' "$id" "$SIGNER")" = false ] || die "$SIGNER already voted on proposal $id"
+  weight=$(q1 "$GOV" 'votingWeight(address)(uint256)' "$SIGNER")
+  [ "$weight" != 0 ] || die "$SIGNER has no votes. A vote comes from completed rides and from stake"
+  echo "Voting $side with $weight votes."
+  confirm
+  send "$GOV" 'vote(uint256,bool)' "$id" "$support" >/dev/null
+  ! prepared || return 0
+  echo "Voted $side on proposal $id."
+}
+
+cmd_queue() {
+  local id=${1:-}
+  need_wallet
+  show_proposal "$id"
+  [ "$(state_of)" = "passed, waiting to be queued" ] || die "proposal $id cannot be queued: it is $(state_of)"
+  confirm
+  send "$GOV" 'queue(uint256)' "$id" >/dev/null
+  ! prepared || return 0
+  qa P "$GOV" 'proposals(uint256)(address,uint64,uint64,bool,uint256,uint256,bytes32)' "$id"
+  echo "Proposal $id is queued. It can be executed from $(when "${P[2]}")."
+}
+
+cmd_execute() {
+  local id=${1:-}
+  need_wallet
+  show_proposal "$id"
+  [ "$(state_of)" = "ready to execute" ] || die "proposal $id cannot be executed: it is $(state_of)"
+  confirm
+  send "$GOV" 'execute(uint256,address[],uint256[],bytes[])' "$id" "$(join "${PT[@]}")" "$(join "${PV[@]}")" "$(join "${PC[@]}")" >/dev/null
+  ! prepared || return 0
+  echo "Proposal $id is executed."
+}
+
+cmd_proposals() {
+  local count n=${1:-10} id first
+  count=$(q1 "$GOV" 'proposalCount()(uint256)')
+  [ "$count" != 0 ] || { echo "No proposals yet."; return; }
+  first=$((count - $(uint "$n") + 1))
+  [ "$first" -ge 1 ] || first=1
+  for ((id = count; id >= first; id--)); do
+    load_proposal "$id"
+    printf '%4s  %-32s  %s for, %s against  %s\n' "$id" "$(state_of)" "${P[4]}" "${P[5]}" "$PDESC"
+  done
+}
+
+# ---------------------------------------------------------------- credentials
+
+cmd_credential() {
+  local kind_name=$1 action=${2:-} who REG kind c
+  shift 2 || die "$kind_name approve | revoke <address>"
+  REG=$(addr_of IdentityRegistry)
+  kind=$(credential_kind "$kind_name")
+  who=$(address "${1:-}")
+  shift
+  need_wallet
+  qa c "$REG" 'credentials(address,bytes32)(bytes32,address,uint64,bool)' "$who" "$kind"
+  case "$action" in
+    approve)
+      local source=${1:-} expires=0 salt="" hash
+      [ -n "$source" ] || die "$kind_name approve <address> <file | 0x hash> [--expires YYYY-MM-DD] [--salt 0x...]"
+      shift
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --expires)
+            expires=$(date -u -d "${2:-} 23:59:59" +%s 2>/dev/null) || die "'${2:-}' is not a date. Write it like 2031-05-20"
+            shift 2
+            ;;
+          --salt) salt=${2:-}; shift 2 || die "--salt needs a value" ;;
+          *) die "unknown option $1" ;;
+        esac
+      done
+      [ "$(q1 "$REG" 'trustedAttester(address)(bool)' "$SIGNER")" = true ] || die "$SIGNER is not a trusted attester. Governance adds one with: klippel-gov propose attester $SIGNER on"
+      [ "$(q1 "$REG" 'registeredAt(address)(uint64)' "$who")" != 0 ] || die "$who has not registered yet. A credential goes to a registered account"
+      [ "$expires" = 0 ] || [ "$expires" -gt "$(now)" ] || die "that expiry date is in the past"
+      if [[ $source =~ ^0x[0-9a-fA-F]{64}$ ]]; then
+        [ -z "$salt" ] || die "--salt applies to a file, not to a hash that is already made"
+        hash=$source
+      else
+        [ -f "$source" ] || die "'$source' is neither a file nor a 32-byte hash"
+        [ -s "$source" ] || die "'$source' is empty"
+        # Salted, so nobody can confirm a guess of the document by hashing it. Whoever holds the document and
+        # the salt can show later that this is the one that was approved.
+        [ -n "$salt" ] || salt=0x$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+        [[ $salt =~ ^0x[0-9a-fA-F]{64}$ ]] || die "the salt is 32 bytes, as 0x and 64 hex digits"
+        # The file goes to cast on its input, never as an argument: an argument is capped in size and is
+        # readable by every user of the machine while the command runs.
+        local inner
+        inner=$({ printf 0x; od -An -tx1 -v "$source" | tr -d ' \n'; } | cast keccak) || die "could not hash $source"
+        [[ $inner =~ ^0x[0-9a-f]{64}$ ]] || die "could not hash $source"
+        hash=$(cast keccak "$(cast concat-hex "$salt" "$inner")") || die "could not hash $source"
+        [[ $hash =~ ^0x[0-9a-f]{64}$ ]] || die "could not hash $source"
+      fi
+      [ "$hash" != "$ZERO_32" ] || die "the hash cannot be zero"
+      echo "Approve the $kind_name of $who, as $SIGNER"
+      echo "  credential hash  $hash"
+      [ -z "$salt" ] || echo "  salt             $salt   (keep it with the document: it is what proves this hash later)"
+      echo "  expires          $(when "$expires")"
+      if [ "${c[0]}" != "$ZERO_32" ] && [ "${c[1],,}" != "${SIGNER,,}" ]; then
+        local live
+        live=$(q1 "$REG" 'hasCredential(address,bytes32)(bool)' "$who" "$kind")
+        [ "$live" = false ] || die "$who holds a valid $kind_name from another attester, ${c[1]}. The contract does not let one attester replace another's valid credential"
+        echo "  !! replaces the credential issued by $(label "${c[1]}"), which no longer counts"
+      fi
+      [ "$(q1 "$REG" 'blocked(address)(bool)' "$who")" = false ] || echo "  !! this account is blocked by governance: the credential will not let it accept rides"
+      echo "  Only the hash goes on chain. The document stays with you and with the driver."
+      confirm
+      send "$REG" 'attest(address,bytes32,bytes32,uint64)' "$who" "$kind" "$hash" "$expires" >/dev/null
+      ! prepared || return 0
+      echo "Approved."
+      ;;
+    revoke)
+      [ "${c[0]}" != "$ZERO_32" ] || die "$who has no $kind_name credential"
+      [ "${c[3]}" = false ] || die "the $kind_name credential of $who is already revoked"
+      [ "${c[1],,}" = "${SIGNER,,}" ] || die "that credential was issued by ${c[1]}, not by $SIGNER. Only its issuer revokes it directly; governance can with: klippel-gov propose revoke $who $kind_name"
+      echo "Revoke the $kind_name of $who. It takes effect at once: without a CNH a driver accepts no ride."
+      confirm
+      send "$REG" 'revoke(address,bytes32)' "$who" "$kind" >/dev/null
+      ! prepared || return 0
+      echo "Revoked."
+      ;;
+    *) die "$kind_name approve | revoke <address>" ;;
+  esac
+}
+
+# ---------------------------------------------------------------- reading
+
+cmd_account() {
+  local who REG REP id c kind entry sig stake d
+  who=$(address "${1:-}")
+  REG=$(addr_of IdentityRegistry)
+  REP=$(addr_of Reputation)
+  stake=$(q1 "$REG" 'stakeToken()(address)')
+  d=$(decimals_of "$stake")
+  qa id "$REG" 'identity(address)((uint8,uint64,uint64,uint256,uint256))' "$who"
+  echo "Account $(label "$who")"
+  if [ "${id[1]}" = 0 ]; then echo "  not registered"; else echo "  registered   $(when "${id[1]}") as $(roles_text "${id[0]}")"; fi
+  # Each answer goes into a variable first, so a read that fails stops the command instead of printing "no".
+  local is_blocked is_attester valid may
+  is_blocked=$(q1 "$REG" 'blocked(address)(bool)' "$who")
+  is_attester=$(q1 "$REG" 'trustedAttester(address)(bool)' "$who")
+  echo "  blocked      $([ "$is_blocked" = true ] && echo 'YES, by governance' || echo no)"
+  echo "  stake        $(brl "${id[3]}" "$d")$([ "${id[4]}" = 0 ] || echo ", and $(brl "${id[4]}" "$d") leaving from $(when "${id[2]}")")"
+  echo "  rides        $(q1 "$REP" 'completedRides(address)(uint256)' "$who") completed"
+  if [ "$(q1 "$REP" 'ratingCount(address)(uint256)' "$who")" = 0 ]; then echo "  score        not rated yet"
+  else echo "  score        $(from_units "$(q1 "$REP" 'scoreOf(address)(uint256)' "$who")" 2) from $(q1 "$REP" 'ratingCount(address)(uint256)' "$who") ratings"; fi
+  echo "  votes        $(q1 "$GOV" 'votingWeight(address)(uint256)' "$who")"
+  [ "$is_attester" = false ] || echo "  attester     trusted: may issue and revoke credentials"
+  for kind in CNH KYC; do
+    qa c "$REG" 'credentials(address,bytes32)(bytes32,address,uint64,bool)' "$who" "$(credential_kind "$kind")"
+    if [ "${c[0]}" = "$ZERO_32" ]; then echo "  $kind          none"
+    else
+      valid=$(q1 "$REG" 'hasCredential(address,bytes32)(bool)' "$who" "$(credential_kind "$kind")")
+      echo "  $kind          $([ "$valid" = true ] && echo valid || echo 'NOT VALID')$([ "${c[3]}" = false ] || echo ', revoked'), issued by $(label "${c[1]}"), expires $(when "${c[2]}")"
+    fi
+  done
+  echo "  may call"
+  for entry in "${POLICIES[@]}"; do
+    sig=${entry#*|}
+    may=$(q1 "$GOV" 'hasPermission(address,address,bytes4)(bool)' "$who" "$(addr_of "${entry%%.*}")" "$(cast sig "$sig")")
+    printf '    %-22s %s\n' "${entry%%|*}" "$([ "$may" = true ] && echo yes || echo no)"
+  done
+}
+
+cmd_status() {
+  local REG ESC VAULT COURT MAPS FARES name a v stake d key entry sig problems=0
+  REG=$(addr_of IdentityRegistry) ESC=$(addr_of RideEscrow) VAULT=$(addr_of FeeVault)
+  COURT=$(addr_of DisputeCourt) MAPS=$(addr_of MapRegistry) FARES=$(addr_of FareGuide)
+  stake=$(q1 "$REG" 'stakeToken()(address)')
+  d=$(decimals_of "$stake")
+
+  echo "KlippelGo on chain $CHAIN ($RPC), addresses from $DEPLOYMENT"
+  # Limit L11: the deployer can do anything until the bootstrap ends.
+  if [ "$(q1 "$GOV" 'bootstrapper()(address)')" != "$ZERO_ADDRESS" ]; then
+    echo "  !! THE BOOTSTRAP IS STILL OPEN: $(q1 "$GOV" 'bootstrapper()(address)') can change anything without a vote"
+    problems=1
+  fi
+  for name in "${CONTRACTS[@]:1}"; do
+    a=$(addr_of "$name")
+    if [ "$(q1 "$a" 'governor()(address)')" != "$GOV" ]; then echo "  !! $name at $a answers to another governor"; problems=1; fi
+  done
+  [ "$problems" = 1 ] || echo "  The bootstrap is closed and every contract answers to the governor at $GOV."
+
+  echo "Governance"
+  qa v "$GOV" 'params()(uint64,uint64,uint256,uint256,uint256)'
+  echo "  voting period     $(duration "${v[0]}")"
+  echo "  timelock          $(duration "${v[1]}")"
+  echo "  quorum            ${v[2]} votes for"
+  echo "  a vote            ${v[3]} per completed ride, 1 per $(brl "${v[4]}" "$d") staked"
+  echo "  proposals         $(q1 "$GOV" 'proposalCount()(uint256)')"
+  echo "  unbonding period  $(duration "$(q1 "$REG" 'unbondingPeriod()(uint64)')")"
+
+  echo "Money"
+  echo "  tax               $(percent "$(q1 "$ESC" 'taxBps()(uint16)')") of each fare, to $(label "$(q1 "$ESC" 'taxCollector()(address)')")"
+  echo "  fee beneficiary   $(label "$(q1 "$VAULT" 'beneficiary()(address)')")"
+  for key in $(jq -r 'to_entries[] | select(.key | test("^BR")) | .key' "$DEPLOYMENT"); do
+    a=$(addr_of "$key")
+    qa v "$ESC" 'tokenConfig(address)(uint256,uint256,uint256)' "$a"
+    local td
+    td=$(decimals_of "$a")
+    if [ "${v[0]}" = 0 ]; then printf '  %-17s not on the allow-list\n' "$key"
+    else printf '  %-17s fee %s, rider bond %s, driver bond %s; %s waiting in the vault\n' "$key" "$(brl "${v[0]}" "$td")" "$(brl "${v[1]}" "$td")" "$(brl "${v[2]}" "$td")" "$(brl "$(q1 "$a" 'balanceOf(address)(uint256)' "$VAULT")" "$td")"; fi
+  done
+  echo "  native coin       $(brl "$(q1 "$FARES" 'nativeCoinCentavos()(uint256)')" 2)"
+
+  echo "Tariff"
+  qa v "$FARES" 'tariff()(uint32,uint32,uint32,uint32,uint16,uint16)'
+  echo "  $(brl "${v[0]}" 2) + $(brl "${v[1]}" 2) per km + $(brl "${v[2]}" 2) per minute, never under $(brl "${v[3]}" 2)"
+  echo "  riders may ask $(percent "${v[4]}") either side; drivers may quote $(percent "${v[5]}") under the rider's price"
+
+  echo "Rides and disputes"
+  echo "  completion timeout  $(duration "$(q1 "$ESC" 'completionTimeout()(uint64)')")"
+  echo "  dispute             commit $(duration "$(q1 "$COURT" 'commitPeriod()(uint64)')"), reveal $(duration "$(q1 "$COURT" 'revealPeriod()(uint64)')")"
+
+  echo "Maps"
+  echo "  rebuild quorum    $(q1 "$MAPS" 'rebuildQuorum()(uint32)') validators"
+  echo "  grace period      $(duration "$(q1 "$MAPS" 'gracePeriod()(uint64)')")"
+  qa v "$MAPS" 'verifierParams()(uint32,uint32,uint32,uint32,uint32,uint32,uint32,uint32)'
+  echo "  verifier          endpoint ${v[0]} m, distance ${v[1]} bps, trace margin ${v[2]} m, accuracy ${v[3]} m, detour ${v[4]} bps, speed ${v[5]} cm/s, acceleration ${v[6]} cm/s2, head interval ${v[7]} ms"
+
+  echo "Policies"
+  for entry in "${POLICIES[@]}"; do
+    sig=${entry#*|}
+    qa v "$GOV" 'policy(address,bytes4)((bool,uint8,uint16,uint32,uint256,bytes32))' "$(addr_of "${entry%%.*}")" "$(cast sig "$sig")"
+    if [ "${v[0]}" != true ]; then printf '  %-22s disabled: nobody may call it\n' "${entry%%|*}"; continue; fi
+    printf '  %-22s roles %s; score %s; age %s; stake %s; credential %s\n' "${entry%%|*}" \
+      "$(roles_text "${v[1]}")" "$(from_units "${v[2]}" 2)" "$(duration "${v[3]}")" "$(brl "${v[4]}" "$d")" "$(credential_name "${v[5]}")"
+  done
+  return "$problems"
+}
+
+cmd_register() {
+  local REG
+  REG=$(addr_of IdentityRegistry)
+  need_wallet
+  [ "$(q1 "$REG" 'registeredAt(address)(uint64)' "$SIGNER")" = 0 ] || { echo "$SIGNER is already registered as $(roles_text "$(q1 "$REG" 'rolesOf(address)(uint8)' "$SIGNER")")."; return; }
+  # Any role opens the door to proposing. With no stake the validator role lets the account do nothing else.
+  echo "Register $SIGNER (validator role, no stake), so it may write proposals."
+  confirm
+  send "$REG" 'register(uint8)' 4 >/dev/null
+  ! prepared || return 0
+  echo "Registered."
+}
+
+cmd_sweep() {
+  local VAULT token d amount
+  VAULT=$(addr_of FeeVault)
+  token=$(resolve "${1:-}")
+  d=$(decimals_of "$token")
+  amount=$(q1 "$token" 'balanceOf(address)(uint256)' "$VAULT")
+  [ "$amount" != 0 ] || { echo "The vault holds nothing in $(label "$token")."; return; }
+  need_wallet
+  echo "Send $(brl "$amount" "$d") from the vault to the beneficiary, $(q1 "$VAULT" 'beneficiary()(address)')."
+  confirm
+  send "$VAULT" 'sweep(address)' "$token" >/dev/null
+  ! prepared || return 0
+  echo "Sent."
+}
+
+# ---------------------------------------------------------------- main
+
+RPC=${KLIPPEL_GOV_RPC:-http://127.0.0.1:8545}
+DEPLOYMENT=${KLIPPEL_GOV_DEPLOYMENT:-$(dirname "$0")/../deployments/local.json}
+YES=0
+# Set but empty is a mistake in whoever set it, and must not quietly mean "sign with a key".
+[ -z "${KLIPPEL_GOV_SAFE+set}" ] || [ -n "$KLIPPEL_GOV_SAFE" ] || die "KLIPPEL_GOV_SAFE is set but empty"
+SAFE=${KLIPPEL_GOV_SAFE:-}
+# What a prepared transaction is reported on: the terminal, even where a caller discards a receipt.
+exec 3>&1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --rpc) RPC=${2:-}; shift 2 || die "--rpc needs a URL" ;;
+    --deployment) DEPLOYMENT=${2:-}; shift 2 || die "--deployment needs a file" ;;
+    --yes) YES=1; shift ;;
+    --safe)
+      # An empty value must not quietly turn into signing with a key.
+      [ -n "${2:-}" ] || die "--safe needs an address"
+      SAFE=$2
+      shift 2
+      ;;
+    *) break ;;
+  esac
+done
+COMMAND=${1:-help}
+shift || true
+# An option after the command would be ignored, and "--safe" ignored means a transaction sent with a key.
+for arg in "$@"; do
+  case "$arg" in --safe | --safe=* | --yes | --yes=* | --rpc | --rpc=* | --deployment | --deployment=*) die "${arg%%=*} goes before the command, with its value after a space: klippel-gov ${arg%%=*} ... $COMMAND ..." ;; esac
+done
+case "$COMMAND" in help | -h | --help) usage; exit 0 ;; esac
+
+command -v cast >/dev/null || die "needs Foundry's cast: https://book.getfoundry.sh/getting-started/installation"
+command -v jq >/dev/null || die "needs jq"
+[ -f "$DEPLOYMENT" ] || die "no deployment file at $DEPLOYMENT"
+CHAIN=$(cast chain-id --rpc-url "$RPC" 2>/dev/null) || die "no chain node at $RPC"
+# The addresses mean something on one chain only. On another they may be anyone's.
+[ "$(jq -r '.chainId' "$DEPLOYMENT")" = "$CHAIN" ] || die "$DEPLOYMENT is for chain $(jq -r '.chainId' "$DEPLOYMENT"), and $RPC is chain $CHAIN"
+GOV=$(addr_of PBACGovernor)
+[ "$(cast code --rpc-url "$RPC" "$GOV")" != 0x ] || die "there is no contract at the governor's address $GOV on chain $CHAIN"
+if [ -n "$SAFE" ]; then
+  SAFE=$(address "$SAFE")
+  # An address with no contract is not a multisig. Acting "as" it would prepare transactions nobody can approve.
+  [ "$(cast code --rpc-url "$RPC" "$SAFE")" != 0x ] || die "$SAFE is not a contract on chain $CHAIN, so it is not a multisig"
+  # What the contract says of itself, as the node reports it: enough to catch a mistyped address, not proof
+  # that it is a sound multisig. It goes to the error stream, so it stays out of anything piped.
+  if THRESHOLD=$(cast call --rpc-url "$RPC" "$SAFE" 'getThreshold()(uint256)' 2>/dev/null) \
+    && OWNERS=$(cast call --json --rpc-url "$RPC" "$SAFE" 'getOwners()(address[])' 2>/dev/null); then
+    THRESHOLD=${THRESHOLD%% *}
+    OWNERS=$(jq 'if type == "object" then .data else . end | [.. | scalars] | length' <<<"$OWNERS")
+    echo "Acting as $SAFE, which reports a threshold of $THRESHOLD and $OWNERS owners." >&2
+    [ "$THRESHOLD" -ge 2 ] || echo "!! With a threshold under 2, one key acts alone: this is not a multisig in anything but name." >&2
+    [ "$OWNERS" -ge "$THRESHOLD" ] && [ "$OWNERS" -gt 0 ] || echo "!! It reports fewer owners than its threshold. It may not be set up, and whoever sets it up owns it." >&2
+  else
+    echo "Acting as the contract $SAFE. It does not answer as a Safe does: check that it is the multisig you mean." >&2
+  fi
+fi
+FROM_BLOCK=${KLIPPEL_GOV_FROM_BLOCK:-$(jq -r '.deployBlock // 0' "$DEPLOYMENT")}
+
+case "$COMMAND" in
+  status) cmd_status ;;
+  account) cmd_account "$@" ;;
+  proposals) cmd_proposals "$@" ;;
+  proposal) show_proposal "${1:-}" ;;
+  cnh) cmd_credential CNH "$@" ;;
+  kyc) cmd_credential KYC "$@" ;;
+  propose) cmd_propose "$@" ;;
+  vote) cmd_vote "$@" ;;
+  queue) cmd_queue "$@" ;;
+  execute) cmd_execute "$@" ;;
+  register) cmd_register ;;
+  sweep) cmd_sweep "$@" ;;
+  *) die "'$COMMAND' is not a command. See klippel-gov help" ;;
+esac

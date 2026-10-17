@@ -116,6 +116,7 @@
     <string name="blocked_credential">Falta uma credencial exigida pela política.</string>
     <string name="blocked_role">Esta conta não está registrada como motorista.</string>
     <string name="blocked_age">Sua conta é nova demais para aceitar corridas.</string>
+    <string name="blocked_account">Esta conta foi bloqueada pelo Instituto Klippel.</string>
     <string name="new_request">Nova solicitação</string>
     <string name="pays_at_most">Passageiro propõe</string>
     <string name="lower_offer">Diminuir oferta</string>

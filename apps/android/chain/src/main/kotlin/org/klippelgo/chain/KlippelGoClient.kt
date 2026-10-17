@@ -179,6 +179,10 @@ class KlippelGoClient(
 
     fun canAcceptRides(driver: String = address): Boolean = hasPermission(driver, deployment.escrow, selector("accept(uint256)"))
 
+    /** Whether the policy lets `rider` lock a ride: the rider role, and not blocked by Instituto Klippel. */
+    fun canOpenRides(rider: String = address): Boolean =
+        hasPermission(rider, deployment.escrow, selector("open(address,address,uint256,bytes32)"))
+
     /** Every address that registered with the driver role, with its reputation. */
     fun drivers(): List<DriverInfo> {
         val registered = logs(deployment.registry, REGISTERED_TOPIC)
@@ -209,6 +213,12 @@ class KlippelGoClient(
             ),
         )
         if (!(p[0] as Bool).value) return listOf(Blocker.Disabled)
+        // A blocked account passes no policy whatever else it has, so nothing else is worth listing.
+        // A registry deployed before the block existed has no such function: there, nobody is blocked.
+        val blocked = runCatching {
+            (call(deployment.registry, fn("blocked", listOf(Address(driver)), listOf(boolRef)))[0] as Bool).value
+        }.getOrDefault(false)
+        if (blocked) return listOf(Blocker.Blocked)
         val roles = uint(p[1]).toInt()
         val minScore = uint(p[2]).toInt()
         val minAge = uint(p[3]).toLong()
@@ -245,7 +255,8 @@ class KlippelGoClient(
     fun hasRated(rideId: BigInteger): Boolean {
         val out = call(
             deployment.reputation,
-            fn("rides", listOf(Uint256(rideId)), listOf(addressRef, addressRef, boolRef, boolRef)),
+            // The ledger knows a ride by its escrow and its id there.
+            fn("rides", listOf(Address(deployment.escrow), Uint256(rideId)), listOf(addressRef, addressRef, boolRef, boolRef)),
         )
         val rider = (out[0] as Address).value.lowercase()
         return if (rider == address) (out[2] as Bool).value else (out[3] as Bool).value
@@ -410,7 +421,7 @@ class KlippelGoClient(
     fun cancel(rideId: BigInteger) = paid(rideId, send(deployment.escrow, fn("cancel", listOf(Uint256(rideId)), emptyList())))
 
     fun rate(rideId: BigInteger, stars: Int) =
-        paid(rideId, send(deployment.reputation, fn("rate", listOf(Uint256(rideId), Uint8(stars.toLong())), emptyList())))
+        paid(rideId, send(deployment.reputation, fn("rate", listOf(Address(deployment.escrow), Uint256(rideId), Uint8(stars.toLong())), emptyList())))
 
     /** Mints test reais to this account. Only the local testnet's mock coins allow it: they stand in for PIX. */
     fun mint(coin: Coin, amount: BigInteger) =

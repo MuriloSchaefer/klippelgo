@@ -36,14 +36,14 @@ own `transferFrom` costs, so read these as the protocol's share.
 
 | Step | Gas | Notes |
 | --- | --- | --- |
-| `open` | 338 000 | Writes the ride (the largest write, two slots more for the tax and its collector) and pulls fare + bond |
-| `accept` | 95 000 | Policy check reads registry and reputation; pulls the bond |
+| `open` | 341 000 | Writes the ride (the largest write, two slots more for the tax and its collector) and pulls fare + bond |
+| `accept` | 98 000 | Policy check reads registry and reputation; pulls the bond |
 | `start` | 75 000 | |
 | `complete` | 276 000 | Four transfers, the tax among them, and the reputation record |
-| **Ride, happy path** | **about 784 000** | Plus a token `approve` the first time |
+| **Ride, happy path** | **about 790 000** | Plus a token `approve` the first time |
 | `cancel` | 58 000 | |
 | `submitReceipt` + `timeout` | 73 000 + 203 000 | When the rider does not confirm |
-| Dispute: `raise`, `commit`, `reveal`, `settle` | 117 000, 82 000, 64 000, 169 000 | Per juror for commit and reveal |
+| Dispute: `raise`, `commit`, `reveal`, `settle` | 117 000, 85 000, 64 000, 169 000 | Per juror for commit and reveal |
 
 Rerun the report after changing a contract: `cd contracts && forge test --gas-report`.
 
@@ -51,8 +51,9 @@ Rerun the report after changing a contract: `cd contracts && forge test --gas-re
 
 - Rides, disputes, proposals, packs and identities are mappings keyed by id or address. No function iterates
   over them.
-- A policy check reads a fixed number of slots: one policy, one identity, at most two reputation values and
-  one credential.
+- A policy check reads a fixed number of slots: one policy, the block flag, one identity, at most two
+  reputation values and one credential. The block flag is a mapping read by address, about 3 000 gas on every
+  guarded call, however many accounts are blocked.
 - Voting weight is computed from two stored numbers, with no checkpoint history to search.
 - The only loop over caller-supplied data is `PBACGovernor.execute`, over the calls of one proposal, paid by
   whoever executes it.
@@ -64,7 +65,7 @@ So cost per ride does not grow with the number of rides, users or regions. State
 
 | Limit | Where it bites | Lever |
 | --- | --- | --- |
-| Chain throughput | Rides per second across all cities share the chain's block space. At about 784 000 gas a ride, block gas limit ÷ 784 000 is the ceiling per block | Deploy per region or on a rollup: `Domain` (chain id + escrow address) already scopes every hash, so several escrows can coexist |
+| Chain throughput | Rides per second across all cities share the chain's block space. At about 790 000 gas a ride, block gas limit ÷ 790 000 is the ceiling per block | Deploy per region or on a rollup: `Domain` (chain id + escrow address) already scopes every hash, so several escrows can coexist |
 | Gas price against a R$ 1,00 fee | If four transactions cost a meaningful share of a fare, short rides stop making sense | A low-fee chain (the target is Polygon PoS); a paymaster with smart accounts (not built); merging `accept` and `start` is possible but removes the driver's bond before pickup |
 | Reading history | Phones find their rides by filtering `RideOpened` logs by indexed rider or driver. Public RPCs cap log ranges | See [app scalability](../../apps/docs/scalability.md): keep a cursor, or use an indexer as a cache that is never trusted |
 | Disputes | Each needs humans to read evidence. Juror work grows with the dispute rate, not with rides | `klippelgo-juror` makes the check mechanical; the verifier is written to run in a zkVM so a proof can replace the vote for what is provable |

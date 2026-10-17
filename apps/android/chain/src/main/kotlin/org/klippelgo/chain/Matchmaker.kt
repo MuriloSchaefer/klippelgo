@@ -55,7 +55,8 @@ class Matchmaker(
     private val requests = LinkedHashMap<BigInteger, Seen>()
     private val quotes = HashMap<BigInteger, LinkedHashMap<String, Quote>>()
     private val closed = HashMap<BigInteger, ByteArray?>()
-    private val riders = HashMap<String, Boolean>()
+    /** Whether the policy lets each rider open a ride, and when the chain was last asked. */
+    private val riders = HashMap<String, Pair<Boolean, Long>>()
     private val packs = HashMap<String, Boolean>()
 
     /** Driver: the key in this phone's offers for each request, and the hash of every quote it sent for it. */
@@ -323,7 +324,12 @@ class Matchmaker(
         // The rider's price must be within the fare guide's range for a trip of the stated length.
         if (!client.riderMayAsk(client.coinFor(token), maxFare, route)) return
         if (KlippelGoClient.signerOf(id, m.bytes("sig", 65)) != rider) return
-        if (!riders.getOrPut(rider) { client.rolesOf(rider) and KlippelGoClient.ROLE_RIDER != 0 }) return
+        // Whoever could not lock the ride anyway (no rider role, or blocked by Instituto Klippel) is not shown.
+        // The answer is kept for a few minutes, not for good, so a block or an unblock reaches a running phone.
+        val asked = System.currentTimeMillis()
+        val mayOpen = riders[rider]?.takeIf { asked - it.second < RIDER_CHECK_MS }
+            ?: (client.canOpenRides(rider) to asked).also { riders[rider] = it }
+        if (!mayOpen.first) return
         // A route means something only on a map governance activated: anyone can check it against that pack.
         if (!packs.getOrPut(route.packId) { client.packIsActive(Numeric.hexStringToByteArray(route.packId)) }) return
         requests[key] = Seen(RideRequest(key, rider, token, maxFare, expiresAt, route), data, System.currentTimeMillis())
@@ -466,6 +472,9 @@ class Matchmaker(
         private const val ANNOUNCE_EVERY_MS = 2_500L
         private const val LIVE_FOR_MS = 10_000L
         private const val MAX_REQUESTS = 200
+
+        /** How long what the chain said of a rider is believed before it is asked again. */
+        private const val RIDER_CHECK_MS = 5 * 60_000L
         private const val MAX_OFFERS_PER_REQUEST = 50
 
         private val REQUEST_DOMAIN: ByteArray = Hash.sha3("KlippelGo request v3".toByteArray())

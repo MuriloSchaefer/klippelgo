@@ -10,11 +10,15 @@ changing code, and keep them true when the code changes.
 
 | Area | Overview and patterns | Security | Scalability |
 | --- | --- | --- | --- |
-| `contracts/` | [overview](contracts/docs/overview.md) | [security](contracts/docs/security.md) | [scalability](contracts/docs/scalability.md) |
+| `contracts/`, `gov/` | [overview](contracts/docs/overview.md) | [security](contracts/docs/security.md) | [scalability](contracts/docs/scalability.md) |
 | `core/`, `mappack/` | [overview](core/docs/overview.md) | [security](core/docs/security.md) | [scalability](core/docs/scalability.md) |
 | `apps/` | [overview](apps/docs/overview.md) | [security](apps/docs/security.md) | [scalability](apps/docs/scalability.md) |
 
+How contracts go from this repository to a network, and what happens to old versions, is
+[contracts/docs/deployment.md](contracts/docs/deployment.md).
 The design of maps, routes and trip proofs is [docs/maps-and-routing.md](docs/maps-and-routing.md).
+The design of user accounts, recovery, gas and Pix top-ups is [docs/accounts-and-pix.md](docs/accounts-and-pix.md).
+The design of team governance (members, roles, permissions, the guardian) is [docs/governance.md](docs/governance.md).
 The end-to-end tests, their UI drivers and the CLI that plays a user are in [tests/README.md](tests/README.md).
 
 ## How to work here
@@ -23,7 +27,7 @@ Skills in `.claude/skills/` link those docs into procedures. They hold no rules 
 
 | When | Skill |
 | --- | --- |
-| Changing `contracts/` | `change-contracts` |
+| Changing `contracts/` or `gov/` | `change-contracts` |
 | Changing `core/` or `mappack/` | `change-core` |
 | Changing `apps/` | `change-app` |
 | After any code change, before saying it is done | `security-check` |
@@ -31,7 +35,7 @@ Skills in `.claude/skills/` link those docs into procedures. They hold no rules 
 
 ## Security review is not optional
 
-After implementing anything under `apps/`, `contracts/`, `core/`, `mappack/` or `testnet/`, run the
+After implementing anything under `apps/`, `contracts/`, `core/`, `gov/`, `mappack/` or `testnet/`, run the
 `security-check` skill, which launches the `security-reviewer` agent. Do this without being asked, before
 reporting the work as finished, and tell the user what it found. Fix blocking findings or explain to the user
 why one stands; never drop one silently.
@@ -40,6 +44,13 @@ A Stop hook (`.claude/hooks/security-review.sh`) backs this up. It fingerprints 
 that differs from the last review the reviewer recorded, stops the session from ending once and asks for the
 review. Once a review has been recorded, committing does not clear it. Changes to Markdown alone need no
 review, which includes the skills and the reviewer's own instructions.
+
+`.claude/settings.json` is part of what the hook fingerprints, and is kept by hand: an allow rule is there
+because someone staged or committed it. Claude Code also writes the approvals given during a session into that
+file; the hook moves those to `.claude/settings.local.json`, which git ignores, so they stay one person's and
+ask for no review. To allow a command for everyone, edit the file and `git add` it: the hook
+cannot tell an approval from an edit, and moves any allow rule that is neither staged nor committed.
+`.claude/hooks/test-security-review.sh` checks this.
 
 It is a reminder, not a lock: it lets the second stop through, and nothing prevents someone from recording a
 review that did not happen. Only the reviewer runs `security-review.sh mark`. After pulling other people's

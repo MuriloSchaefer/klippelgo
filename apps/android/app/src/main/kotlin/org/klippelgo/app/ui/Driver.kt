@@ -333,6 +333,7 @@ private fun BlockedNotice(state: UiState) {
             Blocker.Role -> stringResource(R.string.blocked_role)
             Blocker.AccountAge -> stringResource(R.string.blocked_age)
             Blocker.Disabled -> stringResource(R.string.cannot_accept)
+            Blocker.Blocked -> stringResource(R.string.blocked_account)
         }
     }.ifEmpty { listOf(stringResource(R.string.cannot_accept)) }
     Column(Modifier.testTag(Tags.BLOCKED), verticalArrangement = Arrangement.spacedBy(4.dp)) {

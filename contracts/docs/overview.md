@@ -4,7 +4,7 @@ The contracts are the only shared state KlippelGo has. They hold the fare of a r
 rules everyone plays by, and record the few facts phones need to agree on. Everything else (matching, routes,
 positions, personal data) happens between phones and never reaches the chain.
 
-Related: [security.md](security.md), [scalability.md](scalability.md), the
+Related: [security.md](security.md), [scalability.md](scalability.md), [deployment.md](deployment.md), the
 [core's overview](../../core/docs/overview.md) for the proofs these contracts anchor, and the
 [app's overview](../../apps/docs/overview.md) for who calls them.
 
@@ -14,7 +14,7 @@ Related: [security.md](security.md), [scalability.md](scalability.md), the
 | --- | --- | --- |
 | [`PBACGovernor`](../src/PBACGovernor.sol) | Policies (who may call what) and governance (propose, vote, timelock, execute) | No |
 | [`Governed`](../src/Governed.sol) | Base of every other contract: `permitted` and `onlyGovernor` | No |
-| [`IdentityRegistry`](../src/IdentityRegistry.sol) | Roles, stake with unbonding, credential hashes from trusted attesters | Stake |
+| [`IdentityRegistry`](../src/IdentityRegistry.sol) | Roles, stake with unbonding, credential hashes from trusted attesters, and the accounts governance blocked | Stake |
 | [`RideEscrow`](../src/RideEscrow.sol) | The ride state machine: locks the fare and both bonds, pays out, and takes the fee and the government's tax from the fare | Fares and bonds |
 | [`FeeVault`](../src/FeeVault.sol) | Collects R$ 1,00 per completed ride for Instituto Klippel | Fees |
 | [`Reputation`](../src/Reputation.sol) | Completed-ride counts and star ratings between the two parties of a ride | No |
@@ -53,7 +53,7 @@ flowchart TB
     esc -- "hasPermission?" --> gov
     court -- "hasPermission?" --> gov
     maps -- "hasPermission?" --> gov
-    gov -- roles, stake, credential --> reg
+    gov -- roles, stake, credential, block --> reg
     gov -- score, completed rides --> rep
 
     esc -- recordCompletion --> rep
@@ -68,7 +68,8 @@ Two kinds of arrows matter:
 
 - **Policy checks** (`hasPermission?`). A user-facing function marked `permitted` asks the governor whether
   `msg.sender` satisfies the policy stored for `(this contract, this selector)`. The governor answers from the
-  caller's roles, stake, account age, score and credentials.
+  caller's roles, stake, account age, score and credentials. An account governance blocked
+  (`IdentityRegistry.setBlocked`) satisfies none.
 - **Governor setters**. Every parameter has a setter guarded by `onlyGovernor`. The governor calls it only when
   executing a proposal that passed a vote and waited out the timelock.
 
@@ -135,6 +136,24 @@ sequenceDiagram
 `setPolicy`, `setParams` and `setModules` on the governor itself are `onlySelf`: a proposal that targets the
 governor is the only way to change a policy.
 
+## Instituto Klippel's part
+
+Instituto Klippel receives the fee and looks after the network, and has no key that overrides anything. What
+it does, it does in two roles the contracts already have:
+
+| It wants to | How | Takes effect |
+| --- | --- | --- |
+| Approve or revoke a driving licence (CNH), or KYC | As a trusted attester: `IdentityRegistry.attest`, `revoke` | At once |
+| Block or unblock an account | A proposal calling `IdentityRegistry.setBlocked` | After the vote and the timelock |
+| Change a fee, the tax, the tariff, a timeout, a policy, who the attesters are | A proposal calling the setter | After the vote and the timelock |
+
+In production the account that does this is a multisig, so no one person verifies a licence alone and staff
+change without a vote ([gov/README.md](../../gov/README.md), "In production: who can use it"). It needs to be
+on the attester list (`ProtocolDeployer.Config.attesters`, or a proposal calling `setAttester`)
+and registered with any role, which is all the launch policy on `propose` asks. Its proposals pass only with
+the community's votes: it holds none unless it stakes or rides like anyone else. The tool for all of this is
+[`gov/klippel-gov`](../../gov/README.md).
+
 ## What the chain knows about a ride
 
 Addresses of rider and driver, the token, the fare, the bonds and fee, timestamps, and three hashes:
@@ -156,6 +175,7 @@ These are the rules new contract code follows. The skill that applies them is
 | `src/mocks/` | Test-only tokens. Never referenced by production contracts |
 | `script/ProtocolDeployer.sol` | The one place that deploys and wires the protocol and sets launch policies |
 | `script/DeployLocal.s.sol`, `script/SeedPhones.s.sol` | Local network values and seeded accounts |
+| [`../gov/`](../../gov/README.md) | `klippel-gov`, the command-line tool that proposes, votes and attests. Not a contract: it lists every governor setter by signature, so a new one is added there too |
 | `test/Protocol.t.sol` | Behaviour of the whole protocol, deployed through `ProtocolDeployer` |
 | `test/ProofEncoding.t.sol` | Hash encodings shared with the Rust verifier, checked against the same vectors |
 
@@ -179,10 +199,12 @@ These are the rules new contract code follows. The skill that applies them is
 
 1. Write the behaviour and its test in `test/Protocol.t.sol`.
 2. Wire it in `ProtocolDeployer` and set its policies there. Add its address to the deployment file written by
-   `DeployLocal.s.sol`, and to `Deployment.kt` in the app if phones call it.
+   `DeployLocal.s.sol`, and to `Deployment.kt` in the app if phones call it. A new `onlyGovernor` function
+   goes into `KNOWN_CALLS` in `gov/klippel-gov`, or voters see it as an unknown call.
 3. Update the table and diagram on this page, the access table in [security.md](security.md), and the README's
    policy table if a policy changed.
 4. `forge fmt` (line length 110) and `make test-contracts`.
 
 **Tooling**: Foundry, Solidity 0.8.28, OpenZeppelin as a git submodule in `lib/`. CI runs `forge fmt --check`,
-`forge test`, then deploys to a local chain and plays one ride (`testnet/demo-ride.sh`).
+`forge test`, then deploys to a local chain, plays one ride (`testnet/demo-ride.sh`) and runs the governance
+tool's checks (`gov/test.sh`).

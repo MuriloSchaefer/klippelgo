@@ -162,6 +162,9 @@ sealed interface Blocker {
 
     /** The policy itself is switched off, so nobody may accept. */
     data object Disabled : Blocker
+
+    /** Instituto Klippel blocked the account in the registry, so it passes no policy at all. */
+    data object Blocked : Blocker
 }
 
 data class Coin(val symbol: String, val address: String, val decimals: Int) {

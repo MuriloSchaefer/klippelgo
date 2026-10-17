@@ -5,11 +5,10 @@ import {Script, console2} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ProtocolDeployer} from "./ProtocolDeployer.sol";
 import {LocalAccounts} from "./LocalAccounts.sol";
-import {PBACGovernor} from "../src/PBACGovernor.sol";
 import {MockBRL} from "../src/mocks/MockBRL.sol";
 
-/// @notice Deploys KlippelGo to the local anvil testnet with mock BRLA (18 decimals) and BRZ (4 decimals), seeds
-/// a rider, a driver and three validators, and writes the addresses to deployments/local.json.
+/// @notice Deploys KlippelGo to the local anvil testnet with mock BRLA (18 decimals) and BRZ (4 decimals), with
+/// Instituto Klippel (account #1) as guardian, seeds a rider, a driver and three validators, and writes the addresses to deployments/local.json.
 ///
 ///   forge script script/DeployLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
 contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
@@ -23,31 +22,26 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
         TokenInit[] memory tokens = new TokenInit[](2);
         tokens[0] = TokenInit(IERC20(address(brla)), 18);
         tokens[1] = TokenInit(IERC20(address(brz)), 4);
-        address[] memory attesters = new address[](1);
+        // Instituto Klippel checks driving licences itself, next to the mock attester the seeding uses.
+        address[] memory attesters = new address[](2);
         attesters[0] = attester;
+        attesters[1] = institutoKlippel;
 
         Protocol memory p = _deployProtocol(
             Config({
                 stakeToken: IERC20(address(brla)),
                 stakeDecimals: 18,
                 tokens: tokens,
+                guardian: institutoKlippel,
                 feeBeneficiary: institutoKlippel,
                 attesters: attesters,
                 unbondingPeriod: 1 days,
                 completionTimeout: 30 minutes,
                 commitPeriod: 10 minutes,
                 revealPeriod: 10 minutes,
-                params: PBACGovernor.Params({
-                    votingPeriod: 2 minutes,
-                    timelockDelay: 1 minutes,
-                    quorum: 3,
-                    rideWeight: 1,
-                    stakeUnit: 100e18
-                }),
                 driverMinStakeBrl: 100,
                 validatorMinStakeBrl: 500,
                 driverMinScore: 450,
-                proposerMinAccountAge: 0,
                 mapRebuildQuorum: 3,
                 mapGracePeriod: 30 days,
                 // 5% of each fare, in the place of a municipal service tax, to a test account.

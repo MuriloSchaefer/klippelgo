@@ -1,7 +1,7 @@
 # Contracts: security
 
 What the contracts protect, who may do what, the rules that must always hold, and where the protection ends
-today. The numbered invariants (`C1` to `C14`) are what the
+today. The numbered invariants (`C1` to `C15`) are what the
 [security reviewer](../../.claude/agents/security-reviewer.md) checks a change against.
 
 Related: [overview.md](overview.md), [core security](../../core/docs/security.md),
@@ -38,12 +38,17 @@ credential they sign, not validators individually.
 | `MapRegistry.attest` | Validator with stake, once per pack | `permitted` |
 | `Reputation.recordCompletion` | `RideEscrow` only | `NotEscrow` |
 | `Reputation.rate` | A party of a completed ride, once | `NotParty`, `AlreadyRated` |
-| `IdentityRegistry.attest` | A trusted attester | `UntrustedAttester` |
+| `IdentityRegistry.attest` | A trusted attester, for an account with no valid credential of that kind from another attester | `UntrustedAttester`, `NotIssuer` |
 | `IdentityRegistry.revoke` | The credential's attester, or the governor | `NotIssuer` |
 | `FeeVault.sweep` | Anyone: the destination is fixed | none needed |
-| Every `set…`, `MapRegistry.activate`/`retire`, `FeeVault.payClaim` | The governor, executing a passed proposal | `onlyGovernor` |
+| Every `set…` (among them `IdentityRegistry.setBlocked`), `MapRegistry.activate`/`retire`, `FeeVault.payClaim` | The governor, executing a passed proposal | `onlyGovernor` |
 | `PBACGovernor.setPolicy`, `setParams`, `setModules` | The governor calling itself | `onlySelf` |
 | `PBACGovernor.bootstrapCall` | The deployer, until `finishBootstrap` | `NotBootstrapper` |
+
+Instituto Klippel is not in this table as a caller of its own. It acts through two rows any account can
+stand in: as a trusted attester it issues and revokes credentials, and as a registered account it proposes.
+[`gov/klippel-gov`](../../gov/README.md) is the tool it does both with, and holds no power the table does not
+give.
 
 ## A ride, and what protects each step
 
@@ -170,6 +175,10 @@ A change that breaks one of these is a security bug, whatever the tests say.
   exactly that root, and a pack is activated once.
 - **C14. A proposal executes exactly what was voted.** `execute` checks the calls against the stored hash,
   after quorum, majority and timelock, once.
+- **C15. A block stops what an account starts, never what it is owed.** A blocked account satisfies no
+  policy, so it cannot `open`, `accept`, `commit`, `attest` a map or `propose`. No function that returns
+  funds or ends a ride is `permitted`: a blocked rider or driver still completes, cancels, files a receipt,
+  raises a dispute and withdraws stake. Only the governor sets the flag, and it can clear it.
 
 ## Known limits
 
@@ -187,15 +196,23 @@ These are real today. A change that touches one should either close it or leave 
 | L8 | An account with no ratings passes any `minScore` | New drivers must be able to start | Credential and stake gates carry the weight until the first rating |
 | L9 | A dispute can be raised once per ride, by either party, at no cost | First version | A dispute bond |
 | L10 | Fee-on-transfer, rebasing or hook tokens would break C2 | The escrow assumes plain ERC-20s | Governance must only allow-list plain tokens |
-| L11 | The deployer is all-powerful until `finishBootstrap` | Wiring needs it | `ProtocolDeployer` calls it in the same script. Verify `bootstrapper() == 0` on any deployment |
+| L11 | The deployer is all-powerful until `finishBootstrap` | Wiring needs it | `ProtocolDeployer` calls it in the same script, which is many transactions and not one. Verify `bootstrapper() == 0` and the rest of [deployment.md](deployment.md), "Verification", on any deployment |
 | L12 | Rider and driver addresses and fares are public and linkable across rides | Public chain | Fresh accounts per ride with smart accounts; not built |
 | L13 | A tax collector that cannot receive the token (a contract that reverts, or an address a real BRL token blocklists) blocks the settlement of the rides that name it | The escrow pays in the same transaction, as it does the fee vault and the parties | Governance must name a plain account. Because the collector is fixed per ride, naming another one later does not free a ride already open: its only exit is a dispute resolved wholly to the rider. A pull payment (the collector withdraws) would remove the dependency |
 | L14 | `FareGuide.nativeCoinCentavos` is a number governance types in, not a price feed | No oracle | It prices nothing on chain: a stale rate only makes the app's infrastructure-cost line wrong. An oracle if it ever gates anything |
 | L15 | `setTax` accepts any rate under 100% | Same kind of power as the fee in `setToken` | Rides under way are unaffected and the rider never pays more than the fare; a high rate makes `open` revert or drivers stop quoting. A cap in the contract, if the community wants one |
+| L16 | A block follows an address, not a person. A rider needs no credential, so a blocked rider can register another address and ride again | Riders are pseudonymous by design | For drivers the CNH credential carries the weight: the attester refuses the same licence on a new address, and revoking it acts at once. For riders, a policy on `open` that asks for a KYC credential |
+| L17 | A blocked account keeps its votes, and can still `reveal` a vote it committed in a dispute | A majority that could block could otherwise silence the minority before a vote | By design. Its votes fall as its stake leaves, like anyone's |
+| L18 | A block takes a vote and a timelock, so it is slow | C1: nobody acts alone | An attester revoking the credential it issued is immediate, and is what stops a driver in the meantime. It cannot touch a valid credential another attester issued: `attest` refuses to replace one |
+| L19 | Nothing in the contracts stops a proposal from ending governance: `setParams` with a `stakeUnit` or a `votingPeriod` of zero or a quorum nobody reaches, a disabled policy on `propose`, or `setModules` naming a registry that does not answer, could never be voted back | The setters check nothing | `klippel-gov` refuses to build a proposal with a zero `stakeUnit`, a zero `votingPeriod` or a disabled `propose` policy, and only warns on the rest; its raw `propose call`, and any other tool, can still write all of them. Voters must read the calls. Bounds in `setParams` and `setPolicy` would close it |
+| L20 | Whoever votes with `klippel-gov` believes the chain node: it serves both a proposal's calls and the hash they are checked against, so a node that lies consistently shows a voter other calls than the ones voted on | The tool has no light client | Use a node Instituto Klippel runs or trusts. `execute` is not exposed: the governor rechecks the calls itself |
+| L21 | An attester re-issues a credential governance revoked, and a block does not stop a trusted attester from attesting | Attesters are trusted for what they sign | Governance removes the attester (`setAttester`), which voids everything it issued |
+| L22 | A trusted attester is one key unless whoever holds it makes it more: the contracts cannot tell a multisig from a single account, and removing an attester voids every credential it issued | An attester is an address | An operating rule, which no code enforces: Instituto Klippel's attester should be a multisig with a threshold of at least 2, whose owners change without touching the list. `klippel-gov --safe` prepares its transactions. The local testnet lists a plain key. Governance should ask the same of any attester it adds |
 
 ## How it is tested
 
 `test/Protocol.t.sol` deploys through the real `ProtocolDeployer` and covers each exit of the state machine,
-each `Not…` guard, the dispute flow, governance changing a parameter, and map activation with and without
-quorum. `test/ProofEncoding.t.sol` pins the encodings shared with the verifier. A change to a guard or to a
+each `Not…` guard, the dispute flow, governance changing a parameter, a block and what it leaves alone, and
+map activation with and without quorum. [`gov/test.sh`](../../gov/test.sh) runs the governance tool against a
+local chain: a licence approved and revoked, a block and a setting taken through real proposals. `test/ProofEncoding.t.sol` pins the encodings shared with the verifier. A change to a guard or to a
 payout needs a test that fails without it.

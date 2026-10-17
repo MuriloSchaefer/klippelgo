@@ -58,6 +58,17 @@ class Stack(
 
     fun client(account: DevAccount) = KlippelGoClient(rpc, account.privateKey, deployment)
 
+    /** Runs a command from the repository's root against this stack's chain, and returns what it printed. */
+    fun script(vararg command: String): String {
+        val addresses = System.getenv("KLIPPELGO_DEPLOYMENT")?.takeIf { it.isNotBlank() } ?: "$root/deployments/local.json"
+        val process = ProcessBuilder(*command).directory(root).redirectErrorStream(true)
+            .apply { environment() += mapOf("RPC_URL" to rpc, "DEPLOYMENT" to addresses, "KLIPPEL_GOV_RPC" to rpc, "KLIPPEL_GOV_DEPLOYMENT" to addresses) }
+            .start()
+        val printed = process.inputStream.bufferedReader().readText()
+        check(process.waitFor() == 0) { "${command.joinToString(" ")} failed:\n$printed" }
+        return printed
+    }
+
     /**
      * Ends every ride the test accounts left under way, so a test starts with nobody mid-ride. A chain that
      * was used before, by an earlier run or by hand, is the normal case, not an error.

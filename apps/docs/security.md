@@ -58,7 +58,7 @@ tag. `Matchmaker` drops a message that fails any check, silently, before storing
 
 | Message | Signed by | Domain | Checks on receipt |
 | --- | --- | --- | --- |
-| `request` | Rider | `KlippelGo request v3` | Not expired and expiring within an hour; under the cap of 200 requests; token is a known coin; positive fare, distance and duration; both region cells valid; price inside the fare guide's range for the stated trip; signature recovers the rider; signer has the rider role on chain; the map pack is active in `MapRegistry` |
+| `request` | Rider | `KlippelGo request v3` | Not expired and expiring within an hour; under the cap of 200 requests; token is a known coin; positive fare, distance and duration; both region cells valid; price inside the fare guide's range for the stated trip; signature recovers the rider; signer passes the policy on `RideEscrow.open` on chain (the rider role, and not blocked by governance), asked again every five minutes; the map pack is active in `MapRegistry` |
 | `offer` | Driver | `KlippelGo offer v2` | For a known request; sequence number newer than the driver's last; under 50 offers per request; expires before the request does; fare within the driver's floor and ceiling; fare above the token's fee plus the tax on it; signature recovers the driver over the quote hash recomputed locally |
 | `close` | Rider | `KlippelGo close v1` | For a known request; signature recovers that request's rider |
 | `route` | Rider | `KlippelGo sealed route v2` | Addressed to this account; for a known request this phone quoted; signature recovers the request's rider over the sealed bytes and the rider's position key; opens with this phone's offer secret for one of its own quote hashes; the route starts and ends in the regions the request showed |
@@ -79,7 +79,7 @@ sequenceDiagram
 
     R->>R: route verified on the pack, price inside riderRange
     R->>D: request, signed
-    D->>C: riderMayAsk? rolesOf(rider)? packIsActive?
+    D->>C: riderMayAsk? hasPermission(rider, open)? packIsActive?
     D->>D: recover signer = rider
     Note over D: auto-skip: price per km, share below recommended,<br/>rider this driver just declined
     D->>R: offer, signed over quoteHash, with an offer key
@@ -184,7 +184,7 @@ Real today. A change touching one should close it or leave it no worse, and say 
 | P1 | **Accounts are anvil's public test keys** (`DevAccount`) | No real key protection exists yet. Never usable outside a local testnet | Hardware-backed P-256 keys (StrongBox, Secure Enclave) behind ERC-4337 smart accounts |
 | P2 | `MainActivity` is exported and reads `role`, `rpc` and `pair` extras | Another app on the device could start KlippelGo with a role, a test account and an RPC it controls, and the RPC is saved, so it outlasts that launch | Accept the extras only in debug builds |
 | P3 | The app believes its RPC provider | A lying RPC can show a fake tariff, pack root, ride state or balance. A ride once reported finished is remembered as finished until the app restarts | Light-client proofs or several independent RPCs; at minimum a user-chosen RPC |
-| P4 | In `receiveOffer`, the token's fee is read from the chain (`tokenConfig`) before the signature is checked. A request signed by any throwaway key costs one `rolesOf` read | A flood of offers for a known request, or of requests from fresh keys, makes each phone do RPC calls | Check the signature first; cache the fee like the tariff |
+| P4 | In `receiveOffer`, the token's fee is read from the chain (`tokenConfig`) before the signature is checked. A request signed by any throwaway key costs one `hasPermission` read, and one more every five minutes while that key keeps posting; the answers are kept per key and never pruned | A flood of offers for a known request, or of requests from fresh keys, makes each phone do RPC calls | Check the signature first; cache the fee like the tariff |
 | P5 | Offers are stored from any key, 50 per request, and an expired offer keeps its slot | Fifty throwaway keys can fill a request's slots so real drivers' offers are dropped until the request expires. The rider's screen hides offers from accounts that cannot accept, so no funds are at risk | Check `canAcceptRides(driver)` on receipt, cached; drop expired offers |
 | P6 | The account key signs every gossip message | Heavy use of the wallet key; no way to revoke a session | Session certificates |
 | P7 | Everyone uses one cell (`DEV_CELL`) | No geographic privacy or sharding yet | Cells from the phone's location |
@@ -212,7 +212,7 @@ through.
 
 | Test | Holds the app to | How |
 | --- | --- | --- |
-| `ForgedRequestsTest` | A1, A6, and of A7 that a request on an inactive pack is ignored; the `request` and `close` rows | Ten requests that each break one rule never reach a driver's screen: wrong signer, no rider role, price over and under the range, inactive pack, expired, expiring too far ahead, invalid pickup cell, zero distance, unknown coin. A withdrawal signed by anyone but the rider does nothing |
+| `ForgedRequestsTest` | A1, A6, and of A7 that a request on an inactive pack is ignored; the `request` and `close` rows | Ten requests that each break one rule never reach a driver's screen: wrong signer, no rider role, price over and under the range, inactive pack, expired, expiring too far ahead, invalid pickup cell, zero distance, unknown coin. A request signed by a rider governance blocked never reaches it either. A withdrawal signed by anyone but the rider does nothing |
 | `ForgedOffersTest` | A1, A3, A6; the `offer` row | Nine offers that each break one rule never reach a rider's screen: wrong signer, over the ceiling, under the floor, a valid signature moved to another fare or another expiry, expiring after the request, expired, for another request, and a well-formed one from an account the policy does not let accept |
 | `RoutePrivacyTest` | A9; "Who learns what" | Everything said in the cell during a ride is recorded: the request has the documented fields and no more, and no point of the route or of the driver appears in the clear, nor inside the sealed fields once their base64 is undone |
 | `RevealedRouteTest` | A5 | A drivable route in the right regions that is not the one locked in the escrow is never shown as checked, and the same trip revealed honestly is. It stops short of P14 |

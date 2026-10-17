@@ -49,6 +49,24 @@ abstract class Scenario {
 
     fun stranger(): Stranger = Stranger(stack).also { opened += it }
 
+    /**
+     * A rider Instituto Klippel blocked: an account made on the spot and registered, then blocked the way the
+     * guardian does it, with `gov/klippel-gov`.
+     */
+    fun blockedRider(): KlippelGoClient {
+        val key = org.web3j.utils.Numeric.toHexStringWithPrefixZeroPadded(org.web3j.crypto.Keys.createEcKeyPair().privateKey, 64)
+        val rider = KlippelGoClient(stack.rpc, key, stack.deployment)
+        stack.script("cast", "rpc", "--rpc-url", stack.rpc, "anvil_setBalance", rider.address, "0xde0b6b3a7640000")
+        stack.script(
+            "cast", "send", "--rpc-url", stack.rpc, "--private-key", key,
+            stack.deployment.registry, "register(uint8)", KlippelGoClient.ROLE_RIDER.toString(),
+        )
+        check(chain.canOpenRides(rider.address)) { "the new rider should be able to open rides before the block" }
+        stack.script("gov/klippel-gov", "block", rider.address)
+        check(!chain.canOpenRides(rider.address)) { "the rider was blocked and can still open rides" }
+        return rider
+    }
+
     /** What the government's tax collector holds of a coin. */
     fun taxCollected(coin: org.klippelgo.chain.Coin): java.math.BigInteger = chain.balanceOf(coin, stack.deployment.taxCollector)
 

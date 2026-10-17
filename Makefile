@@ -1,4 +1,4 @@
-.PHONY: test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-four-phones android-apk android-test-chain e2e e2e-integrity e2e-security e2e-performance e2e-up e2e-down e2e-three-phones android-drive
+.PHONY: test-hooks test-gov test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-four-phones android-apk android-test-chain e2e e2e-integrity e2e-security e2e-performance e2e-up e2e-down e2e-three-phones android-drive
 
 test: test-contracts test-core test-mappack
 
@@ -24,6 +24,10 @@ demo:
 testnet-reset:
 	rm -rf testnet/.state deployments/local.json
 
+## Checks gov/klippel-gov against the running local testnet (make testnet, make deploy).
+test-gov:
+	gov/test.sh
+
 ## Clear the ratings one account received, keeping everything else: make reset-ratings WHO=driver
 reset-ratings:
 	testnet/reset-ratings.sh $(or $(WHO),driver)
@@ -38,7 +42,7 @@ PACK ?= mappack/build/$(REGION)/pack
 mappack:
 	mappack/build.sh $(REGION)
 
-## Activate a pack on the local testnet through its governance: make publish-pack [PACK=<pack dir>]
+## Activate a pack on the local testnet, as its validators and Instituto Klippel do: make publish-pack [PACK=<pack dir>]
 publish-pack:
 	testnet/publish-pack.sh $(PACK)
 
