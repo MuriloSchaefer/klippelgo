@@ -1,9 +1,9 @@
 # KlippelGo
 
 A ride-hailing protocol with no central server. Riders and drivers find each other phone to phone, agree a
-fare, lock it in an on-chain escrow paid in a BRL stablecoin, and every rule is a policy the community governs on-chain.
+fare, lock it in an on-chain escrow paid in a BRL stablecoin, and every rule is a policy Instituto Klippel's team governs on-chain, in roles, with no member acting alone on what moves money.
 Personal data stays encrypted on the phone. Each completed ride pays a flat R$ 1,00 to Instituto Klippel and
-the government's tax, a share of the fare the community sets, both deducted from the fare: the rider pays the
+the government's tax, a share of the fare Instituto Klippel's team sets, both deducted from the fare: the rider pays the
 fare and nothing on top. The app also shows what a ride costs the network (gas) as its infrastructure cost.
 
 The design is in the [KlippelGo Architecture Plan](https://claude.ai/code/artifact/9a1aa829-3b30-4485-9395-42fa77304dc8).
@@ -27,9 +27,9 @@ skills and the security reviewer in `.claude/` use them.
 
 | Path | What it is |
 | --- | --- |
-| `contracts/` | Solidity contracts (Foundry): `PBACGovernor`, `IdentityRegistry`, `RideEscrow`, `FeeVault`, `Reputation`, `DisputeCourt`, `MapRegistry`, `FareGuide`, plus mock BRLA and BRZ for local use |
-| `testnet/` | Scripts to run a local chain, deploy, run a demo ride, activate a map pack and pass a proposal |
-| `gov/` | `klippel-gov`, the command-line tool Instituto Klippel governs with: it approves driving licences as an attester, and writes, votes and executes proposals. See [its README](gov/README.md) |
+| `contracts/` | Solidity contracts (Foundry): `PBACGovernor`, `TeamCouncil`, `IdentityRegistry`, `RideEscrow`, `FeeVault`, `Reputation`, `DisputeCourt`, `MapRegistry`, `FareGuide`, plus mock BRLA and BRZ for local use |
+| `testnet/` | Scripts to run a local chain, deploy, run a demo ride and activate a map pack |
+| `gov/` | `klippel-gov`, the command-line tool Instituto Klippel's team governs with: each member requests, approves and executes the council's actions, licences among them. See [its README](gov/README.md) |
 | `deployments/` | Contract addresses per network (`local.json` is written by the deploy script) |
 | `core/` | Shared Rust core for the apps: the libp2p gossip network phones match through and its bootstrap node, map packs with on-device search, routes and trip proofs, money and fee maths, geohash discovery cells, network settings |
 | `core/verify` | The deterministic verifier of route quotes and trip receipts: integers only, no I/O, the same answer on a phone, a juror's laptop and in a zkVM |
@@ -56,7 +56,7 @@ prices the distance, and the rider locks the offer it takes. That needs a map pa
 
 ```sh
 make mappack      # build the pilot city's pack (Cascavel, Paraná) with Docker: about 15 minutes the first time
-make publish-pack # activate it on the local chain: three validators attest its proof root, governance votes
+make publish-pack # activate it on the local chain: three validators attest its proof root, Operações activates it
 make serve-packs  # terminal 3: serve it to the phones on port 4002
 ```
 
@@ -75,8 +75,8 @@ All accounts come from anvil's public test mnemonic (`test test ... junk`). Neve
 
 | # | Role | Setup |
 | --- | --- | --- |
-| 0 | Deployer | Deploys, then holds no privileges once bootstrap ends |
-| 1 | Instituto Klippel | Receives the R$ 1,00 per ride from `FeeVault.sweep`. A trusted attester, and registered so it may write proposals. The account `gov/klippel-gov` signs with |
+| 0 | Deployer | Deploys, then holds no privileges once the team council takes the guardian's seat |
+| 1 | Instituto Klippel | Receives the R$ 1,00 per ride from `FeeVault.sweep`. The team council's only member, in every role. The account `gov/klippel-gov` signs with |
 | 2 | Attester | Trusted mock KYC/CNH attester |
 | 3 | First phone, starts as rider | R$ 1.000 in each mock coin, both roles, R$ 100 stake, CNH credential hash |
 | 4 | Second phone, starts as driver | The same |
@@ -86,27 +86,30 @@ All accounts come from anvil's public test mnemonic (`test test ... junk`). Neve
 
 ### Local governance settings
 
-Voting lasts 2 minutes, the timelock is 1 minute and quorum is 3 votes. A vote counts 1 per completed ride plus
-1 per R$ 100 staked. Use `cast rpc evm_increaseTime <seconds>` to skip ahead.
+The guardian is the team council, as on a real network, but with one member (account #1) in every role, one
+approval and no delay: every request runs at once. The launch numbers (three of five directors and 72 hours,
+two members and a day, one member at once to protect people) are in [docs/governance.md](docs/governance.md),
+and `contracts/test/TeamCouncil.t.sol` runs the council with them.
 
 ### Governing
 
-[`gov/klippel-gov`](gov/README.md) is what Instituto Klippel uses. It has no key that overrides anything: it
-approves and revokes driving licences as a trusted attester, which acts at once, and everything else is a
-proposal the community votes on.
+[`gov/klippel-gov`](gov/README.md) is what Instituto Klippel's team uses. Each member signs with their own key;
+the council decides whether an action needs others' approvals and how long it waits.
 
 ```sh
 gov/klippel-gov status                               # every setting of every contract
 gov/klippel-gov account 0x15d3…6A65                  # what an account is and may do
 gov/klippel-gov cnh approve 0x15d3…6A65 cnh.pdf      # at once: only a salted hash of the file goes on chain
 gov/klippel-gov cnh revoke 0x15d3…6A65               # at once: the driver accepts no more rides
-gov/klippel-gov propose block 0x15d3…6A65            # a proposal: prints its number
-gov/klippel-gov propose tax 4                        # another
-make pass-proposal ID=3                              # local testnet only: the validators vote, the clock skips
+gov/klippel-gov block 0x15d3…6A65                    # Segurança, at once
+gov/klippel-gov request tax 4                        # Finanças: two approvals and a day on a real network
+gov/klippel-gov approve 7                            # another member of the role
+gov/klippel-gov stop-rides                           # Segurança's playbook: nobody opens or accepts a ride
+gov/klippel-gov team                                 # who is in which role, and what each role may do
 ```
 
-In production the account behind it is a multisig: `--safe <address>` makes the tool write each transaction
-out for the owners to approve instead of sending it ([gov/README.md](gov/README.md)).
+A member that is a multisig (Recuperação, say) uses `--safe <address>`: the tool writes each transaction out
+for the owners to approve instead of sending it ([gov/README.md](gov/README.md)).
 
 ## Policies at launch
 
@@ -116,22 +119,22 @@ out for the owners to approve instead of sending it ([gov/README.md](gov/README.
 | `RideEscrow.accept` | Driver role, R$ 100 stake, score at least 4.50 once rated, valid CNH credential |
 | `DisputeCourt.commit` | Validator role, R$ 500 stake |
 | `MapRegistry.attest` | Validator role, R$ 500 stake |
-| `PBACGovernor.propose` | Any registered role |
 
-Every policy, the BRL allow-list, fees, timeouts, trusted attesters, the blocked accounts, the active map packs
-and the tolerances of the proof verifier change only through a governance proposal. A blocked account passes
+Every policy, the BRL allow-list, fees, caps, timeouts, trusted attesters, the blocked accounts, the active
+map packs and the tolerances of the proof verifier change only through the team council, each under the role
+[docs/governance.md](docs/governance.md) gives it. A blocked account passes
 none of the policies above; what it is owed (a ride under way, its stake) it can still take. A map pack can be activated only once three
 validators have rebuilt its proof index and attested the same root.
 
 ## Prices
 
-Fares are a market inside a band the community sets in `FareGuide`. The app recommends a price for the trip
+Fares are a market inside a band Finanças sets in `FareGuide`. The app recommends a price for the trip
 from its distance and duration, starting at R$ 3,00 plus R$ 2,00 per km and R$ 0,25 per minute, never under
 R$ 8,00. The rider may ask up to 10% above or below that. A driver may quote from 20% under the rider's price
 up to 10% above the recommended one, so a driver can ask for more than the rider offered and the rider decides.
 The escrow never learns how long a trip is, so the phones keep the band: a driver's phone ignores a request
 priced outside it, and a rider's phone ignores a quote outside the driver's limits. The tariff and both limits
-change only through a governance proposal.
+change only through the council.
 
 What comes out of a fare, and what does not:
 

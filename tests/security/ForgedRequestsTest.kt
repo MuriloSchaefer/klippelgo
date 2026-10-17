@@ -89,10 +89,13 @@ class ForgedRequestsTest : Scenario() {
         // Signed by the blocked rider's own key, and right in everything else.
         val refused = stranger.request(blocked, blocked.brz, fair, route).second
         stranger.say(refused, seconds = 8)
-        assertTrue(app.goOnline.visible() && !app.request.visible(), "the driver was shown the request of a blocked rider")
+        // Asked of the blocked rider's own request: another rider's, still going round the network from an
+        // earlier test, may be on the screen and says nothing about this check.
+        assertTrue(!app.request.listedFrom(Peer.short(blocked.address)), "the driver was shown the request of a blocked rider")
 
         // The same trip from a rider in good standing, said alongside the blocked one. It is shown, so the app
-        // is listening while the blocked rider's request keeps arriving, and it is the only one listed.
+        // is listening while the blocked rider's request keeps arriving, and the blocked one is still not listed.
+        // (Other riders' requests from earlier tests may be listed too: only the blocked rider's is asked about.)
         val victim = stack.client(DevAccount.RIDER_2)
         val (wellFormed, message) = stranger.request(victim, victim.brz, fair, route)
         val saying = Thread {
@@ -106,7 +109,7 @@ class ForgedRequestsTest : Scenario() {
         }.apply { isDaemon = true; start() }
         app.request.awaitFrom(Peer.short(wellFormed.rider))
         Thread.sleep(4_000)
-        assertEquals(1, app.request.count(), "the blocked rider's request was listed next to the honest one")
+        assertTrue(!app.request.listedFrom(Peer.short(blocked.address)), "the blocked rider's request was listed next to the honest one")
         saying.interrupt()
     }
 

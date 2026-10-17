@@ -214,6 +214,13 @@ object Tags {
     /** Why the policy will not let this driver accept rides. */
     const val BLOCKED = "blocked"
 
+    /**
+     * One reason in that notice, by its kind: `score`, `stake`, `cnh`, `credential`, `role`, `age`, `disabled`
+     * (nobody may accept: the policy is switched off, as by the `stop-rides` playbook) or `account` (this
+     * account is blocked).
+     */
+    fun blocker(kind: String) = "blocked.$kind"
+
     const val AUTO_SKIP = "auto-skip"
     const val AUTO_SKIP_PER_KM = "auto-skip.per-km"
     const val AUTO_SKIP_PER_KM_LOWER = "auto-skip.per-km.lower"

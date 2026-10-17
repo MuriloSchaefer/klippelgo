@@ -10,7 +10,7 @@ to the reviewer. It adds no rule of its own.
 
 | Area changed | Document | Invariants | Known limits |
 | --- | --- | --- | --- |
-| `contracts/`, `gov/` | `contracts/docs/security.md` | C1 to C15 | L1 to L22 |
+| `contracts/`, `gov/` | `contracts/docs/security.md` | C1 to C19 | L1 to L27 |
 | `core/`, `mappack/` | `core/docs/security.md` | R1 to R12 | K1 to K10 |
 | `apps/` | `apps/docs/security.md` | A1 to A14 | P1 to P17 |
 

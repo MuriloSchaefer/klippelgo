@@ -53,6 +53,7 @@ flowchart LR
 | UI drivers | [`harness/drivers/`](harness/drivers) | One class per UI component: what a person can read on it and do with it |
 | Peers | [`harness/Peer.kt`](harness/Peer.kt) | Another rider or driver: its own key, gossip node and view of the chain |
 | Stranger | [`harness/Stranger.kt`](harness/Stranger.kt) | A gossip node that follows no rules: it records the cell and sends forged messages |
+| Governance | [`harness/Governance.kt`](harness/Governance.kt) | Instituto Klippel's team council through `gov/klippel-gov`: requests, a second member, approvals. Everything a test changes is put back when it ends, pass or fail |
 | CLI | [`klippelgo`](klippelgo) | Every driver and every peer as commands, for a person or an agent |
 
 ## The chain: started here, or one that exists
@@ -67,7 +68,7 @@ KLIPPELGO_RPC=http://10.0.0.7:8545 tests/stack.sh up    # a chain that already e
 ```
 
 It must be a local testnet (anvil, chain id 31337). The tests sign with anvil's public keys, mint mock reais
-and move the chain's clock to pass a governance vote. The script, the tests and the CLI all refuse any other chain. The app looks
+and change the rules through the team council, whose only member there is account #1. The script, the tests and the CLI all refuse any other chain. The app looks
 for the gossip node and the pack mirror on the chain node's host, so with a remote chain they must be there.
 
 | Variable | Default | |
@@ -87,8 +88,8 @@ of one person using the app.
 
 | Folder | Question | Budget |
 | --- | --- | --- |
-| [`integrity/`](integrity) | Does it do what it says? A ride from search to payment on each side, cancelling, declining, onboarding, what the app keeps when closed, and that every amount on screen is the amount on chain | Pass or fail |
-| [`security/`](security) | Does it hold when someone cheats? Each test names the invariant of [apps/docs/security.md](../apps/docs/security.md) it holds the app to, and shows an honest message getting through, so it cannot pass with the app deaf | Pass or fail |
+| [`integrity/`](integrity) | Does it do what it says? A ride from search to payment on each side, cancelling, declining, onboarding, what the app keeps when closed, that every amount on screen is the amount on chain, and that a rule the team council changes reaches the running app | Pass or fail |
+| [`security/`](security) | Does it hold when someone cheats? Each test names the invariant of [apps/docs/security.md](../apps/docs/security.md) it holds the app to, and shows an honest message getting through, so it cannot pass with the app deaf. `RuleChangesTest` does the same for a change of the rules: a ride under way, a stopped network, a change waiting for its second approval | Pass or fail |
 | [`performance/`](performance) | How long does a person wait? Start-up, the map pack, search, routing, each step of a match, and a driver's phone under 150 open requests | Each figure has a ceiling |
 
 Performance figures are printed as they are taken and kept in `tests/.run/report/performance.json`, the last

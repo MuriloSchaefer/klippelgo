@@ -49,6 +49,9 @@ abstract class Scenario {
 
     fun stranger(): Stranger = Stranger(stack).also { opened += it }
 
+    /** Instituto Klippel's team council, through `klippel-gov`. What a test changes with it is put back after. */
+    fun governance(): Governance = Governance(stack).also { opened += it }
+
     /**
      * A rider Instituto Klippel blocked: an account made on the spot and registered, then blocked the way the
      * guardian does it, with `gov/klippel-gov`.

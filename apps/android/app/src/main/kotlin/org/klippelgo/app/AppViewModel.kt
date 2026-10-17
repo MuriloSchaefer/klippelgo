@@ -828,8 +828,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val open = m?.openRequests().orEmpty()
         val request = if (role == Role.RIDER) open.firstOrNull { it.rider == c.address } else null
         val offers = request?.let { m?.offers(it) }.orEmpty()
-        // The tariff comes from the chain once; until it has, only the rules that need no tariff apply.
-        val tariff = _state.value.tariff ?: runCatching { c.tariff }.getOrNull()
+        // The tariff as the client last read it, which is at most half a minute old; until a first read
+        // succeeds, only the rules that need no tariff apply, and a failed read keeps the one already shown.
+        val tariff = runCatching { c.tariff }.getOrNull() ?: _state.value.tariff
         val asked = if (role == Role.DRIVER) open else emptyList()
         val requests = asked.filter { wanted(c, tariff, it) }
         val myOffers = requests.mapNotNull { r -> m?.offers(r, c.address)?.firstOrNull()?.let { r.id to it } }.toMap()

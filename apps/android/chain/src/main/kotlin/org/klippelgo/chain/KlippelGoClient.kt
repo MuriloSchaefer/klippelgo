@@ -317,14 +317,33 @@ class KlippelGoClient(
 
     // ---------------------------------------------------------------- price guide
 
-    /** The price guide in force. Read once per client: it changes only through a governance proposal. */
-    val tariff: Tariff by lazy {
-        val t = call(
-            deployment.fares,
-            fn("tariff", emptyList(), listOf(uint32Ref, uint32Ref, uint32Ref, uint32Ref, uint16Ref, uint16Ref)),
-        )
-        Tariff(uint(t[0]).toLong(), uint(t[1]).toLong(), uint(t[2]).toLong(), uint(t[3]).toLong(), uint(t[4]).toInt(), uint(t[5]).toInt())
-    }
+    /**
+     * The price guide in force. Finanças can change it at any time, so it is read again when the last read is
+     * older than [TARIFF_FRESH_MS]: a running phone prices on the new tariff within that, without a restart.
+     * When that read fails, the last tariff read is used and the next attempt waits as long again, so a chain
+     * node that stops answering does not hold up matching, which needs the tariff, on every call.
+     */
+    val tariff: Tariff
+        get() {
+            // A monotonic clock: a phone's wall clock can step backwards and keep a stale tariff fresh.
+            val now = System.nanoTime()
+            val last = tariffRead
+            if (last != null && now - last.second <= TARIFF_FRESH_MS * 1_000_000) return last.first
+            val read = try {
+                val t = call(
+                    deployment.fares,
+                    fn("tariff", emptyList(), listOf(uint32Ref, uint32Ref, uint32Ref, uint32Ref, uint16Ref, uint16Ref)),
+                )
+                Tariff(uint(t[0]).toLong(), uint(t[1]).toLong(), uint(t[2]).toLong(), uint(t[3]).toLong(), uint(t[4]).toInt(), uint(t[5]).toInt())
+            } catch (e: Exception) {
+                if (last == null) throw e
+                last.first
+            }
+            tariffRead = read to now
+            return read
+        }
+
+    @Volatile private var tariffRead: Pair<Tariff, Long>? = null
 
     /** Whether `price` is one a rider may ask for a trip of this length. */
     fun riderMayAsk(coin: Coin, price: BigInteger, route: RouteSummary): Boolean {
@@ -337,8 +356,10 @@ class KlippelGoClient(
      * higher than the top of the fare guide's range for the trip, even if that is more than the rider asked.
      */
     fun driverMayQuote(request: RideRequest, fare: BigInteger): Boolean {
-        val ceiling = coinFor(request.token).fromCentavos(tariff.driverCeiling(request.route.distanceM, request.route.durationS))
-        return fare >= tariff.driverFloor(request.maxFare) && fare <= ceiling
+        // One tariff for both ends of the band, even if it is read again in between.
+        val t = tariff
+        val ceiling = coinFor(request.token).fromCentavos(t.driverCeiling(request.route.distanceM, request.route.durationS))
+        return fare >= t.driverFloor(request.maxFare) && fare <= ceiling
     }
 
     // ---------------------------------------------------------------- map packs
@@ -490,11 +511,14 @@ class KlippelGoClient(
          * the rider's `open` and `complete`, the driver's `accept` and `start`. Used to say ahead of the ride
          * what it will cost the network; what was actually paid is read from the receipts ([gasSpent]).
          */
-        val RIDER_RIDE_GAS: BigInteger = BigInteger.valueOf(614_000)
-        val DRIVER_RIDE_GAS: BigInteger = BigInteger.valueOf(170_000)
+        val RIDER_RIDE_GAS: BigInteger = BigInteger.valueOf(673_000)
+        val DRIVER_RIDE_GAS: BigInteger = BigInteger.valueOf(186_000)
 
         /** How long a tax rate read from the escrow is used before it is read again. */
         private const val TAX_FRESH_MS = 10_000L
+
+        /** How long the tariff read from `FareGuide` is used before it is read again. */
+        private const val TARIFF_FRESH_MS = 30_000L
 
         const val ROLE_RIDER = 1
         const val ROLE_DRIVER = 2

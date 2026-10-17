@@ -256,18 +256,18 @@ what each can hurt small, see it happen, and be able to leave.
 
 | What they can do | What it does to KlippelGo today | Guard | State |
 | --- | --- | --- | --- |
-| Freeze a rider's or driver's address | The escrow pays everyone in the same transaction (`_settle`, `resolve`), so a frozen party makes the whole settlement revert: the other side's money is stuck in that ride too | Pull payments: settlement records what each is owed and each withdraws it, so a frozen party holds up only their own share. The same change closes L13 | Contract change, not built |
-| Freeze `RideEscrow` or `FeeVault` | Every ride in that coin cannot settle, or no fee can leave | A cap on how much of one coin the escrow may hold at once (`setToken` gains a limit), so the loss has a ceiling. `FeeVault` swept often | Contract change, not built |
+| Freeze a rider's or driver's address | The escrow pays everyone in the same transaction (`_settle`, `resolve`), so a frozen party makes the whole settlement revert: the other side's money is stuck in that ride too | A payment that fails at settlement is kept as owed to its payee, who withdraws it once it can receive again; everyone else is paid as usual (`RideEscrow._pay`, `withdraw`; invariant C16). This closed L13 | Built |
+| Freeze `RideEscrow` or `FeeVault` | Every ride in that coin cannot settle, or no fee can leave | A cap on how much of one coin the escrow may hold at once (`RideEscrow.setCap`, by Finanças; C18), so the loss has a ceiling. `FeeVault` swept often | Cap built; the sweeper not |
 | Pause the token | Nothing in that coin moves; rides wait. No one is punished, since a timeout reverts as well | Several coins on the allow-list; Finanças stops new rides in it by setting its fee to zero (`open` then refuses it) | Possible today |
-| Upgrade the token contract (issuers' tokens are usually proxies they control; check each on the explorer) into one that charges on transfer, or behaves otherwise | Breaks L10: the escrow would owe more than it holds | `open` and `accept` check the escrow's balance went up by exactly what was sent, and revert if not. A watcher on the token's implementation and admin slots alerts Finanças, who drop it from the allow-list | Check: contract change. Watcher: to build, beside `klippel-gov` |
+| Upgrade the token contract (issuers' tokens are usually proxies they control; check each on the explorer) into one that charges on transfer, or behaves otherwise | Breaks L10: the escrow would owe more than it holds | `open` and `accept` check the escrow's balance went up by exactly what was sent, and revert if not (C17). A watcher on the token's implementation and admin slots alerts Finanças, who drop it from the allow-list | Check built. Watcher: to build, beside `klippel-gov` |
 | Fail to hold the reserves | The coin drops below R$ 1 | Allow-list only coins with published reserve attestations, prefer a bank issuer (BBRL) as a second; a watcher on the coin's DEX price; Carteira says which issuer's coin the user holds | Policy and watcher, to build |
 | Take a Pix and not deliver, or deliver late | A user paid and sees nothing | The app counts only what arrives on chain and shows the ramp's order id and how to claim; the relay works with two ramps and stops sending orders to one that fails; a top-up cap for new accounts while this is young | To build with the relay |
 | Stop serving KlippelGo, or change terms | No new top-ups through that ramp | Coins sit at the users' own addresses and keep working. The relay keeps a second ramp. A user can swap BRLA for BRZ on a DEX and cash out at the other issuer, or use any exchange (way A) | To build with the relay |
 | Misuse the CPF and address pair | A privacy breach | A data processing agreement under LGPD; the relay keeps no KYC data, so the ramp is the only one holding it | Contract with the ramp |
 | Freeze the Instituto's balance at the ramp | Fees not yet paid out are held | The sweeper sends to the bank promptly and caps what waits there | With the sweeper |
 
-The two contract changes (pull payments, the balance check) are worth making before mainnet whatever ramp is
-chosen; they go through `change-contracts` and the security review like any other.
+The contract guards (payments kept as owed, the balance check, the cap) are built and tested in
+`contracts/test/Protocol.t.sol` with a coin that freezes addresses and charges on transfer.
 
 ## What changes in this repository
 
@@ -275,7 +275,7 @@ chosen; they go through `change-contracts` and the security review like any othe
 | --- | --- |
 | `apps/android/chain` | `KlippelGoClient` signs UserOperations through a signer interface instead of holding a private key; `DevAccount` stays only for the local testnet |
 | `apps/android/app` | Key creation in Keystore with StrongBox, the setup screen with the passkey offer, Carteira showing the address, the Pix QR and the cash-out screen |
-| `contracts/` | Accounts need no change: a smart account is an address like any other. `DeployLocal` deploys the EntryPoint, the account factory and a test paymaster so the local testnet matches Polygon. Against the issuers: pull payments, the balance check on deposits, a per-coin cap on what the escrow holds |
+| `contracts/` | Accounts need no change: a smart account is an address like any other. `DeployLocal` deploys the EntryPoint, the account factory and a test paymaster so the local testnet matches Polygon. The guards against the issuers are built |
 | New: `ramp/` | The ramp relay, small and stateless apart from subaccount ids, and the sweeper job, with their own docs |
 | `gov/` | Watchers for the coins' proxies and prices, and setting up the Safe module the sweeper uses |
 | Docs | P1 and P6 in apps security close or change; the README's gas line; this page's status |

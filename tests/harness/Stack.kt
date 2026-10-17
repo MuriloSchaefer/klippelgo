@@ -28,6 +28,10 @@ class Stack(
     val valhalla: String,
     val serial: String,
 ) {
+    /** The deployment file the app was built with and `klippel-gov` reads. */
+    val deploymentFile: File =
+        File(System.getenv("KLIPPELGO_DEPLOYMENT")?.takeIf { it.isNotBlank() } ?: "$root/deployments/local.json")
+
     /** The gossip bootstrap node runs next to the chain node, as the app assumes. */
     val gossip: String = "/ip4/${hostAddress(rpc)}/tcp/4001"
 
@@ -59,10 +63,13 @@ class Stack(
     fun client(account: DevAccount) = KlippelGoClient(rpc, account.privateKey, deployment)
 
     /** Runs a command from the repository's root against this stack's chain, and returns what it printed. */
-    fun script(vararg command: String): String {
-        val addresses = System.getenv("KLIPPELGO_DEPLOYMENT")?.takeIf { it.isNotBlank() } ?: "$root/deployments/local.json"
+    fun script(vararg command: String): String = script(emptyMap(), *command)
+
+    /** The same, with more environment: `KLIPPEL_GOV_WALLET`, to sign as another member of the team. */
+    fun script(env: Map<String, String>, vararg command: String): String {
+        val addresses = deploymentFile.path
         val process = ProcessBuilder(*command).directory(root).redirectErrorStream(true)
-            .apply { environment() += mapOf("RPC_URL" to rpc, "DEPLOYMENT" to addresses, "KLIPPEL_GOV_RPC" to rpc, "KLIPPEL_GOV_DEPLOYMENT" to addresses) }
+            .apply { environment() += mapOf("RPC_URL" to rpc, "DEPLOYMENT" to addresses, "KLIPPEL_GOV_RPC" to rpc, "KLIPPEL_GOV_DEPLOYMENT" to addresses) + env }
             .start()
         val printed = process.inputStream.bufferedReader().readText()
         check(process.waitFor() == 0) { "${command.joinToString(" ")} failed:\n$printed" }

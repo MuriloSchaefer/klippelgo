@@ -12,7 +12,7 @@ describe the code as it is. The skills and the security reviewer read them and n
 
 | Folder | `overview.md` | `security.md` | `scalability.md` |
 | --- | --- | --- | --- |
-| `contracts/docs/` | Contracts, state machine, governance, patterns | Access table, flows, C1–C15, L1–L22 | Gas per step, growth limits |
+| `contracts/docs/` | Contracts, state machine, governance, patterns | Access table, flows, C1–C19, L1–L27 | Gas per step, growth limits |
 | `core/docs/` | Crates, modules, hashes, patterns | Trust table, flows, R1–R12, K1–K10 | Pack and witness sizes, gossip load |
 | `apps/docs/` | Layers, state loop, ride flow, storage, patterns | Message checks, flows, A1–A14, P1–P17 | Dependencies, S1–S8 |
 

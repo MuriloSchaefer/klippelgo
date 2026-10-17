@@ -152,7 +152,8 @@ a driver and a short window could be filled to hide the real one.
 - **A5. A driver accepts only a route they checked** on their own pack, in the announced regions, matching
   the quote hash locked in the escrow.
 - **A6. Prices outside the band are ignored on both sides.** The band is read from `FareGuide`, never
-  hard-coded.
+  hard-coded, and read again when the last read is half a minute old, so a tariff Finanças changes reaches a
+  running phone without a restart. A read that fails keeps the last tariff for another half minute.
 - **A7. A pack is used only if the chain vouches for it**: manifest hash is the on-chain id, files match the
   manifest, proof root matches `MapRegistry`, and the pack is active.
 - **A8. Downloaded paths cannot escape the pack directory.**
@@ -218,6 +219,8 @@ through.
 | `RevealedRouteTest` | A5 | A drivable route in the right regions that is not the one locked in the escrow is never shown as checked, and the same trip revealed honestly is. It stops short of P14 |
 | `ThreePhonesTest` (integrity) | The honest path of A4 and A5 between real apps | Three copies of the app, a rider and two drivers: the driver not picked gets no ride and no route, and the one picked is shown the route as checked |
 | `RiderRideTest` (integrity) | A14, and the honest path of A4 | The amounts on the confirmation screen are the amounts the escrow holds after the lock |
+| `RuleChangesTest` | A14 with governance in the middle; contracts C1, C5, C14 | A ride under way keeps its tax when Finanças halves it mid-ride: on the ride-end screen, in the collector's balance and in what the driver nets, while the rules screen moves to the new rate. An offer both phones matched cannot be locked once Segurança stopped new rides: the app shows the refusal and no money moves; once the board resumes, the same offer locks. A tax change one member of two asked for changes nothing on screen or on chain until the second approves |
+| `GovernanceTest` (integrity) | A6, and the driver's notice of why they cannot accept | A tariff Finanças changes reaches the running app's rules screen and the price of its next request. `stop-rides` and `resume-rides` show and clear the "disabled" reason on a driver's screen; a block shows and clears the "account" reason, and the unblocked driver hears requests again |
 
 In each forgery test the stranger also sends a message of its own that breaks no rule, and it must be shown:
 that is what says each forgery was turned away for the one thing wrong with it.

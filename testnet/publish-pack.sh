@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Activates a map pack on the local testnet, the way it happens on a real network: the three seeded validators
-# attest the pack's proof root, and Instituto Klippel, the guardian (account #1), activates it. The contract
-# refuses the activation unless three validators attested that root.
+# attest the pack's proof root, and Operações activates it through the team council, with klippel-gov as
+# Instituto Klippel (account #1, the local council's only member). The contract refuses the activation unless
+# three validators attested that root.
 #
 #   testnet/publish-pack.sh mappack/build/<region>/pack        # or any folder with a manifest.json
 #
@@ -20,7 +21,6 @@ DEPLOYMENT="${DEPLOYMENT:-$(dirname "$0")/../deployments/local.json}"
 CHAIN_ID=$(cast chain-id --rpc-url "$RPC_URL") || { echo "No node at $RPC_URL. Run testnet/anvil.sh first." >&2; exit 1; }
 [ "$CHAIN_ID" = 31337 ] || { echo "Chain $CHAIN_ID is not the local testnet. Refusing to touch it." >&2; exit 1; }
 MAPS=$(jq -er '.MapRegistry' "$DEPLOYMENT") || { echo "$DEPLOYMENT has no MapRegistry. Deploy again: make testnet-reset, make testnet, make deploy" >&2; exit 1; }
-GOVERNOR=$(jq -er '.PBACGovernor' "$DEPLOYMENT")
 
 # The pack id is the keccak-256 of the manifest's bytes.
 PACK_ID=$(cast keccak "0x$(od -An -tx1 -v "$MANIFEST" | tr -d ' \n')")
@@ -51,8 +51,7 @@ done
 echo "  attested by 3 validators"
 
 PACK_TUPLE="(\"$REGION\",$VERSION,$(jq -er '.osm.sequence' "$MANIFEST"),$(jq -er '.osm.sha256' "$MANIFEST"),$ROOT,\"${CID:-}\",0,0)"
-ACTIVATE=$(cast calldata 'activate(bytes32,(string,uint32,uint64,bytes32,bytes32,string,uint64,uint64))' "$PACK_ID" "$PACK_TUPLE")
-GUARDIAN_KEY=$(cast wallet private-key --mnemonic "$MNEMONIC" --mnemonic-index 1)
-send "$GOVERNOR" 'execute(address[],bytes[])' "[$MAPS]" "[$ACTIVATE]" --private-key "$GUARDIAN_KEY"
+KLIPPEL_GOV_RPC="$RPC_URL" KLIPPEL_GOV_DEPLOYMENT="$DEPLOYMENT" "$(dirname "$0")/../gov/klippel-gov" --yes \
+  request call MapRegistry 'activate(bytes32,(string,uint32,uint64,bytes32,bytes32,string,uint64,uint64))' "$PACK_ID" "$PACK_TUPLE" >/dev/null
 [ "$(call "$MAPS" 'proofRootOf(bytes32)(bytes32)' "$PACK_ID")" = "$ROOT" ] || { echo "Activation did not take effect." >&2; exit 1; }
-echo "  activated by Instituto Klippel, the guardian"
+echo "  activated by Operações, through the team council"

@@ -17,9 +17,9 @@ Four facts decide everything else on this page.
 
 | Fact                                                                                                                                                                                                               | Consequence                                                                                                                            |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| There is no admin key and no proxy ([security.md](security.md), C1). Code at an address never changes                                                                                                               | A fix is never "pushed". It is either a parameter changed by proposal, a new contract wired in by proposal, or a whole new deployment  |
-| There is no pause                                                                                                                                                                                                  | A deployment cannot be stopped in a hurry. What ships must be right, and the route for the day it is not is written down before launch |
-| The deployer can do anything until`finishBootstrap` (L11), and the deploy script is many transactions, not one                                                                                                   | A deployment is not trusted because it was made. It is trusted after anyone has checked it against the published configuration         |
+| No contract has an owner or a proxy, and the one authority is the guardian, Instituto Klippel's team council ([security.md](security.md), C1). Code at an address never changes | A fix is never "pushed". It is either a parameter the council changes, a new contract the council wires in, or a whole new deployment |
+| There is no pause in the contracts | Segurança's `stop-rides` playbook stops new rides at once; rides under way go on. What ships must be right, and the route for the day it is not is written down before launch |
+| The deployer can do anything until `finishBootstrap` and the council accepting the guardian's seat (L11), and the deploy script is many transactions, not one | A deployment is not trusted because it was made. It is trusted after anyone has checked it against the published configuration |
 | Addresses are identity. Every quote and receipt hash carries the chain id and the escrow's address, the app ships with the addresses compiled in, and stake, reputation and credentials live in specific contracts | A new deployment is a new network of people, not an update. Moving to one has a cost that no script removes                            |
 
 ## Environments
@@ -30,8 +30,8 @@ Four facts decide everything else on this page.
 | BRL tokens        | Mocks that mint to anyone                 | Mocks, deployed once and reused                | The real BRLA and BRZ contracts                               |
 | Deployer key      | anvil's public mnemonic                   | A throwaway key held by CI                     | A key made for one deployment, on a hardware wallet           |
 | Who broadcasts    | Anyone:`make deploy`                    | CI, on a release candidate tag                 | A person, in a ceremony two people attend                     |
-| Governance timing | 2 min vote, 1 min timelock                | Hours, so a proposal can be rehearsed in a day | Days. See "Launch configuration"                              |
-| Instituto Klippel | Seeded account#1                          | A test multisig                                | The production multisig ([gov/README.md](../../gov/README.md)) |
+| Governance timing | One member, one approval, no delay | The launch roles and approvals, delays of hours | The launch numbers: see [docs/governance.md](../../docs/governance.md) |
+| Instituto Klippel | Seeded account #1, alone in every role of the council | Test members, each with a key of their own | The team council: each member's hardware wallet, Recuperação a cold multisig |
 | Deployment file   | `deployments/local.json`, not committed | `deployments/amoy.json`, committed           | `deployments/polygon.json`, committed                       |
 | Resets            | Whenever:`make testnet-reset`           | With each release candidate                    | Never                                                         |
 
@@ -47,7 +47,7 @@ flowchart LR
     ci --> main[main]
     main --> rc[Tag<br/>contracts-vX.Y.Z-rc.N]
     rc --> amoy[CI deploys to Amoy<br/>and verifies it]
-    amoy --> soak[Soak: app built against it,<br/>e2e suites, a real proposal]
+    amoy --> soak[Soak: app built against it,<br/>e2e suites, a real council action]
     soak --> tag[Tag<br/>contracts-vX.Y.Z]
     tag --> rel[CI: reproducible build,<br/>dry run on a fork of mainnet,<br/>release bundle]
     rel --> cer[Ceremony: a person broadcasts<br/>from a hardware wallet]
@@ -59,8 +59,8 @@ flowchart LR
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ |
 | Pull request      | `forge fmt --check`, `forge test`, local deploy, `demo-ride.sh`, `gov/test.sh`, the security review ([CLAUDE.md](../../CLAUDE.md))                          | Author, reviewer, CI     |
 | Release candidate | Deploys and verifies on Amoy with no manual step                                                                                                                   | CI                       |
-| Soak              | The app's end-to-end suites against Amoy; one proposal taken through vote, queue and execute with`klippel-gov`; a map pack activated                             | Maintainers              |
-| Audit             | For any change to a contract that holds funds (`RideEscrow`, `IdentityRegistry`, `FeeVault`) or to `PBACGovernor`: an external review of the tagged commit | External                 |
+| Soak | The app's end-to-end suites against Amoy; one action taken through request, approve and execute with `klippel-gov` by two members; a map pack activated | Maintainers |
+| Audit | For any change to a contract that holds funds (`RideEscrow`, `IdentityRegistry`, `FeeVault`), to `PBACGovernor` or to `TeamCouncil`: an external review of the tagged commit | External |
 | Release           | The build from the tag reproduces byte for byte; the dry run on a fork of mainnet ends with the expected addresses and a closed bootstrap                          | CI                       |
 | Ceremony          | Runbook below                                                                                                                                                      | Two people               |
 | Publication       | Verification passes when run by someone who was not the deployer                                                                                                   | A second person, then CI |
@@ -70,17 +70,17 @@ flowchart LR
 | Part  | Changes when                                                          | On chain                                            |
 | ----- | --------------------------------------------------------------------- | --------------------------------------------------- |
 | MAJOR | A new full deployment: new governor, new addresses                    | New network of contracts. The old one keeps running |
-| MINOR | A contract is replaced or added inside a live deployment, by proposal | One or more new addresses in the deployment file    |
+| MINOR | A contract is replaced or added inside a live deployment, by the board | One or more new addresses in the deployment file |
 | PATCH | Scripts, tests, docs, tooling                                         | Nothing                                             |
 
-A parameter changed by proposal is not a version: it is governance doing its job, and `klippel-gov status`
+A parameter changed by the council is not a version: it is governance doing its job, and `klippel-gov status`
 shows the result.
 
 ## Configuration
 
 Two kinds of value go into a deployment, and they are kept apart on purpose.
 
-**Launch parameters are public and live in git.** `ProtocolDeployer.Config` is filled from
+**Launch parameters are public and live in git.** `ProtocolDeployer.Config` and `TeamDeployer.Team` are filled from
 `deployments/config/<network>.json`, a file reviewed in a pull request like code. Nothing that decides how the
 protocol behaves comes from an environment variable: a variable leaves no record of who chose it or why.
 
@@ -89,19 +89,18 @@ protocol behaves comes from an environment variable: a variable leaves no record
 | `tokens`                                       | Addresses of the real BRLA and BRZ, taken from their issuers and checked on the explorer by two people                                          | L10: only plain ERC-20s. A wrong address here is where fares go                           |
 | `stakeToken`                                   | One of the above                                                                                                                                |                                                                                           |
 | `feeBeneficiary`                               | A multisig or cold wallet that never signs day to day                                                                                           | It receives every fee                                                                     |
-| `attesters`                                    | Instituto Klippel's multisig, threshold 2 or more                                                                                               | L22: one key here approves any licence                                                    |
-| `taxBps`, `taxCollector`                     | The collector is a plain account that can receive the token                                                                                     | L13: a collector that cannot receive blocks settlements                                   |
-| `params.votingPeriod`                          | Days                                                                                                                                            | People must have time to see a proposal                                                   |
-| `params.timelockDelay`                         | Days, and longer than`completionTimeout` plus a dispute                                                                                       | Whoever disagrees with a passed proposal must have time to finish rides and unstake first |
-| `unbondingPeriod`                              | Longer than`votingPeriod`                                                                                                                     | L6: otherwise stake votes twice                                                           |
-| `params.quorum`, `stakeUnit`, `rideWeight` | A quorum the first validators can reach, and that a single one cannot                                                                           | At launch the only votes are the first validators' stake                                  |
-| `proposerMinAccountAge`                        | Above zero                                                                                                                                      | A proposal should not come from an account made a minute ago                              |
+| `attesters` | None besides the council, which `TeamDeployer` adds. Any other: a multisig, threshold 2 or more | L22: one key here approves any licence |
+| `taxBps`, `taxCollector` | The collector is a plain account that can receive the token | A payment it cannot receive waits in the escrow as owed (C16) until it can |
+| `team` | Every member's address, read aloud by its holder; at least three directors; Recuperação a cold multisig, threshold 3 of 4 | Who governs. A swapped address here is a stranger on the board |
+| `unbondingPeriod` | Days | How long stake waits; also how long a driver who wants to leave stays bound |
 | `mapRebuildQuorum`                             | At least 3                                                                                                                                      | C13                                                                                       |
 | Everything else                                  | `completionTimeout`, `commitPeriod`, `revealPeriod`, the tariff and the verifier tolerances start from the values in `ProtocolDeployer` | Reviewed again for real traffic before launch                                             |
 
-The local testnet's numbers (a 2 minute vote, a 1 minute timelock, zero account age) are for tests. The
-production script refuses a configuration with a vote or a timelock under a day, an unbonding period not
-longer than the vote, a zero address in any role, or a chain id that does not match the file's name.
+The local testnet's numbers (one member in every role, one approval, no delay) are for tests: `TeamDeployer`
+uses them only with `local: true`. With the launch numbers the council itself refuses a board with fewer
+members than its approvals, or with a delay over who decides under a day. The production script is to refuse a
+zero address in any role, or a chain id that does not match the file's name. Caps on the coins are set by
+Finanças after launch, once real volumes are known.
 
 **Secrets and endpoints come from the environment**, and none of them can change what gets deployed.
 
@@ -127,25 +126,25 @@ wallet (`--ledger`), and no workflow holds a key that can do anything on mainnet
   "version": "1.0.0",
   "commit": "<the tagged commit>",
   "deployBlock": 0,
-  "PBACGovernor": "0x…", "IdentityRegistry": "0x…", "Reputation": "0x…", "FeeVault": "0x…",
+  "PBACGovernor": "0x…", "TeamCouncil": "0x…", "IdentityRegistry": "0x…", "Reputation": "0x…", "FeeVault": "0x…",
   "RideEscrow": "0x…", "DisputeCourt": "0x…", "MapRegistry": "0x…", "FareGuide": "0x…",
   "BRLA": "0x…", "BRZ": "0x…",
   "institutoKlippel": "0x…", "taxCollector": "0x…"
 }
 ```
 
-`deployBlock` is where `klippel-gov` starts reading proposals from. Forge's own record of the transactions
+`deployBlock` is where `klippel-gov` starts reading the council's events from. Forge's own record of the transactions
 (`contracts/broadcast/<script>/<chain id>/`) is committed with it for every chain but the local one.
 
 ## Keys
 
 | Key                        | Power                                                                          | Kept                                                                                                                                                           |
 | -------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Production deployer        | Everything, from the first transaction until`finishBootstrap`. Nothing after | A fresh account on a hardware wallet, funded with gas for one deployment, never used again. Its only value afterwards is that its nonce explains the addresses |
+| Production deployer | Everything, from the first transaction until the council accepts the guardian's seat. Nothing after | A fresh account on a hardware wallet, funded with gas for one deployment, never used again. Its only value afterwards is that its nonce explains the addresses |
 | Amoy deployer              | The same, on a testnet                                                         | GitHub environment secret. Worthless by design                                                                                                                 |
-| Instituto Klippel multisig | Attester; proposer                                                             | Its owners' hardware wallets ([gov/README.md](../../gov/README.md))                                                                                             |
+| Team members | What their roles allow, with the approvals and delays of [docs/governance.md](../../docs/governance.md) | Each member's own hardware wallet; Recuperação a cold multisig in separate safes |
 | Fee beneficiary            | The fees                                                                       | A separate multisig or cold wallet                                                                                                                             |
-| First validators           | The only votes at launch, and the map quorum                                   | Each validator's own                                                                                                                                           |
+| First validators | The map quorum, and the first jurors | Each validator's own |
 | CI                         | Reads mainnet. Writes to Amoy                                                  | GitHub environments, with required reviewers on`polygon` even though it only reads                                                                           |
 
 ## Workflows
@@ -202,11 +201,12 @@ Two people, one of whom does not hold the deployer key. Everything is read aloud
 2. **Rebuild.** Check out the tag with submodules, build, and compare the bytecode hashes with the release
    bundle. A mismatch stops the ceremony.
 3. **Check the configuration.** Read `deployments/config/polygon.json` against the explorer: both token
-   addresses, the beneficiary, the multisig (threshold and owners, in the Safe app), the tax collector.
+   addresses, the beneficiary, the tax collector, Recuperação's multisig (threshold and owners, in the Safe
+   app). Each team member reads their own address aloud from their hardware wallet.
 4. **Fund the deployer** with gas for the deployment and little more.
 5. **Dry run** on a fork, from the deployer's address. Note the addresses it predicts.
 6. **Broadcast** with `--ledger --slow`. The script deploys, wires through `bootstrapCall`, sets the launch
-   policies and calls `finishBootstrap`. If it stops part of the way, nothing is announced: the half-made
+   policies, calls `finishBootstrap`, deploys the team council and hands it the guardian's seat. If it stops part of the way, nothing is announced: the half-made
    deployment is abandoned and the ceremony starts again from step 4 with a new deployer account.
 7. **Verify**, by the person who did not broadcast, from their own machine and node. See below.
 8. **Publish.** Verify sources on the explorer, open the pull request with `deployments/polygon.json` and the
@@ -221,78 +221,74 @@ and fails on any difference:
 | Check                                                                                                                                                                                 | Against                               | Catches                                                                               |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------- |
 | Runtime bytecode at each address                                                                                                                                                      | The build from the tag                | Different code                                                                        |
-| `bootstrapper() == 0`                                                                                                                                                               |                                       | L11: a deployer that kept its power                                                   |
-| `governor()` of every contract, the governor's `registry` and `reputation`, the escrow's `reputation`, `feeVault`, `court`, the court's `escrow`, `Reputation.escrow` | The deployment file                   | A contract wired to something else                                                    |
+| `bootstrapper() == 0`, `guardian() == TeamCouncil`, `pendingGuardian() == 0` | | L11: a deployer that kept its power |
+| `governor()` of every contract and the council's `governor`, the governor's `registry` and `reputation`, the escrow's `reputation`, `feeVault`, `court`, the court's `escrow`, `Reputation.isEscrow` of the escrow | The deployment file | A contract wired to something else |
 | Every parameter, policy, token configuration, attester, the tariff and the verifier tolerances                                                                                        | `deployments/config/<network>.json` | A value changed between deploy and bootstrap's end                                    |
-| The full list of`PolicySet`, `AttesterSet`, `TokenConfigured`, `ModulesSet` and `ParamsSet` events since `deployBlock`                                                    | The same file                         | Something extra set during bootstrap: a second attester, a policy on another function |
-| No proposals, no identities, no stake, no rides                                                                                                                                       |                                       | A deployment someone used before it was announced                                     |
+| The full list of `PolicySet`, `AttesterSet`, `TokenConfigured`, `ModulesSet`, `RoleCreated`, `MemberRoleSet`, `PermissionGranted` and `PlaybookGranted` events since `deployBlock` | The same file | Something extra set during bootstrap: a second attester, a policy on another function, an extra member or permission |
+| No council actions, no identities, no stake, no rides | | A deployment someone used before it was announced |
 
-`klippel-gov status` already checks that the bootstrap is closed and that every contract answers to the
-governor, and is what an operator runs day to day; it does not compare bytecode or the rest of the wiring. After launch the nightly run compares state with the last executed proposals
-instead of the launch file: parameters are meant to move, by proposal and only by proposal.
+`klippel-gov status` already checks that the bootstrap is closed, that every contract answers to the governor,
+that the council is the guardian and that no handover is waiting, and is what an operator runs day to day; it
+does not compare bytecode or the rest of the wiring. After launch the nightly run compares state with the
+council's executed actions instead of the launch file: parameters are meant to move, by the council and only
+by the council.
 
-**Day one.** A fresh deployment has no voters and no map, so nobody can ride yet:
+**Day one.** A fresh deployment has no map, so nobody can ride yet:
 
-1. Instituto Klippel's multisig registers (`klippel-gov --safe … register`).
-2. The first validators register and stake. Their stake is the only voting weight there is.
-3. Each rebuilds the pilot city's map pack and attests its root; one proposes the activation; they vote; the
-   timelock passes; it executes ([docs/maps-and-routing.md](../../docs/maps-and-routing.md)).
-4. Drivers register, stake, and have their licences approved.
+1. Every member runs `klippel-gov team` and checks their own address and roles.
+2. The first validators register and stake.
+3. Each rebuilds the pilot city's map pack and attests its root; Operações requests the activation, a second
+   member approves, and it runs after its day ([docs/maps-and-routing.md](../../docs/maps-and-routing.md)).
+4. Drivers register, stake, and have their licences approved by Credenciamento.
 5. The app built with `deployments/polygon.json` is released.
 
-With a timelock of days, step 3 sets the earliest launch date. Plan the ceremony that far ahead.
+Step 3 takes a day at least. Plan the ceremony that far ahead.
 
 ## Shipping a change after launch
 
 ```mermaid
 flowchart TD
     q{What changes?}
-    q -- "A number, a policy, a token,<br/>an attester, a block" --> p[Proposal<br/>no deployment]
-    q -- "The code of FareGuide,<br/>FeeVault, MapRegistry,<br/>or DisputeCourt" --> m[Deploy the one contract,<br/>proposal wires it in<br/>MINOR]
-    q -- "The code of RideEscrow, Reputation,<br/>IdentityRegistry or PBACGovernor" --> v[New full deployment<br/>MAJOR]
+    q -- "A number, a policy, a token,<br/>an attester, a block" --> p[Council action<br/>no deployment]
+    q -- "The code of FareGuide, FeeVault,<br/>MapRegistry, DisputeCourt,<br/>RideEscrow or TeamCouncil" --> m[Deploy the one contract,<br/>the board wires it in<br/>MINOR]
+    q -- "The code of Reputation,<br/>IdentityRegistry or PBACGovernor" --> v[New full deployment<br/>MAJOR]
 ```
 
-**A parameter** needs no engineer: `klippel-gov propose …`, the vote, the timelock. It is the efficient path,
-and most of what will ever need changing was made a parameter for that reason.
+**A parameter** needs no engineer: `klippel-gov request …`, the role's approvals, its delay. It is the
+efficient path, and most of what will ever need changing was made a parameter for that reason.
 
 **A replaced contract** goes through the same pipeline as a release (tag, Amoy, audit if it holds funds),
 is deployed by anyone since it has no privilege of its own (its constructor takes the governor), is verified
-and source-verified, and only then is wired in by a proposal whose description names the tag and the address.
-Voters check the bytecode at that address against the tag before voting. The timelock is the community's
-window to leave if they disagree. What each replacement costs today:
+and source-verified, and only then is wired in by a board action. Each director checks the bytecode at that
+address against the tag before approving. The 72 hours are everyone else's window to see it, and the
+team's to cancel it. What each replacement costs today:
 
 | Contract             | Wired by                                                                                                                          | Safe to replace in place?    | What is lost                                                                                                                                                                    |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `FareGuide`        | Nothing on chain: the app reads its address                                                                                       | Yes, with an app release     | Nothing. Old apps keep reading the old tariff                                                                                                                                   |
 | `MapRegistry`      | `setPolicy` for `attest`; the app reads its address                                                                           | Yes, with an app release     | Activated packs must be attested and activated again                                                                                                                            |
 | `FeeVault`         | `RideEscrow.setModules`                                                                                                         | Yes                          | Nothing: sweep the old vault. Rides already open pay the new one, since the vault is read at settlement                                                                         |
-| `DisputeCourt`     | `RideEscrow.setModules`, `setPolicy` for `commit`                                                                           | Only when no dispute is open | An open dispute is stranded:`resolve` accepts only the current court, so its ride stays locked until the old court is wired back                                              |
-| `RideEscrow`       | `Reputation.setEscrow`, `setPolicy` for `open` and `accept`, a new `DisputeCourt` (its escrow is fixed at construction) | No                           | `Reputation` accepts one escrow: once it points at the new one, `complete` and `timeout` revert on the old, and the two escrows' ride ids collide in `Reputation.rides` |
-| `Reputation`       | `PBACGovernor.setModules`, `RideEscrow.setModules`                                                                            | No                           | Every score and every completed-ride count, and with them voting weight                                                                                                         |
+| `DisputeCourt` | `RideEscrow.setModules`, `setPolicy` for `commit` | Yes | Nothing: each ride keeps the court it opened with, so the old court finishes its disputes and the new one hears rides opened after it. A court with a bug cannot be swapped out of the rides that name it (L23) |
+| `RideEscrow` | `Reputation.setEscrow(new, true)`, `setPolicy` for `open` and `accept`, a new `DisputeCourt` (its escrow is fixed at construction), and new rides closed on the old one | Yes, with an app release | Nothing: `Reputation` listens to both, rides are keyed by escrow and id, and the old escrow settles what it holds. Delist it once its last ride settled |
+| `Reputation` | `PBACGovernor.setModules`, `RideEscrow.setModules` | No | Every score and every completed-ride count |
 | `IdentityRegistry` | `PBACGovernor.setModules`                                                                                                       | No                           | Roles, credentials, blocks. Stake stays withdrawable from the old registry but counts for nothing                                                                               |
-| `PBACGovernor`     | It is`immutable` in every contract                                                                                              | No                           | Everything                                                                                                                                                                      |
+| `PBACGovernor` | It is `immutable` in every contract | No | Everything |
+| `TeamCouncil` | `PBACGovernor.proposeGuardian` by the board, then `acceptGuardianSeat` on the new council; `setAttester` for the new one | Yes | Credentials the old council issued stay valid while it stays on the attester list. Pending actions on the old council die with its seat |
 
-So the bottom four are a new deployment in practice, and that is the honest state of deployability today:
-cheap for parameters and the leaf contracts, expensive for the core. Two changes, made before the first
-production deployment, would move `RideEscrow` into the cheap group, and are worth more than any tooling:
-
-- `Reputation` accepting a set of escrows, with rides keyed by escrow and id, so an old escrow drains while a
-  new one opens.
-- A way for an old escrow's disputes to keep their court when the escrow's court is replaced: the court
-  recorded per ride at `freeze`.
-
-Each is a contract change with its own review; neither is made by this page.
+So `Reputation`, `IdentityRegistry` and `PBACGovernor` are a new deployment in practice, and that is the
+honest state of deployability today: cheap for parameters, the leaf contracts, the escrow and the council,
+expensive for the ledgers and the governor.
 
 ## Old versions
 
 An old deployment cannot be switched off, and should not need to be: it holds people's money, and the rule
 is that what an account is owed it can always take (C15 says the same of a block).
 
-**Retiring a deployment** is something its own governance does, in this order:
+**Retiring a deployment** is something its own council does, in this order:
 
 1. **Announce** the successor: its tag, its addresses, the date. The app release that moves to it ships.
-2. **Close the door.** A proposal on the old governor calls `setToken` with a fee of zero for each coin: no
-   new ride can open. Rides under way are untouched, since each keeps the terms it opened with (C5).
+2. **Close the door.** Finanças, on the old council, calls `setToken` with a fee of zero for each coin: no new
+   ride can open. Rides under way are untouched, since each keeps the terms it opened with (C5).
 3. **Drain.** Rides complete, time out or are disputed. Nothing forces the last one: a Started ride with no
    receipt waits for one of its parties (L3). Stake leaves through `requestUnstake` and `withdrawStake`, which
    need no policy. `FeeVault.sweep` sends the last fees. Leave the dispute court and its jurors' policy alone
@@ -307,10 +303,9 @@ What does not move to the successor, and has to be said plainly to users before 
 |                                 | In the new deployment                                                                       |
 | ------------------------------- | ------------------------------------------------------------------------------------------- |
 | Stake                           | Withdrawn from the old registry after`unbondingPeriod`, staked again by its owner         |
-| Driving licence and KYC         | Approved again by the attester. The multisig can prepare these in bulk from its own records |
+| Driving licence and KYC | Approved again by Credenciamento. It can prepare these in bulk from its own records |
 | Rides completed, score, ratings | Start at zero                                                                               |
-| Votes                           | Follow stake and rides, so they start from the new stake alone                              |
-| Blocked accounts                | Proposed again, if still wanted                                                             |
+| Blocked accounts | Blocked again by Segurança, if still wanted |
 | Map packs                       | Attested and activated again                                                                |
 
 **The app** ships with one deployment's addresses, so an app version belongs to a deployment. During a
@@ -319,15 +314,15 @@ its user to update before starting another. Two things must be settled before th
 topic (`/klippelgo/match/1/<cell>`) does not carry the deployment, so phones on both would hear each other's
 requests; and the app needs to hold a retired deployment long enough to finish a ride and withdraw stake.
 
-**If a deployed contract turns out to be exploitable**, there is no pause to pull. In order of speed:
+**If a deployed contract turns out to be exploitable**, in order of speed:
 
-1. Instituto Klippel's attester revokes licences: immediate, and it stops drivers accepting, which stops new
-   rides in practice. It is a blunt tool and is the only fast one.
-2. An app release that refuses to open rides on that deployment. It reaches only phones that update.
-3. The proposal that closes the door (step 2 of retiring a deployment). It takes the vote and the timelock.
+1. Segurança runs `stop-rides`, one member, at once: nobody may open or accept a ride. Rides under way go on,
+   on their own terms.
+2. Credenciamento revokes licences where a driver is the problem: one member, at once.
+3. An app release that refuses to open rides on that deployment. It reaches only phones that update.
+4. The board closes the door for good (step 2 of retiring a deployment), or wires in a fix.
 
-Whether that is enough, or whether the community wants a guardian that can only stop new rides, is a decision
-about C1 and belongs to the community, before launch. This page does not make it.
+The board's `resume-rides` puts the policies back once it is safe.
 
 ## What has to be built
 
@@ -340,8 +335,8 @@ about C1 and belongs to the community, before launch. This page does not make it
 | A pinned Foundry version in every workflow                                                                                                                               | Reproducible bytecode                            |
 | The app reading a deployment per build flavour instead of`local.json` only (`apps/android/app/build.gradle.kts`)                                                     | Testnet and production builds                    |
 | The deployment in the gossip topic; the app keeping a retired deployment                                                                                                 | Retiring a version                               |
-| `Reputation` with several escrows; a court kept per dispute                                                                                                            | Replacing`RideEscrow` without a new deployment |
-| A decision on stopping new rides in an emergency                                                                                                                         | Launch                                           |
+| `TeamDeployer` reading the team from `deployments/config/<network>.json` | The production council |
+| The watcher that pages every member on each council request ([docs/governance.md](../../docs/governance.md)) | Production |
 | An external audit                                                                                                                                                        | Production                                       |
 
 A change that builds one of these updates this page in the same pull request, and moves its row out of this

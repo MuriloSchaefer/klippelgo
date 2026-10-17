@@ -3,15 +3,19 @@ pragma solidity ^0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {ProtocolDeployer} from "./ProtocolDeployer.sol";
+import {TeamDeployer} from "./TeamDeployer.sol";
 import {LocalAccounts} from "./LocalAccounts.sol";
 import {MockBRL} from "../src/mocks/MockBRL.sol";
+import {TeamCouncil} from "../src/TeamCouncil.sol";
 
-/// @notice Deploys KlippelGo to the local anvil testnet with mock BRLA (18 decimals) and BRZ (4 decimals), with
-/// Instituto Klippel (account #1) as guardian, seeds a rider, a driver and three validators, and writes the addresses to deployments/local.json.
+/// @notice Deploys KlippelGo to the local anvil testnet with mock BRLA (18 decimals) and BRZ (4 decimals), seeds a
+/// rider, a driver and three validators, and writes the addresses to deployments/local.json.
+///
+/// The guardian is the team council. Instituto Klippel (account #1) is its only member, in every role, and every
+/// action needs one approval and no delay, so a request runs at once. The real numbers are in TeamDeployer.
 ///
 ///   forge script script/DeployLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
-contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
+contract DeployLocal is Script, TeamDeployer, LocalAccounts {
     function run() external {
         _loadAccounts();
 
@@ -22,17 +26,17 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
         TokenInit[] memory tokens = new TokenInit[](2);
         tokens[0] = TokenInit(IERC20(address(brla)), 18);
         tokens[1] = TokenInit(IERC20(address(brz)), 4);
-        // Instituto Klippel checks driving licences itself, next to the mock attester the seeding uses.
-        address[] memory attesters = new address[](2);
+        // The council checks driving licences itself (TeamDeployer adds it), next to the mock attester the
+        // seeding uses.
+        address[] memory attesters = new address[](1);
         attesters[0] = attester;
-        attesters[1] = institutoKlippel;
 
         Protocol memory p = _deployProtocol(
             Config({
                 stakeToken: IERC20(address(brla)),
                 stakeDecimals: 18,
                 tokens: tokens,
-                guardian: institutoKlippel,
+                guardian: deployer, // until the council takes the seat, below
                 feeBeneficiary: institutoKlippel,
                 attesters: attesters,
                 unbondingPeriod: 1 days,
@@ -49,6 +53,21 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
                 taxCollector: taxCollector,
                 // R$ 2,50 for one native coin. A stand-in: a real network's rate is set by proposal.
                 nativeCoinCentavos: 250
+            })
+        );
+
+        address[] memory instituto = new address[](1);
+        instituto[0] = institutoKlippel;
+        TeamCouncil council = _deployTeam(
+            p,
+            Team({
+                board: instituto,
+                finance: instituto,
+                operations: instituto,
+                credentialing: instituto,
+                security: instituto,
+                recovery: institutoKlippel,
+                local: true
             })
         );
 
@@ -90,6 +109,7 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
         vm.serializeAddress(k, "BRLA", address(brla));
         vm.serializeAddress(k, "BRZ", address(brz));
         vm.serializeAddress(k, "PBACGovernor", address(p.governor));
+        vm.serializeAddress(k, "TeamCouncil", address(council));
         vm.serializeAddress(k, "IdentityRegistry", address(p.registry));
         vm.serializeAddress(k, "Reputation", address(p.reputation));
         vm.serializeAddress(k, "FeeVault", address(p.feeVault));
@@ -105,6 +125,7 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
         vm.writeJson(json, "../deployments/local.json");
 
         console2.log("PBACGovernor     ", address(p.governor));
+        console2.log("TeamCouncil      ", address(council));
         console2.log("IdentityRegistry ", address(p.registry));
         console2.log("Reputation       ", address(p.reputation));
         console2.log("FeeVault         ", address(p.feeVault));

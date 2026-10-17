@@ -596,6 +596,13 @@ contract ProtocolTest is Test, ProtocolDeployer {
         new PBACGovernor(address(0));
     }
 
+    function test_TheGovernorCannotBeItsOwnGuardian() public {
+        // It could accept through execute, and then nobody could execute again.
+        vm.prank(institute);
+        vm.expectRevert(PBACGovernor.NoGuardian.selector);
+        p.governor.proposeGuardian(address(p.governor));
+    }
+
     // ---------------------------------------------------------------- patches
 
     /// @dev What a hotfix of the escrow is: a new escrow and its court, wired in by the guardian in one go,
@@ -718,35 +725,144 @@ contract ProtocolTest is Test, ProtocolDeployer {
         p.reputation.setEscrow(address(this), true);
     }
 
-    function test_ADisputeKeepsTheCourtThatFrozeIt() public {
-        uint256 id = _openAndStart();
-        vm.prank(rider);
-        p.court.raise(id, keccak256("evidence"));
+    function test_ARideKeepsTheCourtAndTimeoutItOpenedWith() public {
+        uint256 before = _openAndStart();
 
-        // The escrow is given another court while the dispute is open.
+        // The escrow is given another court and a zero timeout while the ride is under way.
         DisputeCourt nextCourt = new DisputeCourt(p.governor, p.escrow, 10 minutes, 10 minutes);
         _govern(
             address(p.escrow),
             abi.encodeCall(p.escrow.setModules, (p.reputation, address(p.feeVault), address(nextCourt)))
         );
+        _govern(address(p.escrow), abi.encodeCall(p.escrow.setCompletionTimeout, (0)));
+
+        // The new court cannot reach it, and the driver cannot settle it before its own 30 minutes.
         vm.prank(address(nextCourt));
         vm.expectRevert(RideEscrow.NotCourt.selector);
-        p.escrow.resolve(id, 5_000);
+        p.escrow.freeze(before);
+        vm.prank(driver);
+        p.escrow.submitReceipt(before, RECEIPT);
+        vm.expectRevert(RideEscrow.TooEarly.selector);
+        p.escrow.timeout(before);
 
-        // The court that froze the ride still settles it, and new disputes go to the new one.
+        // Its own court still hears it, and settles it.
+        vm.prank(rider);
+        p.court.raise(before, keccak256("evidence"));
         uint256 riderBefore = brz.balanceOf(rider);
         skip(20 minutes);
-        p.court.settle(id);
-        assertEq(uint8(p.escrow.ride(id).status), uint8(RideEscrow.Status.Resolved));
+        p.court.settle(before);
+        assertEq(uint8(p.escrow.ride(before).status), uint8(RideEscrow.Status.Resolved));
         assertEq(brz.balanceOf(rider), riderBefore + FARE / 2 + 2_0000);
 
-        uint256 second = _openAndStart();
+        // A ride opened afterwards goes to the new court only.
+        uint256 later = _openAndStart();
+        assertEq(p.escrow.ride(later).court, address(nextCourt));
+        assertEq(p.escrow.ride(later).completionTimeout, 0);
         vm.prank(rider);
         vm.expectRevert(RideEscrow.NotCourt.selector);
-        p.court.raise(second, keccak256("evidence"));
+        p.court.raise(later, keccak256("evidence"));
         vm.prank(rider);
-        nextCourt.raise(second, keccak256("evidence"));
-        assertEq(p.escrow.courtOf(second), address(nextCourt));
+        nextCourt.raise(later, keccak256("evidence"));
+    }
+
+    // ---------------------------------------------------------------- the coins' issuers
+
+    function _issuerCoin() internal returns (IssuerBRL coin) {
+        coin = new IssuerBRL();
+        _govern(address(p.escrow), abi.encodeCall(p.escrow.setToken, (IERC20(address(coin)), 1_0000, 0, 0)));
+        for (uint256 i; i < 2; ++i) {
+            address who = i == 0 ? rider : driver;
+            coin.mint(who, 1_000e4);
+            vm.prank(who);
+            coin.approve(address(p.escrow), type(uint256).max);
+        }
+    }
+
+    function test_AFrozenDriverHoldsUpOnlyTheirOwnPay() public {
+        IssuerBRL coin = _issuerCoin();
+        vm.prank(rider);
+        uint256 id = p.escrow.open(driver, coin, FARE, keccak256("quote"));
+        vm.startPrank(driver);
+        p.escrow.accept(id);
+        p.escrow.start(id, keccak256("pickup"));
+        vm.stopPrank();
+
+        coin.freeze(driver, true);
+        vm.prank(rider);
+        p.escrow.complete(id, RECEIPT);
+
+        // The ride settles: the fee is paid, and the driver's share waits for them in the escrow.
+        assertEq(uint8(p.escrow.ride(id).status), uint8(RideEscrow.Status.Completed));
+        assertEq(coin.balanceOf(address(p.feeVault)), 1_0000);
+        assertEq(p.escrow.owed(coin, driver), 22_4000);
+        assertEq(p.escrow.held(coin), 22_4000);
+
+        vm.prank(driver);
+        vm.expectRevert();
+        p.escrow.withdraw(coin, driver);
+        coin.freeze(driver, false);
+        uint256 driverBefore = coin.balanceOf(driver);
+        vm.prank(driver);
+        p.escrow.withdraw(coin, driver);
+        assertEq(coin.balanceOf(driver), driverBefore + 22_4000);
+        assertEq(p.escrow.held(coin), 0);
+        vm.prank(driver);
+        vm.expectRevert(RideEscrow.NothingOwed.selector);
+        p.escrow.withdraw(coin, driver);
+    }
+
+    function test_FeesTheVaultCouldNotReceiveReachItOnceItCan() public {
+        IssuerBRL coin = _issuerCoin();
+        vm.prank(rider);
+        uint256 id = p.escrow.open(driver, coin, FARE, keccak256("quote"));
+        vm.startPrank(driver);
+        p.escrow.accept(id);
+        p.escrow.start(id, keccak256("pickup"));
+        vm.stopPrank();
+
+        coin.freeze(address(p.feeVault), true);
+        vm.prank(rider);
+        p.escrow.complete(id, RECEIPT);
+        assertEq(p.escrow.owed(coin, address(p.feeVault)), 1_0000);
+
+        // The vault cannot call the escrow itself: anyone sends it what it is owed, and only to it.
+        coin.freeze(address(p.feeVault), false);
+        vm.prank(makeAddr("anyone"));
+        p.escrow.withdraw(coin, address(p.feeVault));
+        assertEq(coin.balanceOf(address(p.feeVault)), 1_0000);
+        assertEq(p.escrow.owed(coin, address(p.feeVault)), 0);
+        assertEq(p.escrow.held(coin), 0);
+    }
+
+    function test_ACoinThatChargesOnTransferIsRefused() public {
+        IssuerBRL coin = _issuerCoin();
+        coin.setTransferFeeBps(100); // the issuer upgrades the coin into one that keeps 1%
+        vm.prank(rider);
+        vm.expectRevert(RideEscrow.NotPlainToken.selector);
+        p.escrow.open(driver, coin, FARE, keccak256("quote"));
+    }
+
+    function test_TheEscrowHoldsNoMoreOfACoinThanItsCap() public {
+        _govern(address(p.escrow), abi.encodeCall(p.escrow.setCap, (IERC20(address(brz)), 30_0000)));
+        vm.prank(rider);
+        uint256 id = p.escrow.open(driver, brz, FARE, keccak256("quote")); // R$ 25,40 held
+        assertEq(p.escrow.held(brz), 25_4000);
+
+        // The driver's R$ 5,00 bond would take it to R$ 30,40.
+        vm.prank(driver);
+        vm.expectRevert(RideEscrow.CapReached.selector);
+        p.escrow.accept(id);
+
+        // Once the ride is out of the escrow there is room again.
+        vm.prank(rider);
+        p.escrow.cancel(id);
+        assertEq(p.escrow.held(brz), 0);
+        _govern(address(p.escrow), abi.encodeCall(p.escrow.setCap, (IERC20(address(brz)), 30_4000)));
+        _openAndStart(); // exactly the cap
+        assertEq(p.escrow.held(brz), FARE + 2_0000 + 5_0000);
+
+        vm.expectRevert(Governed.NotGovernor.selector);
+        p.escrow.setCap(brz, 0);
     }
 
     // ---------------------------------------------------------------- disputes
@@ -936,5 +1052,32 @@ contract ProtocolTest is Test, ProtocolDeployer {
         vm.prank(address(p.governor));
         vm.expectRevert(FareGuide.InvalidTariff.selector);
         p.fares.setTariff(dearer);
+    }
+}
+
+/// @dev A BRL coin as its issuer controls it: it can freeze an address, and be upgraded into one that keeps a
+/// share of each transfer.
+contract IssuerBRL is MockBRL {
+    mapping(address => bool) public frozen;
+    uint256 public transferFeeBps;
+
+    error Frozen(address account);
+
+    constructor() MockBRL("Issuer BRL", "IBRL", 4) {}
+
+    function freeze(address account, bool frozen_) external {
+        frozen[account] = frozen_;
+    }
+
+    function setTransferFeeBps(uint256 bps) external {
+        transferFeeBps = bps;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        if (frozen[from]) revert Frozen(from);
+        if (frozen[to]) revert Frozen(to);
+        uint256 fee = from == address(0) ? 0 : value * transferFeeBps / 10_000;
+        if (fee > 0) super._update(from, address(0), fee);
+        super._update(from, to, value - fee);
     }
 }

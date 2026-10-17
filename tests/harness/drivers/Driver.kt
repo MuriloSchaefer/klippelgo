@@ -32,6 +32,19 @@ class GoOnline(phone: Phone) : Component(phone, Tags.GO_ONLINE) {
     /** Why the policy will not let this driver accept rides, or null when it does. */
     fun blocked(): String? = readOrNull(Tags.BLOCKED)
 
+    /**
+     * The kinds of reason the driver is shown for not being let to accept rides, empty when there is none:
+     * `account` (blocked), `disabled` (nobody may accept), `cnh`, `stake`, `score`, `role`, `age`, `credential`.
+     */
+    fun blockers(): Set<String> =
+        phone.screen().startingWith(Tags.blocker("")).map { it.tag.removePrefix(Tags.blocker("")) }.toSet()
+
+    /** Waits until the driver is shown exactly these reasons: none, when given none. */
+    fun awaitBlockers(vararg kinds: String, timeoutMs: Long = 60_000): Set<String> =
+        waitUntil("the driver to be shown ${kinds.toSet().ifEmpty { "no reason not to accept" }}", timeoutMs) {
+            blockers().takeIf { it == kinds.toSet() }
+        }
+
     fun riderMode() = phone.tap(Tags.GO_ONLINE_RIDER_MODE)
 }
 
@@ -103,6 +116,13 @@ class IncomingRequest(phone: Phone) : Component(phone, Tags.REQUEST) {
             receive = reais(read(Tags.REQUEST_RECEIVE)),
             costs = read(Tags.REQUEST_COSTS),
         )
+    }
+
+    /** Whether a request from this rider, given as the app shortens addresses, is open or in the list now. */
+    fun listedFrom(rider: String): Boolean {
+        val screen = phone.screen()
+        return screen[Tags.REQUEST_RIDER]?.text == rider ||
+            screen.startingWith(entry).any { it.tag.endsWith(".rider") && it.text == rider }
     }
 
     /**

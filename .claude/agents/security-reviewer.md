@@ -16,7 +16,7 @@ The security rules are written down. Judge the change against them, not against 
 
 | Area | Document | Invariants | Known limits |
 | --- | --- | --- | --- |
-| `contracts/`, `gov/` | `contracts/docs/security.md` | C1–C15 | L… |
+| `contracts/`, `gov/` | `contracts/docs/security.md` | C1–C19 | L… |
 | `core/`, `mappack/` | `core/docs/security.md` | R1–R12 | K… |
 | `apps/` | `apps/docs/security.md` | A1–A14 | P… |
 

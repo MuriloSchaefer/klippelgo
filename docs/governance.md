@@ -1,15 +1,11 @@
 # Governance by Instituto Klippel's team
 
-Status: design, nothing built. It builds on the `PBACGovernor` in the working tree, which already gives one
-account, the **guardian**, the whole of governance: whatever a contract guards with `onlyGovernor`, the guardian
-does through `PBACGovernor.execute`, at once, and only the guardian can name its successor
-(`proposeGuardian`, then `acceptGuardian`). This page says what sits in the guardian's seat: not one key, but
-Instituto Klippel's team, each member in roles that allow some actions and not others.
-
-[contracts/docs](../contracts/docs/overview.md), [gov/README.md](../gov/README.md) and `klippel-gov` still
-describe community voting (proposals, votes weighted by rides and stake, quorum, timelock). They follow this
-page once the guardian governor lands. Decisions marked **Default** stand until the Instituto decides otherwise
-(see [Open decisions](#open-decisions)).
+Status: built, except the watcher and the production configuration ([What is built](#what-is-built)). The
+governor's guardian is [`TeamCouncil`](../contracts/src/TeamCouncil.sol): whatever a contract guards with
+`onlyGovernor`, the guardian does through `PBACGovernor.execute`, and only the guardian can name its successor
+(`proposeGuardian`, then `acceptGuardian`). This page says who in Instituto Klippel's team may do what through
+it. Decisions marked **Default** stand until the Instituto decides otherwise (see
+[Open decisions](#open-decisions)).
 
 ## The idea in one paragraph
 
@@ -44,10 +40,12 @@ Every action on the protocol is assigned to exactly one role. Nothing else can b
 
 | Role | Actions | Approvals | Delay |
 | --- | --- | --- | --- |
-| Diretoria | `TeamCouncil`: add, suspend, remove a member; grant or revoke a permission; change a role's approvals or delay | 3 of the role | 72 h |
+| Diretoria | `TeamCouncil`: put a member in a role or take them out (`setMemberRole`); create a role; grant or revoke a permission; store a playbook; change a permission's approvals or delay | 3 of the role | 72 h |
+| Diretoria | `TeamCouncil.setSuspended(member, true)`: suspend a member | 2 | none |
+| Diretoria | `TeamCouncil.setSuspended(member, false)`: lift a suspension | 3 | 72 h |
 | Diretoria | `PBACGovernor.proposeGuardian`, `PBACGovernor.setModules`, `RideEscrow.setModules`, `Reputation.setEscrow`, `IdentityRegistry.setAttester` | 3 | 72 h |
 | Diretoria | `FeeVault.setBeneficiary` | 3 | 72 h |
-| Finanças | `RideEscrow.setToken` (the allow-list, the R$ 1,00 fee, bonds), `RideEscrow.setTax`, `FareGuide.setTariff`, `FareGuide.setNativeCoinPrice` | 2 | 24 h |
+| Finanças | `RideEscrow.setToken` (the allow-list, the R$ 1,00 fee, bonds), `RideEscrow.setTax`, `RideEscrow.setCap`, `FareGuide.setTariff`, `FareGuide.setNativeCoinPrice` | 2 | 24 h |
 | Finanças | `FeeVault.payClaim` | 2 | 24 h |
 | Operações | `PBACGovernor.setPolicy`, `RideEscrow.setCompletionTimeout`, `IdentityRegistry.setUnbondingPeriod`, `DisputeCourt.setPeriods` | 2 | 24 h |
 | Operações | `MapRegistry.activate`, `retire`, `setRebuildQuorum`, `setGracePeriod`, `setVerifierParams` | 2 | 24 h |
@@ -57,7 +55,14 @@ Every action on the protocol is assigned to exactly one role. Nothing else can b
 | Segurança | `IdentityRegistry.setBlocked(account, false)` | 2 | none |
 | Segurança | The "stop new rides" playbook: `setPolicy` on `RideEscrow.open` and `accept`, disabled | 1 | none |
 | Diretoria | The "resume rides" playbook: those two policies back as they were | 2 | none |
-| Any member of the role, and the Diretoria | Cancel a pending action of that role | 1 | none |
+| Recuperação | `TeamCouncil.setSuspended(member, true)` | 1 | none |
+| Recuperação | `TeamCouncil.setMemberRole(member, Diretoria, …)`: put a director in or take one out | 1 | 7 days |
+| Any member of the role, the Diretoria, or Recuperação | Cancel a pending action of that role (Recuperação's own, only Recuperação) | 1 | none |
+
+An action runs on the approval that makes it ready, or by `execute` from anyone once it is. One not executed
+within 14 days of being ready expires. Whatever role holds a permission that changes who decides (members,
+roles, permissions, playbooks, the guardian's seat), it waits at least a day; no permission waits more than 30
+days.
 
 What sits where, and why:
 
@@ -111,13 +116,13 @@ sequenceDiagram
 
     N->>N: set up a hardware wallet, read its address
     N->>D1: the address, in person or on a call where the address is read aloud
-    D1->>T: request addMember(address, Finanças)
+    D1->>T: request setMemberRole(address, Finanças, true)
     T-->>W: ActionRequested
     W-->>D2: alert: new member requested, for Finanças
     D2->>T: approve
     Note over T: 72 h pass. Any director, or Recuperação, can cancel
     D1->>T: execute
-    T-->>W: MemberAdded
+    T-->>W: MemberRoleSet
     W-->>N: you are in Finanças
 ```
 
@@ -126,8 +131,9 @@ approving an address the new member never held has added the attacker.
 
 ### Changing a member's roles
 
-The same as adding: `grantRole` or `revokeRole`, by the Diretoria, three approvals, 72 hours. Moving someone from
-Credenciamento to Finanças is a revoke and a grant in one request, so they never hold both and never neither.
+The same as adding: `setMemberRole(member, role, true or false)`, by the Diretoria, three approvals, 72 hours.
+Moving someone from Credenciamento to Finanças is two `setMemberRole` calls in one request, so they never hold
+both and never neither.
 
 ### Removing a member
 
@@ -135,10 +141,11 @@ Leaving is slow on purpose for anything else, and should not be for this. So the
 
 | Step | Who | Approvals | Delay | Effect |
 | --- | --- | --- | --- | --- |
-| `suspendMember` | Diretoria, or Recuperação | 2 (Diretoria), 1 (Recuperação) | none | At once: the member's requests and approvals stop counting, including ones already given to pending actions |
-| `removeMember` | Diretoria | 3 | 72 h | The member is gone from every role. A removal is also how a suspension ends for good |
+| `setSuspended(member, true)` | Diretoria, or Recuperação | 2 (Diretoria), 1 (Recuperação) | none | At once: the member's requests and approvals stop counting, including ones already given to pending actions |
+| `setMemberRole(member, role, false)` | Diretoria | 3 | 72 h | The member leaves that role; one call per role they hold, in one request. A removal is also how a suspension ends for good |
 
 A suspension can be lifted by the Diretoria with three approvals and the 72-hour delay, like adding someone back.
+Approvals the member gave to actions still pending count again once it is lifted.
 Anything the member did before is not undone: a credential they approved stays, issued by the council, and is
 revoked by Credenciamento if it should be.
 
@@ -156,12 +163,13 @@ single action from one role to another without a new contract.
 
 | Change | Call | Who |
 | --- | --- | --- |
-| Create a role | `createRole(name)` | Diretoria, 3, 72 h |
-| Give a role an action | `grant(role, target, selector, approvals, delay)` | Diretoria, 3, 72 h |
-| Take an action from a role | `revoke(role, target, selector)` | Diretoria, 3, 72 h |
-| Change approvals or delay | `grant` again with the new numbers | Diretoria, 3, 72 h |
-| Store a playbook | `setPlaybook(role, name, calls)` | Diretoria, 3, 72 h |
-| Delete a role | `deleteRole(role)`, only once it has no actions | Diretoria, 3, 72 h |
+| Create a role | `createRole(name, flags)`: it may cancel any action, or be protected | Diretoria, 3, 72 h |
+| Give a role an action | `grant(permission)`: role, contract, function, optionally one argument's value, approvals, delay, and whether it runs as the governor or as the council | Diretoria, 3, 72 h |
+| Take an action from a role | `revokePermission(id)` | Diretoria, 3, 72 h |
+| Change approvals or delay | `setApprovalsAndDelay(id, approvals, delay)` | Diretoria, 3, 72 h |
+| Store a playbook | `grantPlaybook(name, role, approvals, delay, calls)`: the calls are emitted, so anyone can read what it does | Diretoria, 3, 72 h |
+
+A role is never deleted: one with no permissions and no members does nothing. There are at most 64.
 
 The contract refuses changes that would lock the Instituto out of itself: an approval count above the role's
 members, a Diretoria with fewer members than its own threshold, taking from the Diretoria the permission to
@@ -227,10 +235,12 @@ flowchart LR
 
 | Threat | What limits it |
 | --- | --- |
-| One member's key is stolen | It can do alone only what one member may: block an account, revoke a licence, stop new rides, cancel. All of these are undone by others, and the key is suspended at once by two directors |
+| One member's key is stolen | It can do alone only what one member may: block an account, revoke a licence, stop new rides, cancel. All of these are undone by others. Two directors suspend it: the second approval runs the suspension at once, so the key cannot cancel it in between |
+| One director's key is stolen | It can cancel any role's pending action, and keep doing so. Recuperação suspends it in one transaction, which nothing can race |
 | A member turns against the Instituto | The same limits. Everything that moves money or changes rules needs a second person, and waits |
 | Two keys of one role are stolen | They can request and pass that role's actions, which still wait 24 or 72 h. The watcher alerts every member on the request; any member of the role or any director cancels, and two directors suspend both keys |
-| Three directors' keys are stolen | They can do anything after 72 h, including replacing the other directors. Recuperação cancels and suspends; that is what it is for |
+| Two directors' keys are stolen | At once, they can suspend the three honest directors (two approvals, no delay), and then the board cannot reach its three approvals until Recuperação replaces directors, 7 days later. Recuperação suspends the two at once and cancels what they asked |
+| Three directors' keys are stolen | They can do anything after 72 h, including replacing the other directors and handing the guardian's seat on. Recuperação cancels and suspends; that is what it is for |
 | Recuperação's keys are stolen | They can cancel and suspend, which stops governance but changes no setting, and replace the Diretoria, which waits 7 days. Its keys are the best protected: hardware wallets in separate physical safes, used only in a drill and an emergency |
 | An approval is phished: a member signs something else than they think | Members approve by `id`, and `klippel-gov` shows the decoded calls of that `id` from the chain. A hardware wallet shows only the `id` and the council's address; the member checks both on the tool's screen |
 | The watcher is down | Nothing executes because of it, but nobody hears of a request. The council's delay is the reason the watcher must page people, and a second watcher run elsewhere costs little |
@@ -245,7 +255,8 @@ These hold because the protocol contracts do not offer them to the guardian:
   the R$ 1,00 goes (`RideEscrow.setModules`), which is why that sits with the Diretoria.
 - Take a user's stake. It can make leaving slower (`setUnbondingPeriod`), which is why that sits behind
   Operações' two approvals and a day.
-- Rewrite a credential another attester issued, or a rating.
+- Rewrite a credential another attester issued, or change or delete a rating already given. (It can add
+  completions and ratings, by listing a contract of its own in `Reputation`: one of the powers in limit L19.)
 
 What the team can do to users is still a lot, and is public: block anyone, change who may ride or drive, change
 the tax and its collector, and wire in a new escrow or court for new rides. Every one of those is an event on
@@ -275,29 +286,37 @@ Segurança runs "stop new rides" at once, and the Diretoria decides the rest at 
 
 1. The Diretoria's first members, Recuperação's owners and the first members of each role each set up a hardware
    wallet and hand over its address in person.
-2. The deployment script deploys `TeamCouncil` with those members, the roles and permissions above and the two
-   playbooks, and names it as `PBACGovernor`'s guardian (constructor argument) and as a trusted attester
-   (`setAttester`, during bootstrap).
-3. `finishBootstrap`, then the checks in [deployment.md](../contracts/docs/deployment.md), "Verification", plus:
-   `guardian() == TeamCouncil`, the council's roles and members as in the Instituto's register, and
-   Recuperação's Safe owners and threshold.
+2. The deployment script deploys the protocol with the deployer as a temporary guardian, closes the bootstrap,
+   then deploys `TeamCouncil` with those members, the roles, permissions and playbooks above
+   (`TeamDeployer`), makes it a trusted attester (`setAttester`), names it guardian (`proposeGuardian`) and
+   has it accept (`acceptGuardianSeat`). From then on the deployer holds nothing.
+3. The checks in [deployment.md](../contracts/docs/deployment.md), "Verification", among them
+   `guardian() == TeamCouncil` and `pendingGuardian() == 0`, plus: the council's roles and members as in the
+   Instituto's register, and Recuperação's Safe owners and threshold.
 4. A drill before launch: request an action, cancel it, suspend and restore a member, run and undo "stop new
    rides".
 
-On the local testnet the same contract runs with seeded accounts as members, one approval and no delays, so
-the tests stay fast. `make pass-proposal` becomes `make pass-action`.
+On the local testnet the same contract runs with account #1 as the only member, in every role, with one
+approval and no delay, so every request runs at once and the tests stay fast.
+`contracts/test/TeamCouncil.t.sol` runs it with the launch numbers.
 
-## What changes in this repository
+## What is built
 
-| Where | Change |
+| Where | What |
 | --- | --- |
-| `contracts/src` | New `TeamCouncil`. `PBACGovernor` as in the working tree, unchanged by this page |
-| `contracts/script` | Deploy the council with its first members and roles; local accounts as members |
-| `contracts/docs` | The governance sections, invariants C1, C14, limits L6, L17 to L20 and the governance diagrams describe the council instead of voting |
-| `gov/klippel-gov` | `team` commands: `members`, `roles`, `request`, `pending`, `approve`, `cancel`, `execute`, `suspend`, each showing the decoded calls; `propose` and `vote` go |
-| `gov/` | The watcher: reads the council's events, decodes them, pages every member |
-| `tests/` | A role cannot do another's action, the delay and the cancel hold, a suspended member's approvals stop counting |
-| [README.md](../README.md) | "Policies at launch" and "Governing" |
+| [`contracts/src/TeamCouncil.sol`](../contracts/src/TeamCouncil.sol) | The council: roles, members, suspension, permissions with an argument rule, playbooks, actions, and the lockout and protection rules |
+| [`contracts/script/TeamDeployer.sol`](../contracts/script/TeamDeployer.sol) | The six launch roles, every permission and both playbooks of this page, the launch numbers or the local ones, and the handover of the guardian's seat |
+| [`contracts/test/TeamCouncil.t.sol`](../contracts/test/TeamCouncil.t.sol) | The council with the launch numbers |
+| [`gov/klippel-gov`](../gov/README.md) | `request`, `approve`, `cancel`, `execute`, `actions`, `action`, `team …`, `playbooks`, `run`, `stop-rides`, `resume-rides`; licences through Credenciamento |
+| [contracts/docs](../contracts/docs/security.md) | The guardian in the access table, invariants C1, C14 and C19, the guardian's powers as limit L19 |
+
+Still to build:
+
+| Missing | For |
+| --- | --- |
+| The watcher: reads the council's events, decodes them, pages every member | The delays to mean something in production |
+| The production team in `deployments/config/<network>.json`, read by the deploy script | A real deployment ([contracts/docs/deployment.md](../contracts/docs/deployment.md)) |
+| An external audit of `TeamCouncil` | Production |
 
 ## Open decisions
 

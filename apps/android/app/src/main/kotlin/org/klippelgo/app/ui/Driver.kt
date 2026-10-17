@@ -325,19 +325,23 @@ private fun GoOnline(
 /** Why the policy will not let this driver accept rides: only the requirements still missing. */
 @Composable
 private fun BlockedNotice(state: UiState) {
+    // Each line with the kind of reason it gives, so it can be found whatever the app's language.
     val lines = state.blockers.map {
         when (it) {
-            is Blocker.Score -> stringResource(R.string.blocked_score, score(it.have), score(it.need))
-            is Blocker.Stake -> stringResource(R.string.blocked_stake, brl(it.have), brl(it.need))
-            is Blocker.Credential -> stringResource(if (it.cnh) R.string.blocked_cnh else R.string.blocked_credential)
-            Blocker.Role -> stringResource(R.string.blocked_role)
-            Blocker.AccountAge -> stringResource(R.string.blocked_age)
-            Blocker.Disabled -> stringResource(R.string.cannot_accept)
-            Blocker.Blocked -> stringResource(R.string.blocked_account)
+            is Blocker.Score -> "score" to stringResource(R.string.blocked_score, score(it.have), score(it.need))
+            is Blocker.Stake -> "stake" to stringResource(R.string.blocked_stake, brl(it.have), brl(it.need))
+            is Blocker.Credential ->
+                (if (it.cnh) "cnh" else "credential") to stringResource(if (it.cnh) R.string.blocked_cnh else R.string.blocked_credential)
+            Blocker.Role -> "role" to stringResource(R.string.blocked_role)
+            Blocker.AccountAge -> "age" to stringResource(R.string.blocked_age)
+            Blocker.Disabled -> "disabled" to stringResource(R.string.cannot_accept)
+            Blocker.Blocked -> "account" to stringResource(R.string.blocked_account)
         }
-    }.ifEmpty { listOf(stringResource(R.string.cannot_accept)) }
+    }.ifEmpty { listOf("disabled" to stringResource(R.string.cannot_accept)) }
     Column(Modifier.testTag(Tags.BLOCKED), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        lines.forEach { Muted(it, size = 13.sp, color = MaterialTheme.colorScheme.error) }
+        lines.forEach { (kind, line) ->
+            Muted(line, Modifier.testTag(Tags.blocker(kind)), size = 13.sp, color = MaterialTheme.colorScheme.error)
+        }
     }
 }
 

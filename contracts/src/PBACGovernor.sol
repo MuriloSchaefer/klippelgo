@@ -110,8 +110,10 @@ contract PBACGovernor is IPBACGovernor {
     }
 
     /// @notice Names who may take over as guardian. Nothing changes until they accept, so a mistyped address
-    /// costs nothing: name another. The zero address withdraws the offer.
+    /// costs nothing: name another. The zero address withdraws the offer. The governor itself cannot be named:
+    /// it could accept through `execute`, and then nobody could call `execute` again.
     function proposeGuardian(address proposed) external onlyGuardian {
+        if (proposed == address(this)) revert NoGuardian();
         pendingGuardian = proposed;
         emit GuardianProposed(msg.sender, proposed);
     }
