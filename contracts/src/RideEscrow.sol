@@ -21,6 +21,12 @@ import {Reputation} from "./Reputation.sol";
 /// completion timeout. A later change of any of them applies to rides opened afterwards. Only where the fee is
 /// paid (`feeVault`) is read at settlement.
 ///
+/// A driver has at most two rides in hand: the one with a rider in the car (Started) and the one they are on the
+/// way to pick up (Accepted). They take a second ride only once the first rider is in the car, and pick that
+/// rider up only once the first has left it: `accept` reverts while a ride waits for its pickup, and `start` while
+/// a ride is under way. Anyone may still open a ride naming any driver: it waits, Open, until the driver takes it,
+/// declines it or its rider withdraws it.
+///
 /// A BRL token's issuer can freeze an address. So a payment that fails is not allowed to fail the settlement:
 /// it is kept here as owed to that address, which takes it with `withdraw` once it can receive again, and the
 /// others are paid as usual.
@@ -86,6 +92,10 @@ contract RideEscrow is Governed, ReentrancyGuard {
     mapping(IERC20 => uint256) public held;
     /// @notice Payments that could not be made at settlement, by token and payee. See `withdraw`.
     mapping(IERC20 => mapping(address => uint256)) public owed;
+    /// @notice The ride each driver accepted and has not started, or zero. At most one: see `accept`.
+    mapping(address => uint256) public pickupOf;
+    /// @notice The ride each driver has a rider in the car for, or zero. At most one: see `start`.
+    mapping(address => uint256) public onTripOf;
 
     event RideOpened(
         uint256 indexed rideId,
@@ -133,6 +143,7 @@ contract RideEscrow is Governed, ReentrancyGuard {
     error CapReached();
     error NotPlainToken();
     error NothingOwed();
+    error DriverBusy(uint256 rideId);
 
     constructor(IPBACGovernor governor_, uint64 completionTimeout_) Governed(governor_) {
         completionTimeout = completionTimeout_;
@@ -177,21 +188,30 @@ contract RideEscrow is Governed, ReentrancyGuard {
         emit RideOpened(rideId, msg.sender, driver, address(token), fare, quoteHash);
     }
 
-    /// @notice Driver accepts and posts a cancel bond. Gated by policy (stake, score, CNH credential).
+    /// @notice Driver accepts and posts a cancel bond. Gated by policy (stake, score, CNH credential). Reverts
+    /// while another of the driver's rides waits for its pickup: the next ride is taken once that rider is in.
     function accept(uint256 rideId) external permitted nonReentrant {
         Ride storage r = _rides[rideId];
         if (r.status != Status.Open) revert WrongStatus(r.status);
         if (msg.sender != r.driver) revert NotDriver();
+        uint256 waiting = pickupOf[msg.sender];
+        if (waiting != 0) revert DriverBusy(waiting);
+        pickupOf[msg.sender] = rideId;
         r.status = Status.Accepted;
         _deposit(r.token, r.driverBond);
         emit RideAccepted(rideId);
     }
 
-    /// @notice Driver records the hash of the pickup proof both phones signed over BLE or QR.
+    /// @notice Driver records the hash of the pickup proof both phones signed over BLE or QR. Reverts while
+    /// another of the driver's rides is under way: one rider in the car at a time.
     function start(uint256 rideId, bytes32 pickupProofHash) external {
         Ride storage r = _rides[rideId];
         if (r.status != Status.Accepted) revert WrongStatus(r.status);
         if (msg.sender != r.driver) revert NotDriver();
+        uint256 riding = onTripOf[msg.sender];
+        if (riding != 0) revert DriverBusy(riding);
+        delete pickupOf[msg.sender];
+        onTripOf[msg.sender] = rideId;
         r.status = Status.Started;
         r.startedAt = uint64(block.timestamp);
         r.pickupProofHash = pickupProofHash;
@@ -237,6 +257,18 @@ contract RideEscrow is Governed, ReentrancyGuard {
         _settle(rideId, r);
     }
 
+    /// @notice The chosen driver turns down a ride they have not accepted: the rider gets everything back and
+    /// nobody pays. Unlike `cancel`, it reverts once the ride is accepted, so a decline sent just before an accept
+    /// lands can never cost the driver their bond.
+    function decline(uint256 rideId) external nonReentrant {
+        Ride storage r = _rides[rideId];
+        if (r.status != Status.Open) revert WrongStatus(r.status);
+        if (msg.sender != r.driver) revert NotDriver();
+        r.status = Status.Cancelled;
+        _pay(r.token, r.rider, r.fare + r.riderBond);
+        emit RideCancelled(rideId, msg.sender);
+    }
+
     /// @notice Before acceptance the rider can withdraw and the chosen driver can decline; either way the rider
     /// gets everything back and nobody pays. After acceptance the canceller's bond goes to the other party.
     function cancel(uint256 rideId) external nonReentrant {
@@ -247,6 +279,7 @@ contract RideEscrow is Governed, ReentrancyGuard {
             _pay(r.token, r.rider, r.fare + r.riderBond);
         } else if (r.status == Status.Accepted) {
             r.status = Status.Cancelled;
+            delete pickupOf[r.driver];
             if (msg.sender == r.rider) {
                 _pay(r.token, r.rider, r.fare);
                 _pay(r.token, r.driver, r.driverBond + r.riderBond);
@@ -269,6 +302,8 @@ contract RideEscrow is Governed, ReentrancyGuard {
         Ride storage r = _rides[rideId];
         if (msg.sender != r.court) revert NotCourt();
         if (r.status != Status.Accepted && r.status != Status.Started) revert WrongStatus(r.status);
+        // Frozen, it is no longer in the driver's hands: they may take and drive other rides meanwhile.
+        _release(r);
         r.status = Status.Disputed;
         emit RideDisputed(rideId);
     }
@@ -387,7 +422,14 @@ contract RideEscrow is Governed, ReentrancyGuard {
         }
     }
 
+    /// @dev Frees the driver's slot an Accepted or Started ride holds.
+    function _release(Ride storage r) internal {
+        if (r.status == Status.Accepted) delete pickupOf[r.driver];
+        else delete onTripOf[r.driver];
+    }
+
     function _settle(uint256 rideId, Ride storage r) internal {
+        _release(r);
         r.status = Status.Completed;
         uint256 driverPayout = r.fare - r.fee - r.tax;
         _pay(r.token, feeVault, r.fee);

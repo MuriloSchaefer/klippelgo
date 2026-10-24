@@ -1,9 +1,12 @@
 package org.klippelgo.tests.security
 
 import org.klippelgo.chain.DevAccount
+import org.klippelgo.chain.KlippelGoClient
 import org.klippelgo.tests.Peer
 import org.klippelgo.tests.Places
 import org.klippelgo.tests.Scenario
+import org.klippelgo.tests.waitUntil
+import org.web3j.utils.Numeric
 import java.math.BigDecimal
 import java.security.SecureRandom
 import kotlin.test.Test
@@ -59,5 +62,37 @@ class RevealedRouteTest : Scenario() {
         val honest = rider.take(again, rider.awaitOffer(again, appDriver))
         app.driverRide.awaitRouteChecked("chosen")
         rider.cancel(honest)
+    }
+
+    @Test
+    fun `a ride opened with someone else's quote hash is never shown with their route`() {
+        val stranger = stranger()
+        val rider = peer(DevAccount.RIDER)
+        // Anyone with the rider role and a little money: the hash it copies is public once quoted.
+        val copier = stranger.newKey()
+        copier.mint(copier.brz, copier.brz.toBaseUnits(BigDecimal("100.00")))
+        copier.ensureRegistered(KlippelGoClient.ROLE_RIDER)
+        freshDriver()
+        app.goOnline.goOnline()
+
+        val request = rider.ask(rider.route(Places.CENTRE, Places.LAKE))
+        app.request.awaitFrom(Peer.short(request.rider))
+        app.request.send()
+        val offer = rider.awaitOffer(request, appDriver)
+
+        // The copier opens a ride on the same driver, coin, fare and quote hash, and the rider locks the real one.
+        val copy = copier.openRide(appDriver, copier.brz, offer.fare, Numeric.hexStringToByteArray(offer.quoteHash))
+        val real = rider.take(request, offer)
+
+        // The honest ride's route is checked: the route did reach the phone and passed.
+        waitUntil("both rides to be listed", 60_000) { true.takeIf { app.driverRide.locked().containsAll(listOf("$copy", "$real")) } }
+        app.driverRide.awaitRouteChecked("chosen.$real")
+        // The copy names the same hash, and so finds the same route, but it is not the copier's: never checked.
+        repeat(10) {
+            assertTrue(app.driverRide.ride("chosen.$copy")?.route != "checked", "a ride opened with a copied quote hash is shown with the real rider's route")
+            Thread.sleep(1_000)
+        }
+        app.driverRide.decline(copy.toString())
+        rider.cancel(real)
     }
 }

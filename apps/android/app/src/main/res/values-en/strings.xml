@@ -179,6 +179,8 @@
     <string name="route_needs_map">Download the map to see this ride\'s route.</string>
     <string name="map_needed_driver">Download the map of the region to see the streets and each ride\'s route. Without it you still get requests and can make offers.</string>
     <string name="decline_ride">Decline ride</string>
+    <string name="accept_after_pickup">You can take this ride once your current rider is in the car.</string>
+    <string name="accept_declines_others">Taking one gives back the others you quoted before it.</string>
     <string name="decline_hint">Declining costs nothing: the rider gets everything back.</string>
     <string name="asked_again">The driver gave up the ride and you have everything back. The same request went out again to the other drivers.</string>
 

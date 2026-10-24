@@ -50,6 +50,7 @@ class RuleChangesTest : Scenario() {
 
         val driverBefore = driver.balance()
         val taxBefore = taxCollected(coin)
+        val from = mark()
         app.confirm.lock()
         app.onTheWay.awaitStatus("Open")
         val ride = driver.awaitRide(offer)
@@ -73,7 +74,7 @@ class RuleChangesTest : Scenario() {
         app.rideEnd.pay()
         waitUntil("the ride to complete on chain", 60_000) { true.takeIf { driver.ride(ride.id).status == RideStatus.Completed } }
         assertEquals(taxBefore + taxAtOpen, taxCollected(coin))
-        assertEquals(driverBefore + fare - fee - taxAtOpen, driver.balance())
+        assertEquals(driverBefore + fare - fee - taxAtOpen - gasPaid(driver.address, coin, from), driver.balance())
 
         // And the app did hear the new rate: the next ride is priced on it.
         app.whereTo.shown()

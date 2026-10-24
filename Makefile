@@ -1,4 +1,4 @@
-.PHONY: test-hooks test-gov test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-four-phones android-apk android-test-chain e2e e2e-integrity e2e-security e2e-performance e2e-up e2e-down e2e-three-phones android-drive
+.PHONY: bundler explorer explorer-verify explorer-down explorer-reset test-hooks test-gov test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-three-phones android-four-phones android-apk android-test-chain e2e e2e-integrity e2e-security e2e-performance e2e-up e2e-down e2e-three-phones android-drive
 
 test: test-contracts test-core test-mappack
 
@@ -18,11 +18,34 @@ testnet:
 deploy:
 	testnet/deploy.sh
 
+## The ERC-4337 bundler people's operations go through, on port 4337 (Docker). Start it with the chain.
+bundler:
+	docker compose -f testnet/docker-compose.yml up --build bundler
+
 demo:
 	testnet/demo-ride.sh
 
 testnet-reset:
 	rm -rf testnet/.state deployments/local.json
+
+## A block explorer for the local testnet, in the background (see testnet/explorer/docker-compose.yml):
+##   make explorer                     Otterscan on http://localhost:5100: blocks, hashes, traces, events
+##   make explorer TOOL=blockscout     Blockscout on http://localhost:5200, with the contracts in
+##                                     deployments/local.json verified: source, decoded calls, read/write tabs
+## After a `make deploy`, `make explorer-verify` verifies the new contracts. After `make testnet-reset`,
+## `make explorer-reset` clears what Blockscout indexed from the old chain.
+TOOL ?= otterscan
+explorer:
+	testnet/explorer/run.sh $(TOOL)
+
+explorer-verify:
+	testnet/explorer/verify.sh
+
+explorer-down:
+	testnet/explorer/run.sh down
+
+explorer-reset:
+	testnet/explorer/run.sh reset
 
 ## Checks gov/klippel-gov against the running local testnet (make testnet, make deploy).
 test-gov:
@@ -54,6 +77,11 @@ serve-packs:
 android-two-phones:
 	apps/android/scripts/two-phones.sh
 
+## Android: one rider and two drivers on three emulators, both drivers answering the same request. Needs about
+## 12 GB of free RAM.
+android-three-phones:
+	DRIVERS=2 apps/android/scripts/two-phones.sh
+
 ## Android: two riders and two drivers on four emulators. Needs about 16 GB of free RAM.
 android-four-phones:
 	PAIRS=2 apps/android/scripts/two-phones.sh
@@ -61,7 +89,7 @@ android-four-phones:
 ## Android: move a driver's emulator along its current route, a tenth of the way each second: to the pickup
 ## until the ride starts, then along the ride. Run it again after tapping "Iniciar corrida".
 ##   make android-drive                          the emulator in driver mode (emulator-5556 with two phones)
-##   make android-drive PHONE=emulator-5560      the second driver of android-four-phones
+##   make android-drive PHONE=emulator-5560      the second driver of android-three-phones or -four-phones
 ##   make android-drive LEG=ride STEPS=20 EVERY=0.5
 ## Along the ride the rider's emulator moves with the car. RIDER=emulator-5554 names it when several fit.
 android-drive:

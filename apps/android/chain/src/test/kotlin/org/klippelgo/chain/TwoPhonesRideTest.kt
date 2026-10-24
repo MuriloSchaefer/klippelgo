@@ -36,7 +36,7 @@ class TwoPhonesRideTest {
             println("KLIPPELGO_RPC not set, skipping the two-phone ride test")
             return
         }
-        val riderPhone = KlippelGoClient(rpc, DevAccount.RIDER.privateKey, deployment)
+        val riderPhone = KlippelGoClient(rpc, DevAccount.RIDER.key(), deployment)
         // A map pack governance activated on this chain (`make publish-pack`). The route itself stays on the
         // rider's phone: the request carries its hash, as the phone computes it from the pack, and how long it is.
         val pack = riderPhone.latestPack(TEST_REGION)
@@ -50,7 +50,7 @@ class TwoPhonesRideTest {
             pickupCell = regionCell(PICKUP),
             dropoffCell = regionCell(DROPOFF),
         )
-        val driverPhone = KlippelGoClient(rpc, DevAccount.DRIVER.privateKey, deployment)
+        val driverPhone = KlippelGoClient(rpc, DevAccount.DRIVER.key(), deployment)
         val coin = riderPhone.brz
         val maxFare = coin.toBaseUnits(BigDecimal("25.00"))
         val fare = coin.toBaseUnits(BigDecimal("23.40"))
@@ -66,7 +66,8 @@ class TwoPhonesRideTest {
         val bootstrap = GossipNode.start(GossipConfig(listen = "/ip4/127.0.0.1/tcp/0", bootstrap = emptyList(), router = true))
         fun gossip() = GossipNode.start(GossipConfig(listen = null, bootstrap = bootstrap.listenAddresses(), router = false))
         val riderMatch = Matchmaker(riderPhone, gossip())
-        val driverMatch = Matchmaker(driverPhone, gossip())
+        // The driver hears the cells around them; the request goes to the pickup's.
+        val driverMatch = Matchmaker(driverPhone, gossip()).apply { listen(Matchmaker.around(PICKUP)) }
 
         val pool = Executors.newFixedThreadPool(2)
         val riderSaw = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -159,10 +160,16 @@ class TwoPhonesRideTest {
         // share of the fare read from the escrow (the bond comes back). The tax went to its collector.
         val ride = riderPhone.ride(riderId)
         assertEquals(riderPhone.taxOn(fare), ride.tax)
-        assertEquals(fare - coin.toBaseUnits(BigDecimal("1.00")) - ride.tax, driverPhone.balanceOf(coin) - driverBefore)
-        // Each phone knows what its own transactions cost the network, and what that is in reais.
+        // The driver's own operations (accept, start, the rating) paid the network in the same coin, through the
+        // paymaster: a few centavos at most, and at least what the phone counted its gas at.
+        val driverGas = driverPhone.gasSpent(riderId) ?: error("the driver's phone lost count of its gas")
+        val gasPaid = fare - coin.toBaseUnits(BigDecimal("1.00")) - ride.tax - (driverPhone.balanceOf(coin) - driverBefore)
+        assertTrue(gasPaid.signum() > 0, "the driver paid nothing for the network")
+        assertTrue(gasPaid >= coin.toBaseUnits(driverPhone.infrastructureCost(driverGas)) - BigInteger.ONE, "the driver paid less than the gas: $gasPaid")
+        assertTrue(gasPaid < coin.toBaseUnits(BigDecimal("0.05")), "the driver paid R$ ${coin.toReais(gasPaid)} for the network")
+        // Each phone knows what its own operations cost the network, and what that is in reais.
         val riderGas = riderPhone.gasSpent(riderId) ?: error("the rider's phone lost count of its gas")
-        assertTrue(riderGas.signum() > 0 && (driverPhone.gasSpent(riderId) ?: BigInteger.ZERO).signum() > 0)
+        assertTrue(riderGas.signum() > 0 && driverGas.signum() > 0)
         println(
             "Ride $riderId completed: driver received R$ ${coin.toReais(ride.driverPayout)}, Instituto Klippel R$ 1,00, " +
                 "tax R$ ${coin.toReais(ride.tax)}, network R$ ${riderPhone.infrastructureCost(riderGas)} (rider's side)",

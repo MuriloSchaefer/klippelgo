@@ -133,7 +133,7 @@ wallet (`--ledger`), and no workflow holds a key that can do anything on mainnet
 }
 ```
 
-`deployBlock` is where `klippel-gov` starts reading the council's events from. Forge's own record of the transactions
+`deployBlock` is where `klippel-gov` starts reading the council's events from, and where the app starts its scans for rides and drivers. The local deploy writes the block it ran at. Forge's own record of the transactions
 (`contracts/broadcast/<script>/<chain id>/`) is committed with it for every chain but the local one.
 
 ## Keys
@@ -269,7 +269,7 @@ team's to cancel it. What each replacement costs today:
 | `MapRegistry`      | `setPolicy` for `attest`; the app reads its address                                                                           | Yes, with an app release     | Activated packs must be attested and activated again                                                                                                                            |
 | `FeeVault`         | `RideEscrow.setModules`                                                                                                         | Yes                          | Nothing: sweep the old vault. Rides already open pay the new one, since the vault is read at settlement                                                                         |
 | `DisputeCourt` | `RideEscrow.setModules`, `setPolicy` for `commit` | Yes | Nothing: each ride keeps the court it opened with, so the old court finishes its disputes and the new one hears rides opened after it. A court with a bug cannot be swapped out of the rides that name it (L23) |
-| `RideEscrow` | `Reputation.setEscrow(new, true)`, `setPolicy` for `open` and `accept`, a new `DisputeCourt` (its escrow is fixed at construction), and new rides closed on the old one | Yes, with an app release | Nothing: `Reputation` listens to both, rides are keyed by escrow and id, and the old escrow settles what it holds. Delist it once its last ride settled |
+| `RideEscrow` | `Reputation.setEscrow(new, true)`, `setPolicy` for `open` and `accept`, a new `DisputeCourt` (its escrow is fixed at construction), and new rides closed on the old one | Yes, with an app release | Nothing: `Reputation` listens to both, rides are keyed by escrow and id, and the old escrow settles what it holds. Delist it once its last ride settled. A driver's two places (C22) are per escrow: close `accept` on the old one when the new one opens, or a driver can hold two rides on each meanwhile |
 | `Reputation` | `PBACGovernor.setModules`, `RideEscrow.setModules` | No | Every score and every completed-ride count |
 | `IdentityRegistry` | `PBACGovernor.setModules`                                                                                                       | No                           | Roles, credentials, blocks. Stake stays withdrawable from the old registry but counts for nothing                                                                               |
 | `PBACGovernor` | It is `immutable` in every contract | No | Everything |

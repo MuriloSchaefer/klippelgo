@@ -21,7 +21,11 @@ Related: [security.md](security.md), [scalability.md](scalability.md), [deployme
 | [`Reputation`](../src/Reputation.sol) | Completed-ride counts and star ratings between the two parties of a ride, reported by the escrows the guardian listed | No |
 | [`DisputeCourt`](../src/DisputeCourt.sol) | Commit-reveal juror vote that splits a disputed fare | No |
 | [`MapRegistry`](../src/MapRegistry.sol) | Proof roots of the map packs, and the verifier's tolerances | No |
-| [`FareGuide`](../src/FareGuide.sol) | The tariff and the band riders and drivers may price in, and what one native coin is worth in reais, for showing gas as a ride's infrastructure cost | No |
+| [`FareGuide`](../src/FareGuide.sol) | The tariff and the band riders and drivers may price in, and what one native coin is worth in reais: the rate the app shows gas in, and the paymaster charges it at | No |
+| [`KlippelGoAccount`](../src/account/KlippelGoAccount.sol) | A person's account: an ERC-4337 smart account owned by keys the phone keeps in hardware, which runs batches of calls and says what its keys signed (ERC-1271) | The person's coins |
+| [`AccountFactory`](../src/account/AccountFactory.sol) | Makes accounts as clones, at an address that follows from the first key alone | No |
+| [`DeviceKeyVerifier`](../src/account/DeviceKeyVerifier.sol) | Checks a phone chip's P-256 signature over SHA-256 of a hash | No |
+| [`BrlPaymaster`](../src/account/BrlPaymaster.sol) | Pays the network for people's operations and charges them the same in a BRL coin, at `FareGuide`'s rate | Its native deposit at the EntryPoint, the reais it collected |
 
 ## How they fit together
 
@@ -45,6 +49,13 @@ flowchart TB
     inst([Instituto Klippel])
     team([Team members])
 
+    entry[EntryPoint<br/>ERC-4337 v0.9]
+    acct[KlippelGoAccount<br/>each person's]
+    pm[BrlPaymaster]
+    rider & driver & validator -. "operations, through a bundler" .-> entry
+    entry -- "validateUserOp, execute" --> acct
+    entry -- "gas, charged in reais" --> pm
+    pm -. price .-> fares
     rider -- open, complete, cancel --> esc
     driver -- accept, start, submitReceipt --> esc
     rider & driver -- raise --> court
@@ -70,6 +81,11 @@ flowchart TB
     gov == "onlyGovernor setters" ==> esc & reg & vault & court & maps & fares & rep
 ```
 
+Riders, drivers and validators act through their own `KlippelGoAccount`: every call above is made by the
+account, inside an ERC-4337 operation its phone's key signed and a bundler handed to the EntryPoint, with gas paid
+by `BrlPaymaster` and charged to the account in reais. The contracts see the account's address as `msg.sender`,
+as they would any other.
+
 Two kinds of arrows matter:
 
 - **Policy checks** (`hasPermission?`). A user-facing function marked `permitted` asks the governor whether
@@ -88,9 +104,9 @@ which sets `bootstrapper` to zero for good, and hands the guardian's seat to the
 ```mermaid
 stateDiagram-v2
     [*] --> Open: rider open()<br/>locks fare + rider bond
-    Open --> Accepted: driver accept()<br/>locks driver bond
-    Open --> Cancelled: rider or chosen driver cancel()<br/>rider refunded in full
-    Accepted --> Started: driver start(pickupProofHash)
+    Open --> Accepted: driver accept()<br/>locks driver bond, if no other ride of theirs waits for pickup
+    Open --> Cancelled: rider or chosen driver cancel(), driver decline()<br/>rider refunded in full
+    Accepted --> Started: driver start(pickupProofHash)<br/>if no other ride of theirs is under way
     Accepted --> Cancelled: cancel()<br/>canceller's bond goes to the other party
     Started --> Completed: rider complete(receiptHash)
     Started --> Completed: anyone timeout()<br/>after the driver's receipt stood for the ride's timeout
@@ -101,6 +117,14 @@ stateDiagram-v2
     Cancelled --> [*]
     Resolved --> [*]
 ```
+
+A driver has at most two rides in hand: one under way, with its rider in the car, and one accepted, on the way
+to its pickup. The escrow keeps both per driver (`onTripOf`, `pickupOf`). `accept` reverts with `DriverBusy`
+while a ride waits for its pickup, so the next ride is taken only once the current rider is in; `start` reverts
+while a ride is under way. A ride frees its place when it starts, is cancelled, is frozen for a dispute or
+settles. `open` is never limited: anyone may lock a ride naming a busy driver, and it waits Open until the
+driver takes it, declines it or its rider withdraws it. The driver's `decline` is `cancel` for an Open ride only:
+it reverts once the ride is accepted, so a decline that lands after an accept never costs the bond.
 
 Where the money goes at each exit:
 
@@ -191,13 +215,16 @@ These are the rules new contract code follows. The skill that applies them is
 | --- | --- |
 | `src/` | One contract per file, named after the contract |
 | `src/interfaces/` | Interfaces other contracts import, to avoid import cycles |
+| `src/account/` | People's accounts and what they need: the account, its factory, the device-key verifier, the paymaster. They follow ERC-4337 and OpenZeppelin's account contracts, not pattern 1: only the paymaster answers to the governor |
 | `src/mocks/` | Test-only tokens. Never referenced by production contracts |
 | `script/ProtocolDeployer.sol` | The one place that deploys and wires the protocol and sets launch policies |
+| `script/AccountsDeployer.sol` | The account contracts and the paymaster over a deployed protocol, the paymaster funded and staked |
 | `script/TeamDeployer.sol` | The team council's launch roles, permissions, playbooks and numbers, and the handover of the guardian's seat |
 | `script/DeployLocal.s.sol`, `script/SeedPhones.s.sol` | Local network values and seeded accounts |
 | [`../gov/`](../../gov/README.md) | `klippel-gov`, the command-line tool team members request, approve and execute actions with. Not a contract: it lists every call the council makes by signature, so a new one is added there too |
 | `test/Protocol.t.sol` | Behaviour of the whole protocol, deployed through `ProtocolDeployer` |
 | `test/TeamCouncil.t.sol` | The council with its launch numbers, deployed through `TeamDeployer` |
+| `test/Accounts.t.sol` | Accounts and the paymaster through a real EntryPoint v0.9 |
 | `test/ProofEncoding.t.sol` | Hash encodings shared with the Rust verifier, checked against the same vectors |
 
 **Patterns**
@@ -232,6 +259,7 @@ These are the rules new contract code follows. The skill that applies them is
    policy table if a policy changed.
 4. `forge fmt` (line length 110) and `make test-contracts`.
 
-**Tooling**: Foundry, Solidity 0.8.28, OpenZeppelin as a git submodule in `lib/`. CI runs `forge fmt --check`,
+**Tooling**: Foundry, Solidity 0.8.28, OpenZeppelin v5.7 and eth-infinitism's account-abstraction v0.9.0 (the
+EntryPoint) as git submodules in `lib/`. CI runs `forge fmt --check`,
 `forge test`, then deploys to a local chain, plays one ride (`testnet/demo-ride.sh`) and runs the governance
 tool's checks (`gov/test.sh`).

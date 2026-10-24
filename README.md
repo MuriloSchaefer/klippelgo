@@ -47,6 +47,7 @@ Needs [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge
 git clone --recurse-submodules <this repo>
 make testnet      # terminal 1: anvil on http://127.0.0.1:8545, chain id 31337
 make deploy       # terminal 2: deploy contracts, mock BRLA/BRZ, seed accounts
+make bundler      # terminal 3: the ERC-4337 bundler every account's operations go through (Docker, port 4337)
 make demo         # run one R$ 23,40 ride: driver gets R$ 21,23, Instituto Klippel R$ 1,00, tax R$ 1,17
 ```
 
@@ -62,8 +63,19 @@ make serve-packs  # terminal 3: serve it to the phones on port 4002
 
 `make gossip-node` runs the bootstrap node the phones dial (port 4001) with Docker Compose.
 
+To watch the chain, `make explorer` starts [Otterscan](https://otterscan.io) on http://localhost:5100: blocks,
+hashes, transactions with their call traces, events and balances. `make explorer TOOL=blockscout` starts
+[Blockscout](https://www.blockscout.com) on http://localhost:5200 instead, and verifies the contracts in
+`deployments/local.json` on it, so their pages show the source, decode calls and events by name, and have read
+and write tabs. The first start pulls a few GB of images and takes a minute or two to index. After a
+`make deploy`, `make explorer-verify` verifies the new contracts; after a `make testnet-reset`,
+`make explorer-reset` clears what Blockscout indexed of the old chain. `make explorer-down` stops either one.
+Phones' operations reach the chain as one `handleOps` call from the bundler to the EntryPoint; the ride itself
+is in that call's internal calls (Otterscan's trace tab, Blockscout's "Internal txns"). The EntryPoint is the
+one contract Blockscout cannot verify ([testnet/explorer/verify.sh](testnet/explorer/verify.sh) says why).
+
 No Foundry? `docker compose -f testnet/docker-compose.yml up` starts the same chain, along with the gossip
-bootstrap node; deploy still needs `forge`.
+bootstrap node and the bundler; deploy still needs `forge`.
 
 The chain runs Osaka rules, which include the P-256 signature precompile at `0x100`. Polygon PoS has the same
 precompile (RIP-7212), and the apps rely on it so Secure Enclave and StrongBox keys can sign for the user's
@@ -71,18 +83,26 @@ smart account. State persists in `testnet/.state`; `make testnet-reset` wipes it
 
 ### Seeded accounts
 
-All accounts come from anvil's public test mnemonic (`test test ... junk`). Never send real funds to them.
+The numbered accounts come from anvil's public test mnemonic (`test test ... junk`); the phones' accounts are
+smart accounts whose device keys are public test secrets. Never send real funds to any of them.
+
+People's accounts are ERC-4337 smart accounts (`contracts/src/account`): a phone makes a P-256 key in its chip
+and its account's address follows from that key; every write goes through the bundler, with gas paid in reais
+through the paymaster. A debug build launched with `devAccounts` (as scripts and the tests do) uses the seeded
+phone accounts below instead.
 
 | # | Role | Setup |
 | --- | --- | --- |
 | 0 | Deployer | Deploys, then holds no privileges once the team council takes the guardian's seat |
 | 1 | Instituto Klippel | Receives the R$ 1,00 per ride from `FeeVault.sweep`. The team council's only member, in every role. The account `gov/klippel-gov` signs with |
 | 2 | Attester | Trusted mock KYC/CNH attester |
-| 3 | First phone, starts as rider | R$ 1.000 in each mock coin, both roles, R$ 100 stake, CNH credential hash |
-| 4 | Second phone, starts as driver | The same |
+| 3, 4 | Rider and driver of `make demo` | Plain accounts, funded and registered, for the scripted demo ride |
 | 5-7 | Validators | R$ 500 stake each, can judge disputes |
-| 8, 9 | Third and fourth phone | The same, for trying four phones at once |
-| 10 | Tax collector | Receives the government's tax on each ride (5% of the fare on the local testnet). Not one of anvil's ten funded accounts: it only receives |
+| 10 | Tax collector | Receives the government's tax on each ride (5% of the fare on the local testnet). It only receives |
+| 11, 12 | The bundler's executor and utility accounts | Sign the bundles of operations (`testnet/bundler`) |
+| 13 | Puts the EntryPoint in place | `testnet/entrypoint.sh` |
+| `DevAccount.RIDER`, `DRIVER` | First and second phone (smart accounts, device-key secrets `0xab001`, `0xab002`) | R$ 1.000 in each mock coin, both roles, R$ 100 stake, CNH credential (`script/SeedPhones.s.sol`) |
+| `DevAccount.RIDER_2`, `DRIVER_2` | Third and fourth phone (`0xab003`, `0xab004`) | The same, for trying four phones at once |
 
 ### Local governance settings
 
@@ -142,7 +162,7 @@ What comes out of a fare, and what does not:
 | --- | --- | --- | --- |
 | Instituto Klippel | R$ 1,00 per ride | The driver: deducted from the fare | `RideEscrow.setToken` |
 | Government tax (imposto) | 5% of the fare | The driver: deducted from the fare | `RideEscrow.setTax` |
-| Infrastructure cost | About R$ 0,002 a ride at local gas prices | Each side pays the network for its own transactions, in the chain's coin, outside the escrow | The network's gas price; `FareGuide.setNativeCoinPrice` sets the rate the app uses to show it in reais |
+| Infrastructure cost | About R$ 0,004 a ride at local gas prices (1 gwei, R$ 2,50 a coin) | Each side pays the network for its own operations, outside the escrow: `BrlPaymaster` pays in the chain's coin and charges the account the same in reais | The network's gas price; `FareGuide.setNativeCoinPrice` sets the rate the paymaster charges at and the app shows it in |
 
 A ride keeps the tax it opened with. The app shows all three before the rider locks and before the driver
 quotes, and what was actually paid when the ride ends.
@@ -174,10 +194,11 @@ the quoted drop-off, and whether the logs are signed, countersigned and physical
 
 ## Not built yet
 
-ERC-4337 smart accounts and the paymaster, the iOS app, and a Polygon Amoy deployment. The gossip layer carries
-signed requests and offers, but not yet session certificates, encrypted offers, presence, real location cells,
-relays or the encrypted ride channel (see [apps/android](apps/android/README.md)). The pickup proof is recorded as a hash the driver submits; checking both phones' signatures comes
-with the smart accounts.
+Account recovery by passkey (the account accepts one; there is no screen to add it), Pix top-ups, the iOS app,
+and a Polygon Amoy deployment. The gossip layer carries signed requests and offers under session certificates,
+in cells of about 5 km around the pickup, but not yet encrypted offers, presence, relays or the encrypted ride channel (see
+[apps/android](apps/android/README.md)). The pickup proof is recorded as a hash the driver submits; nothing
+checks both phones' signatures on it yet.
 
 Of the trip proofs, the Android app does the first half: the rider's phone computes and verifies the route and
 locks the real quote hash, and the chosen driver's phone receives the route sealed to it and checks it before

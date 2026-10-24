@@ -83,7 +83,10 @@ fun DriverApp(state: UiState, vm: AppViewModel) {
     // Oldest first: the ride being driven, then the ones taken after it.
     val mine = state.rides.filter { it.status.isActive }.sortedBy { it.id }
     val current = mine.firstOrNull { it.status != RideStatus.Open }
-    val chosen = mine.firstOrNull { it.status == RideStatus.Open }
+    // Every ride a rider locked and the driver has not answered, oldest first: each is the driver's to take or turn down.
+    val locked = mine.filter { it.status == RideStatus.Open }
+    // At most two rides locked: the one in hand and the next. With both, no more quotes go out.
+    val roomForNext = mine.size < 2
     var online by rememberSaveable { mutableStateOf(false) }
     // The request being quoted on with a ride in hand, by id: a newer one arriving must not take its place
     // under the driver's finger.
@@ -108,7 +111,7 @@ fun DriverApp(state: UiState, vm: AppViewModel) {
     }
 
     when {
-        mine.isNotEmpty() && quoted != null -> {
+        mine.isNotEmpty() && roomForNext && quoted != null -> {
             val back = { quoting = null }
             BackHandler(onBack = back)
             IncomingRequest(
@@ -123,7 +126,7 @@ fun DriverApp(state: UiState, vm: AppViewModel) {
                 },
             )
         }
-        mine.isNotEmpty() -> DriverRide(state, current, chosen, request, onQuote = { quoting = request?.id?.toString() }, vm)
+        mine.isNotEmpty() -> DriverRide(state, current, locked, request.takeIf { roomForNext }, onQuote = { quoting = request?.id?.toString() }, vm)
         toRate != null -> RideEndScreen(
             state, toRate,
             onBack = null,
@@ -555,8 +558,8 @@ fun StepButton(symbol: String, description: String, enabled: Boolean, tag: Strin
  * QR code and Bluetooth; until that exists the driver starts it with a button.
  */
 @Composable
-private fun DriverRide(state: UiState, current: Ride?, chosen: Ride?, request: RideRequest?, onQuote: () -> Unit, vm: AppViewModel) {
-    val lead = current ?: chosen ?: return
+private fun DriverRide(state: UiState, current: Ride?, locked: List<Ride>, request: RideRequest?, onQuote: () -> Unit, vm: AppViewModel) {
+    val lead = current ?: locked.firstOrNull() ?: return
     val coin = coinOf(state, lead.token)
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest).testTag(Tags.DRIVER_RIDE)) {
         Surface(color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.fillMaxWidth()) {
@@ -585,15 +588,23 @@ private fun DriverRide(state: UiState, current: Ride?, chosen: Ride?, request: R
                     else -> {}
                 }
             }
-            if (chosen != null) {
-                val bond = brl(coinOf(state, chosen.token), chosen.driverBond)
-                if (current != null) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                // With a ride already in hand, this one is drawn in the other colour and comes after it.
-                RideSummary(state, chosen, next = current != null, slot = Tags.SLOT_CHOSEN)
-                PrimaryButton(stringResource(R.string.action_accept), { vm.accept(chosen.id) }, Modifier.testTag(Tags.DRIVER_RIDE_ACCEPT), enabled = state.canAccept, busy = state.busy)
-                SecondaryButton(stringResource(R.string.decline_ride), { vm.cancel(chosen.id) }, Modifier.fillMaxWidth().testTag(Tags.DRIVER_RIDE_DECLINE), enabled = !state.busy)
+            // The escrow takes the next ride only once the rider of the one in hand is in the car.
+            val waiting = state.rides.any { it.status == RideStatus.Accepted }
+            locked.forEachIndexed { i, ride ->
+                val slot = Tags.chosenSlot(ride.id.toString())
+                val bond = brl(coinOf(state, ride.token), ride.driverBond)
+                if (current != null || i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                // With a ride already in hand, these are drawn in the other colour and come after it.
+                RideSummary(state, ride, next = current != null, slot = slot)
+                PrimaryButton(stringResource(R.string.action_accept), { vm.accept(ride.id) }, Modifier.testTag(Tags.rideAccept(slot)), enabled = state.canAccept && !waiting, busy = state.busy)
+                if (waiting) {
+                    Muted(stringResource(R.string.accept_after_pickup), Modifier.testTag(Tags.rideAfterPickup(slot)), size = 12.sp, align = TextAlign.Center)
+                }
+                SecondaryButton(stringResource(R.string.decline_ride), { vm.decline(ride.id) }, Modifier.fillMaxWidth().testTag(Tags.rideDecline(slot)), enabled = !state.busy)
                 Muted(
-                    stringResource(R.string.accept_hint, bond) + " " + stringResource(R.string.decline_hint),
+                    stringResource(R.string.accept_hint, bond) + " " + stringResource(R.string.decline_hint) +
+                        // Taking one gives the others back: the escrow lets the driver hold only one on the way to its pickup.
+                        if (locked.size > 1) " " + stringResource(R.string.accept_declines_others) else "",
                     size = 12.sp,
                     align = TextAlign.Center,
                 )

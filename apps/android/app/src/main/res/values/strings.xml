@@ -180,6 +180,8 @@
     <string name="route_needs_map">Baixe o mapa para ver a rota desta corrida.</string>
     <string name="map_needed_driver">Baixe o mapa da região para ver as ruas e a rota de cada corrida. Sem ele você ainda recebe solicitações e faz ofertas.</string>
     <string name="decline_ride">Recusar corrida</string>
+    <string name="accept_after_pickup">Você aceita esta corrida quando o passageiro atual estiver no carro.</string>
+    <string name="accept_declines_others">Ao aceitar uma, as outras que você cotou antes são devolvidas aos passageiros.</string>
     <string name="decline_hint">Recusar não custa nada: o passageiro recebe tudo de volta.</string>
     <string name="asked_again">O motorista desistiu da corrida e você recebeu tudo de volta. O mesmo pedido foi enviado de novo aos outros motoristas.</string>
 

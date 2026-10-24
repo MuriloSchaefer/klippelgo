@@ -2,6 +2,7 @@
 # Starts two Android emulators side by side, installs KlippelGo on both and opens one as the rider and the other
 # as the driver. Both talk to the local testnet on your computer (http://10.0.2.2:8545 from inside an emulator).
 #
+#   DRIVERS=2 two-phones.sh   three emulators: one rider and two drivers competing for its request
 #   PAIRS=2 two-phones.sh     four emulators: two riders and two drivers, each with its own seeded account
 #
 # Each emulator takes about 4 GB of RAM while running.
@@ -21,6 +22,10 @@ NDK="${NDK:-27.3.13750724}"
 GOSSIP_PORT=4001
 PAIRS="${PAIRS:-1}"
 case "$PAIRS" in 1|2) ;; *) echo "PAIRS must be 1 or 2" >&2; exit 1 ;; esac
+RIDERS="${RIDERS:-$PAIRS}"
+DRIVERS="${DRIVERS:-$PAIRS}"
+# Two of each is what SeedPhones.s.sol seeds and DRIVER_SPOTS places.
+case "$RIDERS$DRIVERS" in [12][12]) ;; *) echo "RIDERS and DRIVERS must each be 1 or 2" >&2; exit 1 ;; esac
 # Where each driver's emulator says it is: two spots in the centre of Cascavel, the pilot city. Emulators start
 # in California, outside the map pack. Longitude first, as the emulator console wants it.
 DRIVER_SPOTS=("-53.4590 -24.9520" "-53.4480 -24.9585")
@@ -114,11 +119,30 @@ wait_boot() { # serial
   echo "$1 is up"
 }
 
-# name, emulator port, role, which seeded account of that role
-PHONES=("KlippelGo_Rider 5554 rider 1" "KlippelGo_Driver 5556 driver 1")
-[ "$PAIRS" = 2 ] && PHONES+=("KlippelGo_Rider2 5558 rider 2" "KlippelGo_Driver2 5560 driver 2")
+# An emulator can come up with Wi-Fi as its default network but without Wi-Fi's routes, so the app sees no
+# testnet while adb and the other phones do. Turning Wi-Fi off and on makes Android install them again.
+RPC_PORT="${RPC_IN_EMULATOR##*:}"
+RPC_PORT="${RPC_PORT%%/*}"
+reach_host() { # serial
+  local tries
+  for tries in 1 2 3; do
+    for _ in $(seq 10); do
+      "$ADB" -s "$1" shell "echo | toybox nc -w 2 10.0.2.2 $RPC_PORT" >/dev/null 2>&1 && return 0
+      sleep 1
+    done
+    echo "$1 cannot reach the testnet; turning its Wi-Fi off and on"
+    "$ADB" -s "$1" shell 'svc wifi disable; sleep 2; svc wifi enable' >/dev/null 2>&1 || true
+  done
+  echo "$1 still cannot reach the testnet on 10.0.2.2:$RPC_PORT. Restart that emulator." >&2
+}
 
-# Each phone has one account and keeps it in passenger and in driver mode, so all four accounts need funds,
+# name, emulator port, role, which seeded account of that role. Each phone keeps its port whichever others run,
+# so the second driver is emulator-5560 with three phones as with four.
+PHONES=("KlippelGo_Rider 5554 rider 1" "KlippelGo_Driver 5556 driver 1")
+[ "$RIDERS" = 2 ] && PHONES+=("KlippelGo_Rider2 5558 rider 2")
+[ "$DRIVERS" = 2 ] && PHONES+=("KlippelGo_Driver2 5560 driver 2")
+
+# Each phone has one account and keeps it in passenger and in driver mode, so every phone's account needs funds,
 # both roles, stake and a licence. `make deploy` sets that up; this covers a chain deployed before it did, and
 # skips whatever is already done.
 if command -v forge >/dev/null; then
@@ -134,6 +158,7 @@ done
 for phone in "${PHONES[@]}"; do
   read -r _ port _ _ <<<"$phone"
   wait_boot "emulator-$port"
+  reach_host "emulator-$port"
 done
 
 echo "Building the app"

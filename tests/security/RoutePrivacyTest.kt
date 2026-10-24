@@ -63,9 +63,13 @@ class RoutePrivacyTest : Scenario() {
         // The request says what the docs say it says, and no more.
         val said = stranger.heardJson("request").first { it.get("rider").asText() == appRider }
         assertEquals(
-            setOf("t", "rider", "token", "maxFare", "expiresAt", "nonce", "pack", "route", "distanceM", "durationS", "from", "to", "sig"),
+            setOf("t", "rider", "token", "maxFare", "expiresAt", "nonce", "pack", "route", "distanceM", "durationS", "from", "to", "sig", "cert"),
             said.fieldNames().asSequence().toSet(),
         )
+        // The certificate of the session key that signed it says whose key it is and until when, and nothing else.
+        val cert = said.get("cert")
+        assertEquals(setOf("account", "session", "expiresAt", "sig"), cert.fieldNames().asSequence().toSet())
+        assertEquals(appRider, cert.get("account").asText().lowercase())
         // The regions are the right ones, about a square kilometre each, and the length is rounded.
         assertEquals(regionCell(route.pickup), said.get("from").asText())
         assertEquals(regionCell(route.dropoff), said.get("to").asText())
@@ -86,9 +90,9 @@ class RoutePrivacyTest : Scenario() {
 
         // The route and the position went out, sealed, and each named only who it was for.
         val reveal = stranger.heardJson("route").first()
-        assertEquals(setOf("t", "request", "driver", "sealed", "key", "sig"), reveal.fieldNames().asSequence().toSet())
+        assertEquals(setOf("t", "request", "driver", "sealed", "key", "sig", "cert"), reveal.fieldNames().asSequence().toSet())
         assertEquals(driver.address, reveal.get("driver").asText())
-        assertEquals(setOf("t", "quote", "sealed", "sig"), stranger.heardJson("position").first().fieldNames().asSequence().toSet())
+        assertEquals(setOf("t", "quote", "sealed", "sig", "cert"), stranger.heardJson("position").first().fieldNames().asSequence().toSet())
 
         driver.cancel(ride.id)
     }

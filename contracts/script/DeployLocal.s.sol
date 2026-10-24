@@ -4,6 +4,8 @@ pragma solidity ^0.8.28;
 import {Script, console2} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {TeamDeployer} from "./TeamDeployer.sol";
+import {AccountsDeployer} from "./AccountsDeployer.sol";
+import {ERC4337Utils} from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
 import {LocalAccounts} from "./LocalAccounts.sol";
 import {MockBRL} from "../src/mocks/MockBRL.sol";
 import {TeamCouncil} from "../src/TeamCouncil.sol";
@@ -15,7 +17,7 @@ import {TeamCouncil} from "../src/TeamCouncil.sol";
 /// action needs one approval and no delay, so a request runs at once. The real numbers are in TeamDeployer.
 ///
 ///   forge script script/DeployLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
-contract DeployLocal is Script, TeamDeployer, LocalAccounts {
+contract DeployLocal is Script, TeamDeployer, AccountsDeployer, LocalAccounts {
     function run() external {
         _loadAccounts();
 
@@ -56,6 +58,18 @@ contract DeployLocal is Script, TeamDeployer, LocalAccounts {
             })
         );
 
+        // People's accounts, through the EntryPoint at its canonical address, which testnet/entrypoint.sh puts
+        // there on this chain. After the protocol, so that the protocol's addresses stay what the app was built
+        // with.
+        require(
+            address(ERC4337Utils.ENTRYPOINT_V09).code.length > 0,
+            "No EntryPoint v0.9: run testnet/entrypoint.sh"
+        );
+        IERC20[] memory coins = new IERC20[](2);
+        coins[0] = IERC20(address(brla));
+        coins[1] = IERC20(address(brz));
+        Accounts memory a = _deployAccounts(p, ERC4337Utils.ENTRYPOINT_V09, coins, 100 ether, 1 ether);
+
         address[] memory instituto = new address[](1);
         instituto[0] = institutoKlippel;
         TeamCouncil council = _deployTeam(
@@ -67,7 +81,8 @@ contract DeployLocal is Script, TeamDeployer, LocalAccounts {
                 credentialing: instituto,
                 security: instituto,
                 recovery: institutoKlippel,
-                local: true
+                local: true,
+                paymaster: address(a.paymaster)
             })
         );
 
@@ -106,10 +121,18 @@ contract DeployLocal is Script, TeamDeployer, LocalAccounts {
 
         string memory k = "deployment";
         vm.serializeUint(k, "chainId", block.chainid);
+        // No earlier block holds any of these contracts' events: phones and klippel-gov start reading events here.
+        vm.serializeUint(k, "deployBlock", block.number);
         vm.serializeAddress(k, "BRLA", address(brla));
         vm.serializeAddress(k, "BRZ", address(brz));
         vm.serializeAddress(k, "PBACGovernor", address(p.governor));
         vm.serializeAddress(k, "TeamCouncil", address(council));
+        vm.serializeAddress(k, "EntryPoint", address(a.entryPoint));
+        vm.serializeAddress(k, "AccountFactory", address(a.factory));
+        vm.serializeAddress(k, "DeviceKeyVerifier", address(a.verifier));
+        vm.serializeAddress(k, "KlippelGoAccount", address(a.implementation));
+        vm.serializeAddress(k, "WebAuthnVerifier", address(a.webAuthnVerifier));
+        vm.serializeAddress(k, "BrlPaymaster", address(a.paymaster));
         vm.serializeAddress(k, "IdentityRegistry", address(p.registry));
         vm.serializeAddress(k, "Reputation", address(p.reputation));
         vm.serializeAddress(k, "FeeVault", address(p.feeVault));
@@ -126,6 +149,9 @@ contract DeployLocal is Script, TeamDeployer, LocalAccounts {
 
         console2.log("PBACGovernor     ", address(p.governor));
         console2.log("TeamCouncil      ", address(council));
+        console2.log("EntryPoint       ", address(a.entryPoint));
+        console2.log("AccountFactory   ", address(a.factory));
+        console2.log("BrlPaymaster     ", address(a.paymaster));
         console2.log("IdentityRegistry ", address(p.registry));
         console2.log("Reputation       ", address(p.reputation));
         console2.log("FeeVault         ", address(p.feeVault));

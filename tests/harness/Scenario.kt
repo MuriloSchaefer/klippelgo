@@ -25,6 +25,9 @@ abstract class Scenario {
     val app = App(phone)
     private val opened = mutableListOf<AutoCloseable>()
 
+    /** This test's peers, kept after they are closed so that a failure can say what each one held. */
+    private val peers = mutableListOf<Peer>()
+
     /** Reads the chain as anyone can. The key signs nothing here. */
     val chain: KlippelGoClient by lazy { stack.client(DevAccount.RIDER_2) }
 
@@ -43,6 +46,7 @@ abstract class Scenario {
     fun peer(account: DevAccount): Peer {
         val peer = Peer(stack, account)
         opened += peer
+        peers += peer
         waitUntil<Boolean>("${account.name} to reach the gossip network", 20_000) { if (peer.connected()) true else null }
         return peer
     }
@@ -53,21 +57,41 @@ abstract class Scenario {
     fun governance(): Governance = Governance(stack).also { opened += it }
 
     /**
-     * A rider Instituto Klippel blocked: an account made on the spot and registered, then blocked the way the
-     * guardian does it, with `gov/klippel-gov`.
+     * A rider Instituto Klippel blocked: an account made on the spot (a new device key, a few test reais in, then
+     * its first operation registers it as a rider), then blocked the way Segurança does it, with `gov/klippel-gov`.
      */
     fun blockedRider(): KlippelGoClient {
-        val key = org.web3j.utils.Numeric.toHexStringWithPrefixZeroPadded(org.web3j.crypto.Keys.createEcKeyPair().privateKey, 64)
-        val rider = KlippelGoClient(stack.rpc, key, stack.deployment)
-        stack.script("cast", "rpc", "--rpc-url", stack.rpc, "anvil_setBalance", rider.address, "0xde0b6b3a7640000")
-        stack.script(
-            "cast", "send", "--rpc-url", stack.rpc, "--private-key", key,
-            stack.deployment.registry, "register(uint8)", KlippelGoClient.ROLE_RIDER.toString(),
+        val key = org.klippelgo.chain.SoftwareDeviceKey(
+            java.math.BigInteger(256, java.security.SecureRandom()).mod(org.klippelgo.chain.P256.N - java.math.BigInteger.ONE) + java.math.BigInteger.ONE,
         )
+        val rider = KlippelGoClient(stack.rpc, key, stack.deployment)
+        rider.mint(rider.brz, rider.brz.toBaseUnits(java.math.BigDecimal("50.00")))
+        rider.ensureRegistered(KlippelGoClient.ROLE_RIDER)
         check(chain.canOpenRides(rider.address)) { "the new rider should be able to open rides before the block" }
         stack.script("gov/klippel-gov", "block", rider.address)
         check(!chain.canOpenRides(rider.address)) { "the rider was blocked and can still open rides" }
         return rider
+    }
+
+    /** The chain's latest block, to count an account's gas from ([gasPaid]). */
+    fun mark(): java.math.BigInteger = chain.blockNumber()
+
+    /**
+     * What `account` paid the network in `coin` since block `from`: every account pays its gas in reais through
+     * the paymaster, which takes the most an operation could cost and gives back what it did not use. So it is
+     * what went from the account to the paymaster, less what came back, read from the coin's Transfer events.
+     */
+    fun gasPaid(account: String, coin: org.klippelgo.chain.Coin, from: java.math.BigInteger): java.math.BigInteger {
+        fun moved(src: String, dst: String): java.math.BigInteger {
+            val logs = stack.script(
+                "cast", "logs", "--json", "--rpc-url", stack.rpc, "--from-block", from.toString(), "--address", coin.address,
+                "Transfer(address indexed,address indexed,uint256)", src, dst,
+            )
+            return com.fasterxml.jackson.databind.ObjectMapper().readTree(logs)
+                .fold(java.math.BigInteger.ZERO) { sum, log -> sum + org.web3j.utils.Numeric.toBigInt(log.get("data").asText()) }
+        }
+        val paymaster = stack.deployment.paymaster
+        return moved(account, paymaster) - moved(paymaster, account)
     }
 
     /** What the government's tax collector holds of a coin. */
@@ -111,14 +135,30 @@ abstract class Scenario {
         phone.awaitTag(Tags.GO_ONLINE_SCORE)
     }
 
-    /** Saves what the phone showed when a test failed, next to the report. */
+    /**
+     * Saves what the phone showed when a test failed, next to the report: the screen, what the app traced since it
+     * was launched (debug builds trace gossip and chain reads under one tag), and what each peer's matchmaker held.
+     */
     class KeepTheScreen : TestWatcher {
+        /** `AppViewModel.TRACE_TAG`: the harness compiles nothing of the app's but its tags. */
+        private val TRACE_TAG = "KlippelGo"
+
         override fun testFailed(context: ExtensionContext, cause: Throwable?) {
             val stack = runCatching { Stack.current }.getOrNull() ?: return
             val name = context.requiredTestClass.simpleName + "." + context.requiredTestMethod.name
             stack.phones.take(stack.phonesUp()).forEachIndexed { i, phone ->
-                val file = File(stack.reportDir, if (i == 0) "$name.png" else "$name.phone${i + 1}.png")
+                val suffix = if (i == 0) "" else ".phone${i + 1}"
+                val file = File(stack.reportDir, "$name$suffix.png")
                 runCatching { phone.screenshot(file) }.onSuccess { println("The screen at the failure: $file") }
+                val trace = File(stack.reportDir, "$name$suffix.trace.txt")
+                runCatching { trace.writeText(phone.adb("logcat", "-d", "-v", "time", "-s", "$TRACE_TAG:D")) }
+                    .onSuccess { println("What the app traced: $trace") }
+            }
+            val peers = (context.testInstance.orElse(null) as? Scenario)?.peers.orEmpty()
+            if (peers.isNotEmpty()) {
+                val file = File(stack.reportDir, "$name.peers.txt")
+                runCatching { file.writeText(peers.joinToString("\n") { it.match.describe() }) }
+                    .onSuccess { println("What the peers held: $file") }
             }
         }
     }

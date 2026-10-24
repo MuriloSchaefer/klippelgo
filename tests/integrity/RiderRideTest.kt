@@ -69,6 +69,8 @@ class RiderRideTest : Scenario() {
 
         val riderBefore = rider.balanceOf(coin)
         val driverBefore = driver.balance()
+        // Each side pays its own operations' gas in this coin too, through the paymaster.
+        val from = mark()
         val taxBefore = taxCollected(coin)
         app.confirm.lock()
         app.onTheWay.awaitStatus("Open")
@@ -80,7 +82,7 @@ class RiderRideTest : Scenario() {
         assertEquals(fee, ride.fee)
         assertEquals(tax, ride.tax)
         assertEquals(RideStatus.Open, ride.status)
-        assertEquals(riderBefore - fare - riderBond, rider.balanceOf(coin))
+        assertEquals(riderBefore - fare - riderBond - gasPaid(appRider, coin, from), rider.balanceOf(coin))
         assertEquals(coin.toReais(fare + riderBond).setScale(2), app.onTheWay.locked())
 
         // The route arrives sealed to the driver, holds on the driver's own copy of the map, hashes to the
@@ -119,9 +121,9 @@ class RiderRideTest : Scenario() {
         waitUntil("the ride to complete on chain", 60_000) { true.takeIf { driver.ride(ride.id).status == RideStatus.Completed } }
         // The driver nets the fare minus the fee for Instituto Klippel and the tax, which went to its
         // collector; the rider paid the fare and no more, and the bond came back.
-        assertEquals(driverBefore + fare - fee - tax, driver.balance())
+        assertEquals(driverBefore + fare - fee - tax - gasPaid(driver.address, coin, from), driver.balance())
         assertEquals(taxBefore + tax, taxCollected(coin))
-        assertEquals(riderBefore - fare, rider.balanceOf(coin))
+        assertEquals(riderBefore - fare - gasPaid(appRider, coin, from), rider.balanceOf(coin))
         waitUntil("the rider's rating to be on chain", 60_000) { true.takeIf { rider.hasRated(ride.id) } }
         driver.rate(ride.id, 5)
 
@@ -306,6 +308,7 @@ class RiderRideTest : Scenario() {
         val rider = stack.client(DevAccount.RIDER)
         freshRider()
         val before = rider.balanceOf(rider.brz)
+        val from = mark()
 
         askForARide()
         val offer = driver.offer(driver.awaitRequest(appRider))
@@ -318,7 +321,8 @@ class RiderRideTest : Scenario() {
         app.onTheWay.cancel()
         app.whereTo.shown()
         assertEquals(RideStatus.Cancelled, rider.ride(ride.id).status)
-        assertEquals(before, rider.balanceOf(rider.brz))
+        // All of it, but for what the lock and the cancellation cost the network.
+        assertEquals(before - gasPaid(appRider, rider.brz, from), rider.balanceOf(rider.brz))
     }
 
     @Test

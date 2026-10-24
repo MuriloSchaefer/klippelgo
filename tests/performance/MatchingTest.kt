@@ -64,6 +64,8 @@ class MatchingTest : Scenario() {
             app.rideEnd.pay()
             waitUntil("the ride to complete", 60_000) { true.takeIf { driver.ride(ride.id).status == RideStatus.Completed } }
         }, "ms", 30_000)
+        // The five stars picked before paying went on chain with the payment.
+        waitUntil("the rider's rating to be on chain", 60_000) { true.takeIf { stack.client(DevAccount.RIDER).hasRated(ride.id) } }
         driver.rate(ride.id, 5)
     }
 

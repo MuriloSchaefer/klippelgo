@@ -100,7 +100,9 @@ on the proof index, and the proof index is believed only because its Merkle root
 `MapRegistry`.
 
 The chosen driver's phone runs the second half of this on the route it receives (`MapPack.check_quote`), and a
-juror runs it with `klippelgo-juror <pack dir> <evidence.json>`.
+juror runs it with `klippelgo-juror <pack dir> <evidence.json>`. `check_quote` also returns the terms the hash
+covers (fare, token, rider, driver), so the phone can tell the ride the quote names from one opened by someone
+who copied its hash.
 
 ## The hashes
 

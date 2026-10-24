@@ -64,6 +64,7 @@ sequenceDiagram
     D->>D: open_route(offer secret, quoteHash)
     Note over D: fails for any other key or quote.<br/>What opens is still only the rider's claim
     D->>D: MapPack.check_quote against the locked hash
+    Note over D: and its fare, coin, rider and driver<br/>against the ride's own
 ```
 
 The quote hash is part of the key derivation, so a sealed route opens only for the quote it was made for and
@@ -160,13 +161,15 @@ flowchart TB
 | K1 | No peer scoring, rate limiting or cost per message in gossip | A peer can flood a cell with valid-looking traffic. The caller's caps bound memory, not bandwidth | GossipSub peer scoring with an application validator; a cost for posting requests |
 | K2 | Sealing is one message, one way, to a static per-offer key | No forward secrecy beyond the offer key's short life. Losing the offer secret exposes that one route | The encrypted ride channel (Noise between the two phones) |
 | K3 | Sealed blobs are broadcast to the cell | Observers learn that some rider chose some driver and that a driver is on a ride, and the blob size hints at trip length | Direct or relayed phone-to-phone channel |
-| K4 | The router sees IP addresses and topic subscriptions | An IP can be tied to a 5 km cell | Relays, several independent routers, later onion-style transport |
-| K5 | Account keys sign every gossip message | The wallet key is used far more often than it should be | Session certificates |
+| K4 | The router sees IP addresses and topic subscriptions | An IP can be tied to a 5 km cell: a driver's to the cell they are in while online, and to each one they cross into; a rider's to the cell of each pickup they ask from | Relays, several independent routers, later onion-style transport |
 | K6 | GPS can be spoofed consistently by one phone | A lone lying phone produces a self-consistent log | Countersigning by the other phone, physical limits, and jurors when the two disagree |
 | K7 | Map matching on rural tracks and unusual geometry is weaker | A real trip can fail to match | Measured in [docs/maps-and-routing.md](../../docs/maps-and-routing.md); tolerances are governable |
 | K8 | A geohash-6 region in a sparse area may hold very few addresses | The region can identify a place | Coarser cells where density is low |
 | K9 | The UniFFI layer accepts strings and JSON from the app | A malformed input must fail, not panic across the FFI boundary | Keep returning errors; fuzz the parsers |
 | K10 | Sealed positions reuse the route's key-derivation tag (`KlippelGo sealed route v1`) | The two are told apart by their signature domains and by which key they are sealed to, not by the sealing itself | A context tag as a parameter of the sealing functions |
+
+K5 (account keys signed every gossip message) was closed: messages are signed by a session key the account
+certifies once a day (apps security, "Gossip messages and their checks").
 
 ## How it is tested
 

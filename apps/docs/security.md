@@ -1,7 +1,7 @@
 # Apps: security
 
 The app is where an attacker actually meets KlippelGo: it takes messages from strangers, downloads map data
-from a mirror, holds the keys, and shows the user what to believe. The numbered invariants (`A1` to `A14`) are
+from a mirror, holds the keys, and shows the user what to believe. The numbered invariants (`A1` to `A15`) are
 what the [security reviewer](../../.claude/agents/security-reviewer.md) checks a change against.
 
 Related: [overview.md](overview.md), [core security](../../core/docs/security.md),
@@ -11,7 +11,8 @@ Related: [overview.md](overview.md), [core security](../../core/docs/security.md
 
 | Asset | Threat |
 | --- | --- |
-| The account key | Theft means the user's funds, stake and reputation |
+| The account key | Theft means the user's funds, stake and reputation. It is a P-256 key in the phone's chip (StrongBox or the TEE, `KeystoreDeviceKey`), never exportable. It asks for no user check until recovery exists (P20) |
+| The session key | Theft lets someone speak for the account on gossip until its certificate expires (a day). It moves no money |
 | Where the user is and where they go | Any peer in the cell, the router, the mirror, the RPC provider |
 | The user's money | Being shown a wrong price, a wrong route or a wrong counterparty and locking funds on it |
 | The user's attention | Fake requests and offers that waste a driver's or rider's time |
@@ -32,12 +33,14 @@ flowchart LR
     gossip((Gossip<br/>anyone)):::untrusted
     mirror[(Pack mirror)]:::untrusted
     rpc[(RPC provider)]:::semi
+    bundler[(Bundler)]:::semi
     chain[(Contracts)]:::trusted
 
     gossip -- "every message validated on entry" --> mm
     mirror -- "hashes checked against the chain" --> ms
     rpc -- "reads are believed" --> cl
-    cl -- "signed transactions" --> rpc --> chain
+    cl -- "operations the device key signed" --> bundler --> chain
+    bundler -- "gas estimates (capped), receipts (believed)" --> cl
     mm --> vm --> ui
     ms --> core
     mm --> core
@@ -49,20 +52,29 @@ flowchart LR
 ```
 
 Gossip and mirrors are hostile by assumption. The RPC provider is the weak point: the app believes what it
-reads from it (see limit P3).
+reads from it (see limit P3). The bundler takes the account's signed operations to the chain; it cannot change
+one, and the phone never takes from it the account's address or an operation's hash (A15), but it is believed
+for the gas an operation needs, which the phone caps, and for the receipt the phone reads a ride's id from. Its
+address comes from the RPC address, so P2 and P3 cover it too.
 
 ## Gossip messages and their checks
 
-Every message is JSON, signed by the account it speaks for over a hash that starts with a versioned domain
-tag. `Matchmaker` drops a message that fails any check, silently, before storing anything.
+Every message is JSON, signed over a hash that starts with a versioned domain tag. The signer is the account's
+session key: a secp256k1 key the phone keeps in app-private storage, rotated before a day is out. Each message
+carries the session key's certificate, which the account's own key signed: this session key speaks for this
+account until then (`KlippelGo session v1`, with the chain and both addresses). A peer recovers the session key
+from the signature, checks that the certificate names that key and the account the message claims, and asks the
+account on chain whether its keys signed the certificate (ERC-1271 `isValidSignature`); the answer is kept for
+the certificate's life. "Signature recovers X" below means all of that, for account X. `Matchmaker` drops a
+message that fails any check, silently, before storing anything.
 
 | Message | Signed by | Domain | Checks on receipt |
 | --- | --- | --- | --- |
-| `request` | Rider | `KlippelGo request v3` | Not expired and expiring within an hour; under the cap of 200 requests; token is a known coin; positive fare, distance and duration; both region cells valid; price inside the fare guide's range for the stated trip; signature recovers the rider; signer passes the policy on `RideEscrow.open` on chain (the rider role, and not blocked by governance), asked again every five minutes; the map pack is active in `MapRegistry` |
-| `offer` | Driver | `KlippelGo offer v2` | For a known request; sequence number newer than the driver's last; under 50 offers per request; expires before the request does; fare within the driver's floor and ceiling; fare above the token's fee plus the tax on it; signature recovers the driver over the quote hash recomputed locally |
-| `close` | Rider | `KlippelGo close v1` | For a known request; signature recovers that request's rider |
-| `route` | Rider | `KlippelGo sealed route v2` | Addressed to this account; for a known request this phone quoted; signature recovers the request's rider over the sealed bytes and the rider's position key; opens with this phone's offer secret for one of its own quote hashes; the route starts and ends in the regions the request showed |
-| `position` | Driver | `KlippelGo sealed position v1` | For a ride this phone locked; signature recovers that ride's driver; opens with this phone's key for that quote; stamped by the driver later than every position before it, so a replayed one is dropped. How fresh it is counts from when it arrived, not from the driver's clock |
+| `request` | Rider | `KlippelGo request v4` | Heard in the gossip cell its pickup region lies in, and in no other; not expired and expiring within an hour; under the cap of 200 requests; token is a known coin; positive fare, distance and duration; both region cells valid; price inside the fare guide's range for the stated trip; signature recovers the rider; signer passes the policy on `RideEscrow.open` on chain (the rider role, and not blocked by governance), asked again every five minutes; the map pack is active in `MapRegistry` |
+| `offer` | Driver | `KlippelGo offer v3` | For a known request; sequence number newer than the driver's last; under 50 offers per request; expires before the request does; fare within the driver's floor and ceiling; fare above the token's fee plus the tax on it; signature recovers the driver over the quote hash recomputed locally |
+| `close` | Rider | `KlippelGo close v2` | For a known request; signature recovers that request's rider |
+| `route` | Rider | `KlippelGo sealed route v3` | Addressed to this account; for a known request this phone quoted; signature recovers the request's rider over the sealed bytes and the rider's position key; opens with this phone's offer secret for one of its own quote hashes; the route starts and ends in the regions the request showed |
+| `position` | Driver | `KlippelGo sealed position v2` | For a ride this phone locked; signature recovers that ride's driver; opens with this phone's key for that quote; stamped by the driver later than every position before it, so a replayed one is dropped. How fresh it is counts from when it arrived, not from the driver's clock |
 
 The request id is the hash of all its fields and a random nonce, and the quote hash names the chain, the
 escrow, the route hash, the fare, the token, both parties and the expiry. A message copied to another chain,
@@ -130,6 +142,15 @@ sequenceDiagram
 | Driver on this ride | That the driver is sending positions for this ride: the message names the quote hash, which is on chain. Not where the driver is | | Driver's position, every few seconds, and every second once the ride has started | |
 | Arrival | | | | Receipt hash |
 
+A driver's phone subscribes to the cell it is in and the eight around it, chosen from the cell and not from
+where in it the phone is: the router and the phone's peers learn which 5 km cell an online driver is in, and
+when they cross into another, and nothing finer. A rider's phone subscribes to the cell of each request it has
+out and of each ride whose driver it watches, so they learn the 5 km cell of that pickup.
+
+Every signed message also carries its session key's certificate: the account, the session key's address and
+when it expires. Nothing there was not already learnable from the signature, but it means every message an
+account sends in a day names the same session key.
+
 The driver's position is sealed to a key the rider sent inside the signed `route` message, and the driver's
 phone sends it only for the ride it is on now: of all the rides it accepted and has not finished, the one
 that started, or else the one locked first. A ride in dispute is frozen and takes no turn, so the next rider's
@@ -150,7 +171,9 @@ a driver and a short window could be filled to hide the real one.
   route hash, and the offer names that request, so an offer for a request since replaced (another price,
   another pickup) cannot be locked against the new route.
 - **A5. A driver accepts only a route they checked** on their own pack, in the announced regions, matching
-  the quote hash locked in the escrow.
+  the quote hash locked in the escrow, and only for the ride the quote names: the ride's fare, coin, rider and
+  driver must be the quote's own (`CheckedQuote` gives them), since anyone can open a ride with a quote hash
+  they saw on gossip.
 - **A6. Prices outside the band are ignored on both sides.** The band is read from `FareGuide`, never
   hard-coded, and read again when the last read is half a minute old, so a tariff Finanças changes reaches a
   running phone without a restart. A read that fails keeps the last tariff for another half minute.
@@ -161,13 +184,27 @@ a driver and a short window could be filled to hide the real one.
   A rider's phone reads its own position only to put the pickup pin there. It is never sent as a position;
   it leaves as any pickup does, inside the sealed route.
 - **A10. A driver's position goes only to the rider of the ride under way**, and stops when that ride ends.
-  Once a ride has started it goes out every second, between refreshes, on what the last refresh read from the
-  chain: that is believed for six seconds from when it was read, so sending stops within that of the ride
-  ending, and as soon as a refresh is seen to fail or the driver signs out.
+  It goes out from a loop of its own, at most every four seconds on the way to the pickup and every second once
+  the ride has started, on what the last full read took from the chain: that is believed for six seconds from
+  when it was read, or from the last check of the new blocks that found no event about the rides on screen, so
+  sending stops within that of the ride ending, and as soon as a full read or a check is seen to fail or the
+  driver signs out. Each check reads the 16 blocks before the new ones again, so an event a lagging node left out,
+  or a short reorganisation added, still ends the belief at a later check. A full read that a node behind the
+  others answers after a check reported the event can miss it, and then the belief holds until the next full
+  read, at most 30 s.
 - **A11. Memory taken by strangers is bounded**: caps on requests and on offers per request, and requests
   expire. Limit P13 lists what is not bounded yet.
 - **A12. Secrets stay in app-private storage or memory.** Offer secrets are memory only. Nothing secret is
-  logged, put in an intent, or written to shared storage. `allowBackup` is off.
+  logged, put in an intent, or written to shared storage. `allowBackup` is off. The account's key never leaves
+  the phone's chip; the session key is in app-private preferences.
+- **A15. Every write is the account's own operation, its hash is the phone's, and its cost is bounded.** The
+  phone computes the account's address from its key and the operation's hash (EIP-712, as the EntryPoint does)
+  itself, never from the node or the bundler, and signs only that hash: a lying RPC or bundler cannot get a
+  signature for another operation, nor have reais sent to an address the key does not own. Before signing, it
+  refuses gas limits above fixed ceilings (per kind of gas), a fee per gas above 1 000 gwei, and any operation
+  that could cost more than R$ 5,00 at the worst, at the rate it reads from `FareGuide`: a bundler cannot make
+  one operation take the account's balance. A lying RPC can lower that rate (P3); the gas ceilings still bound
+  the operation.
 - **A13. Cleartext traffic is allowed only to loopback and the emulator's host alias.**
 - **A14. Money shown is money locked.** The amounts on the confirmation screen are computed from the same
   values passed to `open`, including fee, bonds and the tax rate read from the chain. The tax shown is the sum
@@ -182,23 +219,24 @@ Real today. A change touching one should close it or leave it no worse, and say 
 
 | # | Limit | Consequence | What closes it |
 | --- | --- | --- | --- |
-| P1 | **Accounts are anvil's public test keys** (`DevAccount`) | No real key protection exists yet. Never usable outside a local testnet | Hardware-backed P-256 keys (StrongBox, Secure Enclave) behind ERC-4337 smart accounts |
-| P2 | `MainActivity` is exported and reads `role`, `rpc` and `pair` extras | Another app on the device could start KlippelGo with a role, a test account and an RPC it controls, and the RPC is saved, so it outlasts that launch | Accept the extras only in debug builds |
-| P3 | The app believes its RPC provider | A lying RPC can show a fake tariff, pack root, ride state or balance. A ride once reported finished is remembered as finished until the app restarts | Light-client proofs or several independent RPCs; at minimum a user-chosen RPC |
-| P4 | In `receiveOffer`, the token's fee is read from the chain (`tokenConfig`) before the signature is checked. A request signed by any throwaway key costs one `hasPermission` read, and one more every five minutes while that key keeps posting; the answers are kept per key and never pruned | A flood of offers for a known request, or of requests from fresh keys, makes each phone do RPC calls | Check the signature first; cache the fee like the tariff |
+| P2 | `MainActivity` is exported and reads `role`, `rpc` and `pair` extras | Another app on the device could start KlippelGo with a role and an RPC it controls, and the RPC is saved, so it outlasts that launch. The seeded test accounts, and the `devAccounts` extra, work in debug builds only | Accept the remaining extras only in debug builds too |
+| P3 | The app believes its RPC provider | A lying RPC can show a fake tariff, pack root, ride state or balance. A ride once reported finished is remembered as finished until the app restarts. The event scans and the check for changes believe its logs too: one that leaves out a ride's events keeps the screen up to 30 s behind, and one that leaves out a `RideOpened` keeps that ride off the screen, as a fake ride state could | Light-client proofs or several independent RPCs; at minimum a user-chosen RPC |
+| P4 | In `receiveOffer`, the token's fee is read from the chain (`tokenConfig`) before the signature is checked. A request signed by any throwaway key costs one `hasPermission` read, and one more every five minutes while that key keeps posting; the answers are kept per key and never pruned. Every message's certificate costs one `isValidSignature` read the first time it is seen; the same certificate again costs nothing (four lookups a minute per session key, answers kept bounded at 4 096). A stranger can send forged certificates with fresh session keys, one read each | A flood of offers for a known request, of requests from fresh keys, or of messages under forged certificates makes each phone do RPC calls, one per forgery. It cannot use up an honest session key's lookups with forged ones. A `position` the driver really signed, sent again with junk certificate bytes, is charged to that driver's session: until a phone has confirmed the certificate (its first read failed, or around the daily key change) such copies can keep its positions off that rider's screen. No money is at stake | Check the signature first; cache the fee like the tariff; a cost or a limit per gossip sender |
 | P5 | Offers are stored from any key, 50 per request, and an expired offer keeps its slot | Fifty throwaway keys can fill a request's slots so real drivers' offers are dropped until the request expires. The rider's screen hides offers from accounts that cannot accept, so no funds are at risk | Check `canAcceptRides(driver)` on receipt, cached; drop expired offers |
-| P6 | The account key signs every gossip message | Heavy use of the wallet key; no way to revoke a session | Session certificates |
-| P7 | Everyone uses one cell (`DEV_CELL`) | No geographic privacy or sharding yet | Cells from the phone's location |
 | P8 | Routes, quotes and rider keys on disk are not encrypted beyond Android's app sandbox | A rooted or seized phone reveals past rides | Encrypted database, retention limit |
 | P9 | Pickup proof and trip receipt are stand-in hashes; GPS logging is not wired | The trip itself is unproven on the app today | The ride channel, then `TripLog` and receipts from the core |
 | P10 | The rider's address and price are visible to the cell, linked to a region | A watcher can profile an address's trips by region | Fresh accounts per ride; encrypted offers |
 | P11 | A position is whatever the driver's phone says, and it counts as fresh from when it arrives | A driver can report a place they are not at, and on a ride it also decides how much of the route the rider's map still shows, when it is within 150 m of the route. A relay that holds the messages back and releases them in order makes old positions look current. A driver whose clock steps backwards mid-ride stops being shown | It is for display. Never use it as evidence: that is what the signed trip log is for. A per-ride counter instead of a clock, and an estimate of the clock offset, would close the last two |
-| P12 | Anyone with the rider role can open rides naming any driver, and cancel them later at no cost | Each one left Open costs that driver's phone, and the phones of riders waiting for that driver, one chain read per refresh; a few hundred slow the refresh enough that positions stop looking fresh. The driver's screen shows the newest ten rides, so ten junk rides hide a real rider's Open ride, and older junk cannot be declined from the app | Find accepted rides from `RideAccepted` logs in one query; show the driver the oldest Open rides; a cost for opening |
+| P12 | Anyone with the rider role can open rides naming any driver, and cancel them later at no cost | Each one left Open costs that driver's phone, and the phones of riders waiting for that driver, one more read in the batch of each full read, its id kept in the phone's scans (a waiting rider's only until they stop waiting for that driver), and its events wake a full read; enough of them make that batch slow enough that positions stop looking fresh. The driver's screen shows the newest ten rides, so ten junk rides hide a real rider's Open ride, and older junk cannot be declined from the app. None of them takes the driver's places in the escrow (C22). The phone declines on its own only a ride locked on a quote it made void by accepting another, by the rider that quote was for, and once per quote: a hash copied into rides by anyone else, or into more rides by that rider, costs the driver nothing. A rider who opens the same quote twice gets two rides that both pass the route check (A5), as all their terms are the rider's own; accepting one leaves the other Open, for the driver to decline or the rider to withdraw | Find accepted rides from `RideAccepted` logs in one query; show the driver the oldest Open rides; a cost for opening |
 | P13 | The matchmaker's caches of "is a rider" and "pack is active" answers are never pruned, and a "no" is kept until the app restarts | Memory grows with distinct signers seen; an account that registers after its first request is ignored by phones that saw it | Bound and expire both caches |
 | P14 | The driver's Accept button does not require the revealed route to have been checked | A5 holds by what the screen shows the driver ("rota conferida no seu mapa"), not by code: a driver can accept a ride whose route never arrived or failed the check | Enable Accept only once the route passed `check_quote` against the locked hash |
 | P15 | The rider's "driver is busy" notice starts from "nobody ahead" until the first successful read | A waiting rider whose first read fails sees no notice for a moment. No position is shown or sent | Keep the count unknown until read, and show neither state meanwhile |
 | P16 | The matchmaker's requests are in memory, and a phone takes any validly signed request from its own account as its own | After a restart, or with the same account on two phones, a peer replaying this rider's unexpired request (up to 10 minutes) puts it back on the rider's screen and it is announced again. It cannot be locked: the phone no longer holds its route (A4). A pickup move in progress is refused with a message | Keep the open request with its route on disk; ignore own requests this session did not make |
 | P17 | The driver's list shows the one picked and the newest others, 20 in all, of the up to 200 requests a phone keeps, and one rider-role account can post all 200 | An older real request sits under "N more" until those above it are passed or expire. Before the list, one request showed at a time and the same flood cost one pass each | A cost for posting requests (P4), and ordering by something a stranger cannot buy: distance to the pickup region, or the rider's score |
+| P18 | Debug builds hold anvil's public deployer key, to mint test reais (the Pix stand-in, `Faucet`) | Anyone can mint mock coins on a local testnet anyway | It refuses any chain but 31337. Release builds keep the code: removing it from them would close it |
+| P19 | A session certificate cannot be revoked before it expires: a stolen session key speaks for the account on gossip for up to a day | Peers check it once and keep the answer | A shorter life, or a revocation list on chain the account writes to. Removing the account's key does not help: the certificate was valid when it was checked |
+| P20 | The account's key is not bound to the phone's screen lock: whoever holds the unlocked phone can sign for the account and move its money | Android destroys a key bound to the lock when the lock is turned off; with no second signer on the account yet (P21), that would lose the account and its money for good | Recovery first (P21); then make the key with `setUserAuthenticationRequired`, so that a lock turned off costs only this phone's key |
+| P21 | Losing the phone loses the account: recovery by a passkey (designed in docs/accounts-and-pix.md, accepted by the account's WebAuthn signers) has no screen yet | Android passkeys need a domain that serves `assetlinks.json` | The domain, then the setup screen that adds the passkey as a second signer |
 
 ## How it is tested
 
@@ -213,12 +251,13 @@ through.
 
 | Test | Holds the app to | How |
 | --- | --- | --- |
-| `ForgedRequestsTest` | A1, A6, and of A7 that a request on an inactive pack is ignored; the `request` and `close` rows | Ten requests that each break one rule never reach a driver's screen: wrong signer, no rider role, price over and under the range, inactive pack, expired, expiring too far ahead, invalid pickup cell, zero distance, unknown coin. A request signed by a rider governance blocked never reaches it either. A withdrawal signed by anyone but the rider does nothing |
+| `ForgedRequestsTest` | A1, A6, and of A7 that a request on an inactive pack is ignored; the `request` and `close` rows, and the session certificate every message carries | Requests that each break one rule never reach a driver's screen: wrong signer, no rider role, price over and under the range, inactive pack, expired, expiring too far ahead, invalid pickup cell, zero distance, unknown coin, said in a cell its pickup is not in; and, in the honest rider's name, a certificate another account signed, one that expired, one claiming to last a week, and the rider's real certificate on a message another key signed. A request signed by a rider governance blocked never reaches it either. A withdrawal signed by anyone but the rider does nothing |
 | `ForgedOffersTest` | A1, A3, A6; the `offer` row | Nine offers that each break one rule never reach a rider's screen: wrong signer, over the ceiling, under the floor, a valid signature moved to another fare or another expiry, expiring after the request, expired, for another request, and a well-formed one from an account the policy does not let accept |
 | `RoutePrivacyTest` | A9; "Who learns what" | Everything said in the cell during a ride is recorded: the request has the documented fields and no more, and no point of the route or of the driver appears in the clear, nor inside the sealed fields once their base64 is undone |
-| `RevealedRouteTest` | A5 | A drivable route in the right regions that is not the one locked in the escrow is never shown as checked, and the same trip revealed honestly is. It stops short of P14 |
+| `RevealedRouteTest` | A5 | A drivable route in the right regions that is not the one locked in the escrow is never shown as checked, and the same trip revealed honestly is. A ride a stranger opened with the honest quote's hash, driver, coin and fare is never shown with that route, while the honest ride beside it is. It stops short of P14 |
 | `ThreePhonesTest` (integrity) | The honest path of A4 and A5 between real apps | Three copies of the app, a rider and two drivers: the driver not picked gets no ride and no route, and the one picked is shown the route as checked |
 | `RiderRideTest` (integrity) | A14, and the honest path of A4 | The amounts on the confirmation screen are the amounts the escrow holds after the lock |
+| `OnboardingTest` (integrity) | The account's key and A15 on the honest path | A phone given no seeded account makes its own key; its account is created and registered as a rider by its first operation, which the account pays in reais, and the address the profile shows is that account's |
 | `RuleChangesTest` | A14 with governance in the middle; contracts C1, C5, C14 | A ride under way keeps its tax when Finanças halves it mid-ride: on the ride-end screen, in the collector's balance and in what the driver nets, while the rules screen moves to the new rate. An offer both phones matched cannot be locked once Segurança stopped new rides: the app shows the refusal and no money moves; once the board resumes, the same offer locks. A tax change one member of two asked for changes nothing on screen or on chain until the second approves |
 | `GovernanceTest` (integrity) | A6, and the driver's notice of why they cannot accept | A tariff Finanças changes reaches the running app's rules screen and the price of its next request. `stop-rides` and `resume-rides` show and clear the "disabled" reason on a driver's screen; a block shows and clears the "account" reason, and the unblocked driver hears requests again |
 
@@ -234,9 +273,6 @@ Still owed:
 - That a refresh belonging to a session that was left (another account picked, or the phone switched to
   riding) cannot set the ride positions are sent for, nor send one itself (the role and session check in
   `sharePosition`), has no test.
-- The position a refresh itself sends uses the rides read at its start however long the refresh takes: with a
-  slow chain, or many rides opened naming the driver (P12), one position can go out that long after the ride
-  ended. Sending straight after the read would close it.
 - The rider's pin following the phone (`RiderRideTest`) is shown to stop once the rider has placed the pin by
   hand, and to start again after a ride. With the pin placed by hand the later steps of that test (a
   destination picked, a request out) no longer show those two checks by themselves, and that it stays put

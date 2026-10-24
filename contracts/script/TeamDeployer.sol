@@ -11,6 +11,7 @@ import {RideEscrow} from "../src/RideEscrow.sol";
 import {DisputeCourt} from "../src/DisputeCourt.sol";
 import {MapRegistry} from "../src/MapRegistry.sol";
 import {FareGuide} from "../src/FareGuide.sol";
+import {BrlPaymaster} from "../src/account/BrlPaymaster.sol";
 
 /// @notice Builds Instituto Klippel's team council over a deployed protocol and hands it the guardian's seat.
 /// The roles, who may do what, and the approvals and delays are those of docs/governance.md.
@@ -34,6 +35,7 @@ abstract contract TeamDeployer is ProtocolDeployer {
         address[] security;
         address recovery; // a cold multisig, never used day to day
         bool local; // the local testnet: one approval and no delay for everything, so tests stay fast
+        address paymaster; // the gas paymaster in reais, or zero for none; its permissions come last
     }
 
     /// @dev Approvals and delays, launch values or local ones.
@@ -64,7 +66,7 @@ abstract contract TeamDeployer is ProtocolDeployer {
             TeamCouncil.Init({
                 roles: _roles(),
                 members: _members(t),
-                permissions: _permissions(p, n, address(0)),
+                permissions: _permissions(p, n, address(0), t.paymaster),
                 playbooks: _playbooks(p, n),
                 minBoardDelay: t.local ? 0 : 24 hours
             })
@@ -112,12 +114,12 @@ abstract contract TeamDeployer is ProtocolDeployer {
     }
 
     /// @dev `self` is address zero: the council reads it as its own address.
-    function _permissions(Protocol memory p, Numbers memory n, address self)
+    function _permissions(Protocol memory p, Numbers memory n, address self, address paymaster)
         internal
         view
         returns (TeamCouncil.Permission[] memory list)
     {
-        list = new TeamCouncil.Permission[](36);
+        list = new TeamCouncil.Permission[](40);
         uint256 k;
         PBACGovernor g = p.governor;
 
@@ -190,6 +192,14 @@ abstract contract TeamDeployer is ProtocolDeployer {
 
         // The board stores playbooks, such as a new resume-rides after Operações changed a policy (L25).
         list[k++] = _direct(BOARD, self, TeamCouncil.grantPlaybook.selector, n.board, n.boardDelay);
+
+        // The paymaster: Finanças sends on the reais it collected; the board moves its native coin and stake.
+        if (paymaster != address(0)) {
+            list[k++] = _viaGov(FINANCE, paymaster, BrlPaymaster.withdrawTokens.selector, n.two, n.dayDelay);
+            list[k++] = _viaGov(BOARD, paymaster, BrlPaymaster.withdraw.selector, n.board, n.boardDelay);
+            list[k++] = _viaGov(BOARD, paymaster, BrlPaymaster.unlockStake.selector, n.board, n.boardDelay);
+            list[k++] = _viaGov(BOARD, paymaster, BrlPaymaster.withdrawStake.selector, n.board, n.boardDelay);
+        }
 
         assembly {
             mstore(list, k)

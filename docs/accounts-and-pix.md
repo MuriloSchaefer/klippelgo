@@ -1,9 +1,12 @@
 # Accounts and topping up with Pix
 
-Status: design, nothing built. Today every phone signs with one of anvil's public test keys (`DevAccount`,
-limit P1 in [apps security](../apps/docs/security.md)), and the Carteira tab mints mock coins as a stand-in for
-Pix. This page says what replaces both. Decisions marked **Default** stand until the project decides otherwise
-(see [Open decisions](#open-decisions)).
+Status: the accounts are built; Pix is not. Every person's account is a smart account owned by a P-256 key in
+the phone's chip (`KlippelGoAccount`, `AccountFactory`, `DeviceKeyVerifier`, `KeystoreDeviceKey`), every write goes
+through a bundler with gas paid in reais (`BrlPaymaster`), and gossip is signed by session keys the account
+certifies. Recovery by passkey is accepted by the account but has no setup screen (limit P21 in
+[apps security](../apps/docs/security.md)), and the Carteira tab still mints mock coins as a stand-in for Pix: the
+relay, the sweeper and the watcher below are still to build. Decisions marked **Default** stand until the project
+decides otherwise (see [Open decisions](#open-decisions)).
 
 The user's account here is their wallet: the address that holds their reais, signs their rides and carries
 their reputation. It is not `FeeVault`, the contract that collects the R$ 1,00 per ride for Instituto Klippel;
@@ -32,16 +35,17 @@ that one has no key or password at all, and its beneficiary is changed only by t
 | Where it is made | Android Keystore, in StrongBox when the phone has it, else the TEE | Secure Enclave |
 | Curve | P-256 | P-256 |
 | Exportable | No | No |
-| To sign | Biometrics or device credential, set as a key property (`setUserAuthenticationRequired`) | `.biometryAny` or `.devicePasscode` access control |
+| To sign | Built: no user check, until recovery exists (limit P20 in [apps security](../apps/docs/security.md)). Then biometrics or device credential, set as a key property (`setUserAuthenticationRequired`) | `.biometryAny` or `.devicePasscode` access control |
 
 These chips do not do secp256k1, the curve Ethereum accounts use, so the key cannot own a plain account. It owns
 a smart account that checks P-256 signatures with the RIP-7212 precompile at `0x100`, which Polygon PoS has and
 the local testnet's Osaka rules include (see the [README](../README.md)).
 
-**Default account contract: an audited one that already verifies P-256**, such as Safe with its passkey signer,
-ZeroDev Kernel with a P-256 validator, or Coinbase Smart Wallet. Writing our own is not worth the audit. The
-choice must accept a raw P-256 signature over a digest (what Keystore and the Secure Enclave produce) and a
-WebAuthn signature (what a synced passkey produces, used for recovery below).
+**The account contract is `KlippelGoAccount`**: OpenZeppelin v5.7's audited `Account` with `MultiSignerERC7913`
+and ERC-7821 batches, so little of it is our own. A signer is a verifier and a key: a raw P-256 signature over
+SHA-256 of the hash (what Keystore and the Secure Enclave produce) through `DeviceKeyVerifier`, and a WebAuthn
+signature (what a synced passkey produces, used for recovery below) through OpenZeppelin's WebAuthn verifier.
+Any one signer acts alone.
 
 ### The address
 
@@ -56,19 +60,20 @@ sequenceDiagram
 
     U->>P: opens the app for the first time
     P->>P: make P-256 key in StrongBox / Secure Enclave
-    P->>F: getAddress(public key, salt) (a read)
-    F-->>P: 0xAbc… (CREATE2: fixed before deployment)
+    P->>P: address = CREATE2 clone of F's implementation, salt from the key
     P->>U: show 0xAbc… in Carteira
     Note over P,C: The address can receive coins now. Nothing is on chain yet.
     U->>P: first action that writes (register, open a ride)
-    P->>P: sign the UserOperation (biometric prompt)
-    P->>B: UserOperation with initCode
-    B->>C: EntryPoint deploys the account, then runs the call
+    P->>P: sign the UserOperation's hash, computed on the phone
+    P->>B: UserOperation with the factory's createAccount
+    B->>C: EntryPoint creates the account, then runs the call
+    Note over F: createAccount sets the key and approves the paymaster
 ```
 
-The address is a pure function of the factory, the public key and a salt, so the phone needs no server to learn
-it, and a Pix top-up can land on it before the first ride. The account is deployed by its first transaction,
-which is usually `IdentityRegistry.register`.
+The address is a pure function of the factory, its implementation and the signer (the verifier's address and
+the public key), so the phone works it out itself, asks no server or node for it (apps A15), and a Pix top-up
+can land on it before the first ride. `AccountFactory.accountOf` gives the same address on chain. The account is
+created by its first operation, which is usually `IdentityRegistry.register`.
 
 What the user sees is the address and a name they choose for themselves. The name stays on the phone.
 
@@ -92,13 +97,12 @@ Losing them loses no money, only the history and the credentials to have checked
 
 ### Gas
 
-A paymaster pays each UserOperation's fee in POL and charges the account the same value in the ride's BRL coin,
-at the rate `FareGuide.nativeCoinCentavos` already holds. The fee is collected in the same UserOperation, so a
-user with reais but no POL can always act. **Default: Instituto Klippel runs the bundler and paymaster**, as the
-plan already says, and the app can be pointed at any other ERC-4337 bundler.
-
-This changes what the [README](../README.md) says today ("each side pays the network for its own transactions,
-in the chain's coin"): it is still each side paying its own, but in reais.
+`BrlPaymaster` pays each UserOperation's fee in POL and charges the account the same value in a BRL coin on the
+escrow's allow-list (the ride's coin, or the one the account holds most of), at the rate
+`FareGuide.nativeCoinCentavos` holds. It takes the most the operation could cost before it runs and gives back
+the rest after, so a user with reais but no POL can always act. **Default: Instituto Klippel runs the bundler and
+paymaster**, as the plan already says, and the app can be pointed at any other ERC-4337 bundler. What that costs
+per ride is in [contracts scalability](../contracts/docs/scalability.md), "What the account adds".
 
 ## Topping up with Pix
 
@@ -233,15 +237,16 @@ question for the legal review the plan already requires before mainnet. This pag
 
 ## Security
 
-What has to hold, and what to check when this is built. These become invariants in
-[apps security](../apps/docs/security.md) and [contract security](../contracts/docs/security.md) when the code
-lands.
+What has to hold. For the accounts these are invariants now: C20 and C21 in
+[contract security](../contracts/docs/security.md), A12 and A15 in [apps security](../apps/docs/security.md),
+with limits L28 to L31 and P18 to P21. The Pix rows become invariants when the relay lands.
 
 | Threat | What stops it |
 | --- | --- |
 | The key is copied off the phone | It cannot be: non-exportable, in the chip |
-| Someone with the unlocked phone spends | Every signature needs a fresh biometric or PIN check, and the app shows the amount before asking |
-| A lost phone loses the money | Recovery by passkey, second device or guardians; never by Instituto Klippel |
+| Someone with the unlocked phone spends | Not stopped yet: the key asks for no check until recovery exists (P20). Then every signature needs a fresh biometric or PIN check, and the app shows the amount before asking |
+| A lost phone loses the money | Recovery by passkey, second device or guardians; never by Instituto Klippel. The account takes a passkey signer; nothing offers one yet (P21) |
+| A lying node or bundler gets a signature for another operation, or reais sent to another address | The phone computes the account's address and each operation's hash itself, and refuses gas above fixed ceilings (A15) |
 | The relay or a lying RPC gives the app a Pix order paying out to someone else's address | The relay signs nothing and holds nothing; the app checks that the order's payout address is its own, shows the receiver's name from the BR Code, and counts a top-up only from its own balance on chain, never from the relay saying "paid" |
 | A fake QR code takes the Pix | The QR code's receiver (in the BR Code) must be a ramp on a list the app ships, or governance keeps. Shown to the user before they pay |
 | The relay's partner credentials leak | They can create orders and see subaccounts' KYC data. They cannot move anyone's coins, which sit at the users' own addresses. Kept in a secrets store, rotated, and the relay keeps no KYC data of its own |
@@ -271,20 +276,20 @@ The contract guards (payments kept as owed, the balance check, the cap) are buil
 
 ## What changes in this repository
 
-| Where | Change |
-| --- | --- |
-| `apps/android/chain` | `KlippelGoClient` signs UserOperations through a signer interface instead of holding a private key; `DevAccount` stays only for the local testnet |
-| `apps/android/app` | Key creation in Keystore with StrongBox, the setup screen with the passkey offer, Carteira showing the address, the Pix QR and the cash-out screen |
-| `contracts/` | Accounts need no change: a smart account is an address like any other. `DeployLocal` deploys the EntryPoint, the account factory and a test paymaster so the local testnet matches Polygon. The guards against the issuers are built |
-| New: `ramp/` | The ramp relay, small and stateless apart from subaccount ids, and the sweeper job, with their own docs |
-| `gov/` | Watchers for the coins' proxies and prices, and setting up the Safe module the sweeper uses |
-| Docs | P1 and P6 in apps security close or change; the README's gas line; this page's status |
+| Where | Change | State |
+| --- | --- | --- |
+| `apps/android/chain` | `KlippelGoClient` signs UserOperations through a `DeviceKey` instead of holding a private key, and gossip through session keys; `DevAccount` stays only for the local testnet | Built |
+| `apps/android/app` | Key creation in Keystore with StrongBox (`KeystoreDeviceKey`) | Built |
+| `apps/android/app` | The setup screen with the passkey offer, Carteira's Pix QR and the cash-out screen | To build |
+| `contracts/` | `src/account/`: the account, its factory, the P-256 verifier and the paymaster. The escrow needs no change: a smart account is an address like any other. `DeployLocal` deploys them over the protocol, and `testnet/entrypoint.sh` puts the EntryPoint at its canonical address, so the local testnet matches Polygon. The guards against the issuers are built | Built |
+| New: `ramp/` | The ramp relay, small and stateless apart from subaccount ids, and the sweeper job, with their own docs | To build |
+| `gov/` | Watchers for the coins' proxies and prices, and setting up the Safe module the sweeper uses | To build |
 
 ## Open decisions
 
 | Decision | Options | Default |
 | --- | --- | --- |
-| Smart account | Safe, Kernel, Coinbase Smart Wallet | An audited one that takes raw P-256 and WebAuthn signatures |
+| Smart account | Safe, Kernel, Coinbase Smart Wallet, OpenZeppelin's | Decided: OpenZeppelin v5.7's `Account` with `MultiSignerERC7913`, P-256 through `DeviceKeyVerifier` and WebAuthn through OpenZeppelin's verifier |
 | Recovery offered at setup | Passkey, second device, guardians | Passkey offered first; the others in settings |
 | Pix | User's own ramp account, relay, aggregator widget | Relay, with the address always shown for the user's own ramp |
 | Ramps at launch | Avenia (BRLA), Transfero (BRZ), Banco Braza (BBRL) | Avenia first: its API and sandbox are public |

@@ -376,6 +376,138 @@ contract ProtocolTest is Test, ProtocolDeployer {
         assertEq(uint8(p.escrow.ride(id).status), uint8(RideEscrow.Status.Cancelled));
     }
 
+    function _rider(string memory name) internal returns (address who) {
+        who = makeAddr(name);
+        _fund(who);
+        vm.prank(who);
+        p.registry.register(1);
+    }
+
+    function _openFor(address who, bytes32 quote) internal returns (uint256 id) {
+        vm.prank(who);
+        id = p.escrow.open(driver, brz, FARE, quote);
+    }
+
+    function test_ADriverTakesTheNextRideOnlyOnceTheFirstRiderIsIn() public {
+        address bia = _rider("bia");
+        address caio = _rider("caio");
+        uint256 a = _openFor(rider, keccak256("a"));
+        uint256 b = _openFor(bia, keccak256("b"));
+        uint256 c = _openFor(caio, keccak256("c"));
+
+        // Anyone may lock a ride naming the driver; the driver takes one at a time to its pickup.
+        vm.startPrank(driver);
+        p.escrow.accept(a);
+        vm.expectRevert(abi.encodeWithSelector(RideEscrow.DriverBusy.selector, a));
+        p.escrow.accept(b);
+
+        // Ana is in the car: Bia's ride is the next one.
+        p.escrow.start(a, keccak256("pickup a"));
+        p.escrow.accept(b);
+        assertEq(p.escrow.onTripOf(driver), a);
+        assertEq(p.escrow.pickupOf(driver), b);
+
+        // Two in hand: no third, and Bia is picked up only once Ana is out.
+        vm.expectRevert(abi.encodeWithSelector(RideEscrow.DriverBusy.selector, b));
+        p.escrow.accept(c);
+        vm.expectRevert(abi.encodeWithSelector(RideEscrow.DriverBusy.selector, a));
+        p.escrow.start(b, keccak256("pickup b"));
+        vm.stopPrank();
+
+        vm.prank(rider);
+        p.escrow.complete(a, RECEIPT);
+        assertEq(p.escrow.onTripOf(driver), 0);
+        vm.startPrank(driver);
+        p.escrow.start(b, keccak256("pickup b"));
+        p.escrow.accept(c);
+        vm.stopPrank();
+        assertEq(uint8(p.escrow.ride(c).status), uint8(RideEscrow.Status.Accepted));
+    }
+
+    function test_ARideThatLeavesTheDriversHandsFreesItsPlace() public {
+        address bia = _rider("bia");
+
+        // The rider waiting for pickup withdraws.
+        uint256 a = _openFor(rider, keccak256("a"));
+        uint256 b = _openFor(bia, keccak256("b"));
+        vm.prank(driver);
+        p.escrow.accept(a);
+        vm.prank(rider);
+        p.escrow.cancel(a);
+        assertEq(p.escrow.pickupOf(driver), 0);
+
+        // The driver gives up the one they were on the way to.
+        vm.startPrank(driver);
+        p.escrow.accept(b);
+        p.escrow.cancel(b);
+        vm.stopPrank();
+        assertEq(p.escrow.pickupOf(driver), 0);
+
+        // A ride in dispute is frozen, whether waiting for pickup or under way, and takes no place.
+        uint256 c = _openFor(rider, keccak256("c"));
+        vm.prank(driver);
+        p.escrow.accept(c);
+        vm.prank(rider);
+        p.court.raise(c, keccak256("evidence"));
+        assertEq(p.escrow.pickupOf(driver), 0);
+        uint256 d = _openAndStart();
+        vm.prank(rider);
+        p.court.raise(d, keccak256("evidence"));
+        assertEq(p.escrow.onTripOf(driver), 0);
+
+        // A driver's receipt that stood for the timeout ends the ride under way too.
+        uint256 e = _openAndStart();
+        vm.prank(driver);
+        p.escrow.submitReceipt(e, RECEIPT);
+        skip(30 minutes);
+        p.escrow.timeout(e);
+        assertEq(p.escrow.onTripOf(driver), 0);
+        _openAndStart();
+    }
+
+    function test_RidesNamingABusyDriverWaitAndAreGivenBackWhole() public {
+        uint256 a = _openAndStart();
+        uint256 b = _openFor(rider, keccak256("b"));
+        vm.prank(driver);
+        p.escrow.accept(b);
+
+        // More riders lock this driver while both places are taken: nothing stops them, and nothing is lost.
+        uint256 before = brz.balanceOf(rider);
+        uint256 c = _openFor(rider, keccak256("c"));
+        vm.prank(driver);
+        vm.expectRevert(abi.encodeWithSelector(RideEscrow.DriverBusy.selector, b));
+        p.escrow.accept(c);
+        vm.prank(driver);
+        p.escrow.cancel(c);
+        assertEq(brz.balanceOf(rider), before);
+        assertEq(p.escrow.onTripOf(driver), a);
+        assertEq(p.escrow.pickupOf(driver), b);
+    }
+
+    function test_ADeclineThatArrivesAfterTheAcceptChangesNothing() public {
+        uint256 riderBefore = brz.balanceOf(rider);
+        uint256 id = _openFor(rider, keccak256("a"));
+        vm.prank(jurors[0]);
+        vm.expectRevert(RideEscrow.NotDriver.selector);
+        p.escrow.decline(id);
+
+        // The phone's decline was sent, then the driver tapped accept, and the accept landed first.
+        vm.startPrank(driver);
+        p.escrow.accept(id);
+        vm.expectRevert(abi.encodeWithSelector(RideEscrow.WrongStatus.selector, RideEscrow.Status.Accepted));
+        p.escrow.decline(id);
+        vm.stopPrank();
+        assertEq(uint8(p.escrow.ride(id).status), uint8(RideEscrow.Status.Accepted));
+        assertEq(p.escrow.pickupOf(driver), id);
+
+        // Declined in time, the rider has it all back.
+        uint256 other = _openFor(rider, keccak256("b"));
+        vm.prank(driver);
+        p.escrow.decline(other);
+        assertEq(uint8(p.escrow.ride(other).status), uint8(RideEscrow.Status.Cancelled));
+        assertEq(brz.balanceOf(rider), riderBefore - FARE - 2_0000);
+    }
+
     function test_RejectsTokenNotOnAllowList() public {
         MockBRL other = new MockBRL("X", "X", 18);
         vm.prank(rider);
@@ -472,7 +604,10 @@ contract ProtocolTest is Test, ProtocolDeployer {
 
     function test_BlockingLeavesRidesUnderWayAndStakeAlone() public {
         uint256 id = _openAndStart();
-        uint256 second = _openAndStart();
+        // The next ride, accepted while the first rider is in the car.
+        uint256 second = _openFor(rider, keccak256("second"));
+        vm.prank(driver);
+        p.escrow.accept(second);
         vm.prank(rider);
         uint256 third = p.escrow.open(driver, brz, FARE, keccak256("quote"));
         _govern(address(p.registry), abi.encodeCall(p.registry.setBlocked, (rider, true)));
@@ -489,9 +624,11 @@ contract ProtocolTest is Test, ProtocolDeployer {
         p.escrow.cancel(third);
         assertEq(uint8(p.escrow.ride(third).status), uint8(RideEscrow.Status.Cancelled));
 
-        // A receipt and a dispute are still theirs to file.
-        vm.prank(driver);
+        // The next ride is still theirs to drive, and a receipt and a dispute still theirs to file.
+        vm.startPrank(driver);
+        p.escrow.start(second, keccak256("pickup"));
         p.escrow.submitReceipt(second, RECEIPT);
+        vm.stopPrank();
         vm.prank(rider);
         p.court.raise(second, keccak256("evidence"));
         assertEq(uint8(p.escrow.ride(second).status), uint8(RideEscrow.Status.Disputed));

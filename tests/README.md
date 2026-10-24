@@ -47,12 +47,12 @@ flowchart LR
 
 | Piece | Where | What it is |
 | --- | --- | --- |
-| Stack | [`stack.sh`](stack.sh) | Brings up whatever is missing: chain, contracts, map pack, gossip, mirror, router, emulator, app |
+| Stack | [`stack.sh`](stack.sh) | Brings up whatever is missing: chain, contracts, map pack, gossip, bundler, mirror, router, emulator, app |
 | UI agent | [`apps/android/app/src/androidTest`](../apps/android/app/src/androidTest/kotlin/org/klippelgo/app/agent/UiAgent.kt) | Runs on the phone, in the test APK only. Reads the screen as a screen reader would and injects real touches |
 | Tags | [`Tags.kt`](../apps/android/app/src/main/kotlin/org/klippelgo/app/ui/tags/Tags.kt) | The name of every piece of UI. The app and the harness compile the same file |
 | UI drivers | [`harness/drivers/`](harness/drivers) | One class per UI component: what a person can read on it and do with it |
 | Peers | [`harness/Peer.kt`](harness/Peer.kt) | Another rider or driver: its own key, gossip node and view of the chain |
-| Stranger | [`harness/Stranger.kt`](harness/Stranger.kt) | A gossip node that follows no rules: it records the cell and sends forged messages |
+| Stranger | [`harness/Stranger.kt`](harness/Stranger.kt) | A gossip node that follows no rules: it records every gossip cell of the pilot pack and sends forged messages into all of them |
 | Governance | [`harness/Governance.kt`](harness/Governance.kt) | Instituto Klippel's team council through `gov/klippel-gov`: requests, a second member, approvals. Everything a test changes is put back when it ends, pass or fail |
 | CLI | [`klippelgo`](klippelgo) | Every driver and every peer as commands, for a person or an agent |
 
@@ -98,7 +98,23 @@ developer's computer with two-second blocks: they catch a step getting several t
 of a few percent.
 
 When a test fails, the screen at that moment is saved to `tests/.run/report/<Test>.<method>.png`, one picture
-per phone.
+per phone. Next to it, `<Test>.<method>.trace.txt` holds what the app traced since the test launched it: a debug
+build logs, under the tag `KlippelGo`, the gossip cells it joins and leaves, each offer for its own request and why
+it was taken or dropped, the offers the screen hides, and each read of the chain and why it was made or failed.
+`<Test>.<method>.peers.txt` holds what each peer's matchmaker held at the end, and the peers print their own trace
+lines in the test's output.
+
+### A driver and two riders
+
+[`integrity/DriverTwoRidesTest.kt`](integrity/DriverTwoRidesTest.kt) holds the driver's app to the two-ride
+rule: a driver has at most two locked rides, the one being driven and the next, and takes the next only once the
+rider of the first is in the car.
+
+| Test | What happens |
+| --- | --- |
+| Two riders lock the same driver | The driver quotes both, both lock, and the driver is shown both, each with its own Accept and Decline. The driver takes the newer one; the other is cancelled and its rider has everything back; the driver posted one bond |
+| A quote sent before the driver took a ride | The second rider locks that quote after the driver took the first ride: it is cancelled the same way |
+| The next ride, and never a third | Quoted on the way to the first pickup, it cannot be accepted until the first ride starts, then can; a third rider's request is not put to the driver and gets no quote |
 
 ### Three apps in one ride
 
@@ -155,10 +171,15 @@ Rules:
    for showing that something does *not* happen.
 5. **Never assume a fresh chain.** Compare balances before and after; find rides by what identifies them.
 6. **A security test sends the bad message and then a good one.** Without the second half it proves nothing.
-7. **The app is account #3 as a rider and #4 as a driver** (`DevAccount.RIDER`, `DRIVER`), as when a person
-   picks the role on the create-account screen. Peers use the other seeded accounts.
+7. **The app is `DevAccount.RIDER` as a rider and `DevAccount.DRIVER` as a driver**, seeded smart accounts the
+   tests know, as when a person picks the role on the create-account screen of an app launched with
+   `devAccounts` (what `phone.launch(fresh = true)` does). Peers use the other seeded accounts.
+   `phone.launch(fresh = true, ownKey = true)` gives the app no seeded account: it makes its own key in the
+   phone's chip, as on a real phone (`OnboardingTest`).
+8. **Every account pays its own gas in reais.** A balance that moved by a ride also moved by what the account's
+   operations cost: count it with `mark()` before and `gasPaid(account, coin, from)` after.
 
-Tags that say a state carry it in the name (`on-the-way.status.Accepted`, `driver-ride.chosen.route.checked`),
+Tags that say a state carry it in the name (`on-the-way.status.Accepted`, `driver-ride.chosen.<ride id>.route.checked`),
 so tests do not depend on the app's language.
 
 ## The CLI
@@ -205,7 +226,7 @@ covers yet; `shot <file.png>` takes a picture.
 
 - **iOS.** The drivers are written against tags, not Android, so an iOS agent can serve the same suites.
 - **A public testnet.** See "The chain" above.
-- **Known limits** in [apps/docs/security.md](../apps/docs/security.md) (P1 to P16) are not tested as if they
+- **Known limits** in [apps/docs/security.md](../apps/docs/security.md) (P2 to P21) are not tested as if they
   were closed. `RevealedRouteTest` says which one it stops short of.
 - **The UI agent is test equipment.** It can read the screen and touch it, so the test APK goes on test
   emulators only. It answers only adb's shell user and root, and it is never part of the app's own APK.

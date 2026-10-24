@@ -1,7 +1,9 @@
 package org.klippelgo.tests.security
 
 import org.klippelgo.chain.DevAccount
+import org.klippelgo.chain.Matchmaker
 import org.klippelgo.chain.RouteSummary
+import org.klippelgo.core.Coordinate
 import org.klippelgo.tests.Peer
 import org.klippelgo.tests.Places
 import org.klippelgo.tests.Scenario
@@ -48,11 +50,27 @@ class ForgedRequestsTest : Scenario() {
             "for a trip of no length" to stranger.request(victim, coin, fair, route.copy(distanceM = 0)).second,
             "in a coin the escrow does not take" to
                 stranger.request(victim, coin.copy(address = "0x000000000000000000000000000000000000dEaD"), fair, route).second,
+            // The rider's own account must vouch for the key that signed: each of these breaks that one way.
+            "under a certificate another account signed in the rider's name" to
+                stranger.request(victim, coin, fair, route, session = stranger.session(victim.address, signedBy = stranger.newKey())).second,
+            "under a certificate that expired" to
+                stranger.request(victim, coin, fair, route, session = stranger.session(victim.address, signedBy = victim, expiresAt = now - 60)).second,
+            "under a certificate claiming to last a week" to
+                stranger.request(victim, coin, fair, route, session = stranger.session(victim.address, signedBy = victim, expiresAt = now + 7 * 86_400)).second,
+            "signed by another key under the rider's real certificate" to
+                stranger.request(victim, coin, fair, route, session = stranger.underCertificateOf(victim)).second,
         )
         for ((what, message) in forgeries) {
             stranger.say(message, seconds = 4)
             assertTrue(app.goOnline.visible() && !app.request.visible(), "the driver was shown a request $what")
         }
+        // Right in every way but where it is said: in the cell north of the pickup's, which a driver near the
+        // pickup or anywhere without a position hears, and never in the pickup's own cell.
+        val north = Matchmaker.cellAt(Coordinate(Places.CENTRE.latE7 + 440_000, Places.CENTRE.lonE7))
+        check(north != Matchmaker.cellOf(route.pickupCell))
+        stranger.sayIn(north, stranger.request(victim, coin, fair, route).second, seconds = 6)
+        assertTrue(app.goOnline.visible() && !app.request.visible(), "the driver was shown a request said in a cell its pickup is not in")
+
         // Keep saying all of them a while longer: nothing may show late either.
         repeat(3) {
             forgeries.values.forEach(stranger::sayOnce)

@@ -1,0 +1,153 @@
+# Block explorers for the local testnet. `make explorer` runs one of them through testnet/explorer/run.sh:
+#
+#   otterscan   http://localhost:5100  blocks, transactions with their call traces, events, balances. A static
+#               page: the browser reads the chain itself, through the Otterscan methods anvil has
+#   blockscout  http://localhost:5200  the same, plus each contract's source, decoded calls and events, and
+#               read and write tabs once verify.sh has verified the contracts in deployments/local.json
+#
+# Only those two ports are published, and only on 127.0.0.1. Blockscout's backend relays transactions to the chain
+# and runs an Erlang node whose cookie is the same in every copy of its image, so it stays on this compose
+# network, never on the host's. It reaches the chain through chain-relay, which is the one service on the host's
+# network: it listens on this network's gateway and serves only this network's containers, and it reaches anvil
+# on 127.0.0.1:8545 whether that runs from testnet/anvil.sh or from testnet/docker-compose.yml. If another network
+# on the computer already uses 172.30.249.0/24, `compose up` fails: change both here.
+name: klippelgo-explorer
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.249.0/24
+          gateway: 172.30.249.1
+
+services:
+  otterscan:
+    profiles: [otterscan]
+    image: otterscan/otterscan:v2.11.0
+    environment:
+      ERIGON_URL: ${RPC_URL:-http://127.0.0.1:8545}
+    ports:
+      - "127.0.0.1:5100:80"
+
+  # Port 18545, not 8545: the Docker anvil already holds 8545 on every address.
+  chain-relay:
+    profiles: [blockscout]
+    image: alpine/socat:1.8.0.3
+    network_mode: host
+    # range=: the gateway answers anyone who routes to it, so only this network's containers are let through.
+    command: TCP-LISTEN:18545,bind=172.30.249.1,range=172.30.249.0/24,fork,reuseaddr TCP:127.0.0.1:8545
+
+  blockscout-db:
+    profiles: [blockscout]
+    image: postgres:17
+    shm_size: 256m
+    command: postgres -c max_connections=200
+    environment:
+      POSTGRES_DB: blockscout
+      POSTGRES_USER: blockscout
+      POSTGRES_PASSWORD: blockscout
+    volumes:
+      - blockscout-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blockscout -d blockscout"]
+      interval: 5s
+      retries: 20
+
+  # Compiles the sources verify.sh sends and compares them with the code on chain. It fetches solc releases from
+  # binaries.soliditylang.org the first time it needs one.
+  blockscout-verifier:
+    profiles: [blockscout]
+    image: ghcr.io/blockscout/smart-contract-verifier:v1.11.0
+    platform: linux/amd64
+    environment:
+      SMART_CONTRACT_VERIFIER__SERVER__HTTP__ADDR: 0.0.0.0:8050
+      SMART_CONTRACT_VERIFIER__SERVER__GRPC__ENABLED: "false"
+      # Runs the compilers it downloads inside this container. The other choice, `docker`, needs the Docker socket.
+      SMART_CONTRACT_VERIFIER__COMPILERS__EXECUTION__TYPE: native
+      SMART_CONTRACT_VERIFIER__SOLIDITY__ENABLED: "true"
+      SMART_CONTRACT_VERIFIER__SOLIDITY__COMPILERS_DIR: /tmp/solidity-compilers
+      SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL: https://binaries.soliditylang.org/linux-amd64/list.json
+      SMART_CONTRACT_VERIFIER__VYPER__ENABLED: "false"
+      # Sourcify knows nothing of a local chain.
+      SMART_CONTRACT_VERIFIER__SOURCIFY__ENABLED: "false"
+
+  blockscout-backend:
+    profiles: [blockscout]
+    image: ghcr.io/blockscout/blockscout:9.0.2
+    depends_on:
+      blockscout-db:
+        condition: service_healthy
+      blockscout-verifier:
+        condition: service_started
+      chain-relay:
+        condition: service_started
+    command: sh -c 'bin/blockscout eval "Elixir.Explorer.ReleaseTasks.create_and_migrate()" && bin/blockscout start'
+    environment:
+      # A single node: no Erlang distribution, so no epmd and no port that takes the image's built-in cookie.
+      RELEASE_DISTRIBUTION: none
+      PORT: "5201"
+      DATABASE_URL: postgresql://blockscout:blockscout@blockscout-db:5432/blockscout
+      ECTO_USE_SSL: "false"
+      # run.sh makes a new one each start, so start it from there. It only signs the backend's own cookies.
+      SECRET_KEY_BASE: ${BLOCKSCOUT_SECRET_KEY_BASE:-}
+      CHAIN_ID: "31337"
+      ETHEREUM_JSONRPC_VARIANT: geth
+      ETHEREUM_JSONRPC_TRANSPORT: http
+      ETHEREUM_JSONRPC_HTTP_URL: http://172.30.249.1:18545
+      ETHEREUM_JSONRPC_TRACE_URL: http://172.30.249.1:18545
+      # Internal calls are what a ride is made of: the bundler sends one handleOps to the EntryPoint, and the calls
+      # to RideEscrow and the rest happen inside it.
+      INDEXER_INTERNAL_TRANSACTIONS_TRACER_TYPE: call_tracer
+      INDEXER_DISABLE_PENDING_TRANSACTIONS_FETCHER: "true"
+      COIN: ETH
+      DISABLE_MARKET: "true"
+      ACCOUNT_ENABLED: "false"
+      ADMIN_PANEL_ENABLED: "false"
+      RE_CAPTCHA_DISABLED: "true"
+      MICROSERVICE_SC_VERIFIER_ENABLED: "true"
+      MICROSERVICE_SC_VERIFIER_TYPE: sc_verifier
+      MICROSERVICE_SC_VERIFIER_URL: http://blockscout-verifier:8050/
+      MICROSERVICE_VISUALIZE_SOL2UML_ENABLED: "false"
+      MICROSERVICE_SIG_PROVIDER_ENABLED: "false"
+      MICROSERVICE_ACCOUNT_ABSTRACTION_ENABLED: "false"
+      NFT_MEDIA_HANDLER_ENABLED: "false"
+      DISABLE_FILE_LOGGING: "true"
+      # verify.sh uses the v1 API, which is the Etherscan-style one forge speaks.
+      API_V1_READ_METHODS_DISABLED: "false"
+      API_V1_WRITE_METHODS_DISABLED: "false"
+
+  blockscout-frontend:
+    profiles: [blockscout]
+    image: ghcr.io/blockscout/frontend:v2.3.5
+    platform: linux/amd64
+    environment:
+      NEXT_PUBLIC_NETWORK_NAME: KlippelGo local
+      NEXT_PUBLIC_NETWORK_SHORT_NAME: KlippelGo local
+      NEXT_PUBLIC_NETWORK_ID: "31337"
+      NEXT_PUBLIC_NETWORK_RPC_URL: ${RPC_URL:-http://127.0.0.1:8545}
+      NEXT_PUBLIC_NETWORK_CURRENCY_NAME: Ether
+      NEXT_PUBLIC_NETWORK_CURRENCY_SYMBOL: ETH
+      NEXT_PUBLIC_NETWORK_CURRENCY_DECIMALS: "18"
+      NEXT_PUBLIC_IS_TESTNET: "true"
+      NEXT_PUBLIC_APP_PROTOCOL: http
+      NEXT_PUBLIC_APP_HOST: localhost
+      NEXT_PUBLIC_APP_PORT: "5200"
+      NEXT_PUBLIC_API_PROTOCOL: http
+      NEXT_PUBLIC_API_HOST: localhost
+      NEXT_PUBLIC_API_PORT: "5200"
+      NEXT_PUBLIC_API_BASE_PATH: /
+      NEXT_PUBLIC_API_WEBSOCKET_PROTOCOL: ws
+      NEXT_PUBLIC_HOMEPAGE_CHARTS: "[]"
+
+  # One address for the page and its API, as Blockscout's own setup has, so the browser needs no CORS.
+  blockscout-proxy:
+    profiles: [blockscout]
+    image: nginx:1.27-alpine
+    depends_on: [blockscout-frontend, blockscout-backend]
+    volumes:
+      - ./proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - "127.0.0.1:5200:80"
+
+volumes:
+  blockscout-db:

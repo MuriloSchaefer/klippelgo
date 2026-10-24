@@ -179,6 +179,8 @@
     <string name="route_needs_map">Descarga el mapa para ver la ruta de este viaje.</string>
     <string name="map_needed_driver">Descarga el mapa de la región para ver las calles y la ruta de cada viaje. Sin él igual recibes solicitudes y puedes hacer ofertas.</string>
     <string name="decline_ride">Rechazar viaje</string>
+    <string name="accept_after_pickup">Puedes aceptar este viaje cuando tu pasajero actual esté en el auto.</string>
+    <string name="accept_declines_others">Al aceptar uno, los demás que cotizaste antes se devuelven a sus pasajeros.</string>
     <string name="decline_hint">Rechazar no cuesta nada: el pasajero recibe todo de vuelta.</string>
     <string name="asked_again">El conductor desistió del viaje y recuperaste todo. El mismo pedido se envió de nuevo a los demás conductores.</string>
 

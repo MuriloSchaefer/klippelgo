@@ -2,6 +2,7 @@ package org.klippelgo.chain
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.klippelgo.core.Bounds
 import org.klippelgo.core.Coordinate
 import org.klippelgo.core.GossipNode
 import org.klippelgo.core.regionBounds
@@ -35,18 +36,20 @@ import java.util.Base64
  * rider announces its request again every few seconds. A request nobody has announced for a while is gone, which
  * also covers a rider whose app closed without saying so.
  *
+ * Gossip is split into cells of about 5 km (geohash 5), one topic each. A request goes to the cell its pickup is
+ * in, and everything about it (offers, the close, the sealed route, the driver's positions) follows it there. A
+ * driver hears the cells around them ([listen]); a rider, only the cells of their own requests and rides. So a
+ * phone receives its neighbourhood's traffic, not the city's.
+ *
  * Call [tick] every second or two, off the main thread.
  *
- * Not built yet, from the plan and its security review: session certificates so the wallet key does not sign
- * every message, quotes encrypted to the rider instead of visible to the cell, presence, real location cells
- * (everyone uses [DEV_CELL]) and a cost for posting requests.
+ * Not built yet, from the plan and its security review: quotes encrypted to the rider instead of visible to the
+ * cell, presence, and a cost for posting requests.
  */
 class Matchmaker(
     private val client: KlippelGoClient,
     private val node: GossipNode,
-    cell: String = DEV_CELL,
 ) {
-    private val topic = topicFor(cell)
     private val json = ObjectMapper()
 
     private class Seen(val request: RideRequest, val message: ByteArray, var at: Long)
@@ -62,6 +65,11 @@ class Matchmaker(
     /** Driver: the key in this phone's offers for each request, and the hash of every quote it sent for it. */
     private val routeKeys = HashMap<BigInteger, OfferKey>()
     private val myQuotes = HashMap<BigInteger, MutableList<String>>()
+    /** Driver: the rider each quote this phone sent was for, by quote hash. Kept after its request is gone. */
+    private val quotedFor = LinkedHashMap<String, String>()
+
+    /** Driver: the cell of the request each quote was for, by quote hash, where its positions go. */
+    private val quoteCells = LinkedHashMap<String, String>()
 
     /** Rider: the sealed route announced for each request whose offer this phone took. */
     private val reveals = HashMap<BigInteger, ByteArray>()
@@ -73,23 +81,77 @@ class Matchmaker(
     private val riderKeys = HashMap<String, ByteArray>()
     private var positionSentAt = 0L
 
-    /** Rider: for each ride this phone locked, by quote hash, the key positions are sealed to and whose they are. */
-    private class Watch(val key: OfferKey, val driver: String, var last: DriverPosition? = null, var newest: Long = 0)
-    private val watching = HashMap<String, Watch>()
+    /**
+     * Rider: for each ride this phone locked, by quote hash, the key positions are sealed to, whose they are and
+     * the cell they arrive in. The newest [MAX_WATCHES].
+     */
+    private class Watch(val key: OfferKey, val driver: String, val cell: String, var last: DriverPosition? = null, var newest: Long = 0)
+    private val watching = LinkedHashMap<String, Watch>()
     private var announcedAt = 0L
 
-    init {
-        node.subscribe(topic)
+    /**
+     * Told what happens to the phone's subscriptions and to each offer it receives, for finding out why something
+     * did not show. Only public gossip goes through it. The app sets it in debug builds only.
+     */
+    @Volatile var trace: ((String) -> Unit)? = null
+
+    private fun note(what: String) {
+        trace?.invoke(what)
     }
+
+    /** What this matchmaker holds now, in one line per thing, for the same purpose as [trace]. */
+    @Synchronized
+    fun describe(): String = buildString {
+        appendLine("account ${client.address}, peers ${peers()}")
+        appendLine("area ${area.sorted()}")
+        appendLine("subscribed ${subscribed.sorted()}")
+        for ((id, seen) in requests) {
+            val r = seen.request
+            val whose = if (r.rider == client.address) "mine" else if (id in myQuotes) "quoted" else "heard"
+            val offers = quotes[id].orEmpty().values.joinToString { "${it.offer.driver}@${it.offer.fare}" }
+            appendLine("request ${short(id)} $whose cell ${cellOf(r)} closed ${id in closed} heard ${System.currentTimeMillis() - seen.at} ms ago, offers [$offers]")
+        }
+        for ((quote, w) in watching) appendLine("watching ${quote.take(10)} driver ${w.driver} cell ${w.cell}")
+    }
+
+    /** The cells whose requests this phone wants to hear ([listen]), and the cells it is subscribed to. */
+    private val area = HashSet<String>()
+    private val subscribed = HashSet<String>()
 
     /** Peers this phone is connected to. Zero means nothing sent or received is reaching anyone. */
     fun peers(): Int = node.connectedPeers().toInt()
+
+    /**
+     * The cells whose requests this phone hears: a driver's neighbourhood ([around]). A rider's phone needs none:
+     * it hears the cells of its own requests and rides whatever this says. Requests from a cell left behind are
+     * forgotten, unless this phone quoted them.
+     */
+    @Synchronized
+    fun listen(cells: Set<String>) {
+        if (cells == area) return
+        area.clear()
+        area += cells
+        resubscribe()
+    }
+
+    /** Subscribes to the cells this phone needs now and leaves the others. */
+    private fun resubscribe() {
+        val wanted = HashSet(area)
+        for ((id, seen) in requests) if (seen.request.rider == client.address || id in myQuotes) wanted += cellOf(seen.request)
+        watching.values.mapTo(wanted) { it.cell }
+        requests.values.removeIf { cellOf(it.request) !in wanted }
+        for (cell in wanted - subscribed) runCatching { node.subscribe(topicFor(cell)) }.onSuccess { subscribed += cell; note("subscribed to $cell") }
+        for (cell in subscribed - wanted) runCatching { node.unsubscribe(topicFor(cell)) }.onSuccess { subscribed -= cell; note("left $cell") }
+    }
 
     /** Takes in what peers gossiped since the last call and announces this account's own messages again. */
     @Synchronized
     fun tick() {
         for (message in node.drain()) {
-            if (message.topic == topic) runCatching { receive(message.data) }
+            val cell = message.topic.removePrefix(TOPIC_PREFIX)
+            if (message.topic.startsWith(TOPIC_PREFIX) && cell in subscribed) {
+                runCatching { receive(cell, message.data) }.onFailure { note("a message in $cell failed: ${it.message}") }
+            }
         }
         val now = now()
         requests.values.removeIf { it.request.expiresAt <= now }
@@ -98,10 +160,12 @@ class Matchmaker(
         routeKeys.keys.retainAll(requests.keys)
         myQuotes.keys.retainAll(requests.keys)
         reveals.keys.retainAll(requests.keys)
+        resubscribe()
 
         if (System.currentTimeMillis() - announcedAt < ANNOUNCE_EVERY_MS) return
         announcedAt = System.currentTimeMillis()
         for ((id, seen) in requests) {
+            val topic = topicFor(cellOf(seen.request))
             val mine = seen.request.rider == client.address
             val close = closed[id]
             if (mine) {
@@ -161,7 +225,10 @@ class Matchmaker(
         )
         val request = RideRequest(BigInteger(1, id), client.address, coin.address.lowercase(), maxFare, expiresAt, route)
         requests[request.id] = Seen(request, message, System.currentTimeMillis())
-        node.publish(topic, message)
+        // Into the pickup's cell, and listening there for the offers.
+        resubscribe()
+        node.publish(topicFor(cellOf(request)), message)
+        note("request ${short(request.id)} out in ${cellOf(request)}")
         return request
     }
 
@@ -175,7 +242,7 @@ class Matchmaker(
             "sig" to Numeric.toHexString(client.sign(closeHash(request.id))),
         )
         closed[request.id] = message
-        node.publish(topic, message)
+        node.publish(topicFor(cellOf(request)), message)
     }
 
     /**
@@ -197,7 +264,8 @@ class Matchmaker(
         val sealed = sealRoute(Numeric.hexStringToByteArray(offer.routeKey), Numeric.hexStringToByteArray(offer.quoteHash), quoteJson)
         // A key of the rider's own goes with the route, for the driver to seal their position to once this ride
         // is the one they are on.
-        val watch = watching.getOrPut(offer.quoteHash.lowercase()) { Watch(newOfferKey(), offer.driver) }
+        val watch = watching.getOrPut(offer.quoteHash.lowercase()) { Watch(newOfferKey(), offer.driver, cellOf(request)) }
+        while (watching.size > MAX_WATCHES) watching.remove(watching.keys.first())
         val message = encode(
             "t" to "route",
             "request" to hex(request.id),
@@ -207,7 +275,8 @@ class Matchmaker(
             "sig" to Numeric.toHexString(client.sign(routeHash(request.id, offer.driver, sealed, watch.key.public))),
         )
         reveals[request.id] = message
-        node.publish(topic, message)
+        resubscribe()
+        node.publish(topicFor(cellOf(request)), message)
     }
 
     /**
@@ -226,9 +295,12 @@ class Matchmaker(
      * key. The cell sees that this driver is sending something for the ride with this quote hash, which ties it
      * to the ride on chain, and not where the driver is. Sent at most every few seconds on the way to the
      * pickup, and every second once the rider is in the car (`onTheRide`); call it as often as fixes arrive.
+     * It goes to `cell`, the cell of the ride's pickup, where the rider listens; without one, to the cell of the
+     * request this phone quoted, if it still knows it. Knowing neither, it is not sent.
      */
     @Synchronized
-    fun sharePosition(quoteHash: String, riderKey: ByteArray, latE7: Int, lonE7: Int, onTheRide: Boolean = false) {
+    fun sharePosition(quoteHash: String, riderKey: ByteArray, latE7: Int, lonE7: Int, onTheRide: Boolean = false, cell: String? = null) {
+        val topic = topicFor(cell ?: quoteCells[quoteHash.lowercase()] ?: return)
         val now = System.currentTimeMillis()
         if (now - positionSentAt < (if (onTheRide) POSITION_ON_THE_RIDE_EVERY_MS else POSITION_EVERY_MS)) return
         positionSentAt = now
@@ -267,6 +339,10 @@ class Matchmaker(
         // One key per request, kept across re-quotes, for the rider to seal the route to.
         val public = routeKeys.getOrPut(request.id) { newOfferKey() }.public
         myQuotes.getOrPut(request.id) { mutableListOf() } += Numeric.toHexString(quoteHash)
+        quotedFor[Numeric.toHexString(quoteHash).lowercase()] = request.rider.lowercase()
+        while (quotedFor.size > MAX_SENT_QUOTES) quotedFor.remove(quotedFor.keys.first())
+        quoteCells[Numeric.toHexString(quoteHash).lowercase()] = cellOf(request)
+        while (quoteCells.size > MAX_SENT_QUOTES) quoteCells.remove(quoteCells.keys.first())
         val sig = Numeric.toHexString(client.sign(offerHash(quoteHash, seq, public)))
         val message = encode(
             "t" to "offer",
@@ -280,16 +356,23 @@ class Matchmaker(
         )
         val offer = Offer(request.id, client.address, fare, expiresAt, Numeric.toHexString(quoteHash), sig, Numeric.toHexString(public))
         quotes.getOrPut(request.id) { LinkedHashMap() }[client.address] = Quote(offer, seq, message)
-        node.publish(topic, message)
+        // Kept listening in the request's cell for the route, even if the driver moves out of it.
+        resubscribe()
+        node.publish(topicFor(cellOf(request)), message)
+        note("offer for ${short(request.id)} at $fare out in ${cellOf(request)}")
         return offer
     }
 
+    /** Driver: every quote this phone sent since it started, newest last: its hash and the rider it was for. */
+    @Synchronized
+    fun sentQuotes(): Map<String, String> = LinkedHashMap(quotedFor)
+
     // ---------------------------------------------------------------- incoming
 
-    private fun receive(data: ByteArray) {
+    private fun receive(cell: String, data: ByteArray) {
         val m = json.readTree(data)
         when (m.text("t")) {
-            "request" -> receiveRequest(m, data)
+            "request" -> receiveRequest(m, data, cell)
             "offer" -> receiveOffer(m, data)
             "close" -> receiveClose(m, data)
             "route" -> receiveRoute(m)
@@ -297,7 +380,7 @@ class Matchmaker(
         }
     }
 
-    private fun receiveRequest(m: JsonNode, data: ByteArray) {
+    private fun receiveRequest(m: JsonNode, data: ByteArray, cell: String) {
         val rider = m.address("rider")
         val token = m.address("token")
         val maxFare = BigInteger(m.text("maxFare"))
@@ -310,6 +393,8 @@ class Matchmaker(
             pickupCell = m.text("from"),
             dropoffCell = m.text("to"),
         )
+        // A request is heard only in the cell its pickup is in, so it reaches the drivers near it and no others.
+        if (cellOf(route.pickupCell) != cell) return
         val id = requestId(rider, token, maxFare, expiresAt, m.bytes("nonce", 32), route)
         val key = BigInteger(1, id)
         requests[key]?.let {
@@ -323,7 +408,7 @@ class Matchmaker(
         if (regionBounds(route.pickupCell) == null || regionBounds(route.dropoffCell) == null) return
         // The rider's price must be within the fare guide's range for a trip of the stated length.
         if (!client.riderMayAsk(client.coinFor(token), maxFare, route)) return
-        if (KlippelGoClient.signerOf(id, m.bytes("sig", 65)) != rider) return
+        if (!speaksFor(m, id, rider)) return
         // Whoever could not lock the ride anyway (no rider role, or blocked by Instituto Klippel) is not shown.
         // The answer is kept for a few minutes, not for good, so a block or an unblock reaches a running phone.
         val asked = System.currentTimeMillis()
@@ -336,30 +421,35 @@ class Matchmaker(
     }
 
     private fun receiveOffer(m: JsonNode, data: ByteArray) {
-        val request = requests[BigInteger(1, m.bytes("request", 32))]?.request ?: return
+        val id = BigInteger(1, m.bytes("request", 32))
+        // Offers for other riders' requests are most of what a rider hears: only those for a request this phone
+        // knows are worth a line.
+        val request = requests[id]?.request ?: return
         val driver = m.address("driver")
         val fare = BigInteger(m.text("fare"))
         val expiresAt = m.get("expiresAt").asLong()
         val seq = m.get("seq").asLong()
+        fun drop(why: String) = note("offer from $driver for ${short(id)} at $fare dropped: $why")
         val forRequest = quotes.getOrPut(request.id) { LinkedHashMap() }
         val known = forRequest[driver]
         if (known != null && known.seq >= seq) return
-        if (known == null && forRequest.size >= MAX_OFFERS_PER_REQUEST) return
-        if (expiresAt <= now() || expiresAt > request.expiresAt) return
-        if (!client.driverMayQuote(request, fare)) return
+        if (known == null && forRequest.size >= MAX_OFFERS_PER_REQUEST) return drop("the request has $MAX_OFFERS_PER_REQUEST offers")
+        if (expiresAt <= now() || expiresAt > request.expiresAt) return drop("expiry $expiresAt")
+        if (!client.driverMayQuote(request, fare)) return drop("outside the driver's band")
         // The escrow refuses a fare that the fee and the tax would eat whole.
-        if (fare <= client.tokenConfig(client.coinFor(request.token)).first + client.taxOn(fare)) return
+        if (fare <= client.tokenConfig(client.coinFor(request.token)).first + client.taxOn(fare)) return drop("under the fee and the tax")
         val quoteHash = client.quoteHash(request, driver, fare, expiresAt)
         val routeKey = m.bytes("routeKey", 32)
-        if (KlippelGoClient.signerOf(offerHash(quoteHash, seq, routeKey), m.bytes("sig", 65)) != driver) return
+        if (!speaksFor(m, offerHash(quoteHash, seq, routeKey), driver)) return drop("signature or certificate")
         val offer = Offer(request.id, driver, fare, expiresAt, Numeric.toHexString(quoteHash), m.text("sig"), Numeric.toHexString(routeKey))
         forRequest[driver] = Quote(offer, seq, data)
+        note("offer from $driver for ${short(id)} at $fare taken")
     }
 
     private fun receiveClose(m: JsonNode, data: ByteArray) {
         val request = requests[BigInteger(1, m.bytes("request", 32))]?.request ?: return
         if (request.id in closed) return
-        if (KlippelGoClient.signerOf(closeHash(request.id), m.bytes("sig", 65)) != request.rider) return
+        if (!speaksFor(m, closeHash(request.id), request.rider)) return
         closed[request.id] = if (request.rider == client.address) data else null
     }
 
@@ -370,7 +460,7 @@ class Matchmaker(
         val secret = routeKeys[request.id]?.secret ?: return
         val sealed = Base64.getDecoder().decode(m.text("sealed"))
         val riderKey = m.bytes("key", 32)
-        if (KlippelGoClient.signerOf(routeHash(request.id, client.address, sealed, riderKey), m.bytes("sig", 65)) != request.rider) return
+        if (!speaksFor(m, routeHash(request.id, client.address, sealed, riderKey), request.rider)) return
         // The rider took one of this phone's quotes for the request, not necessarily the last: it opens for that one.
         for (quoteHash in myQuotes[request.id].orEmpty()) {
             if (quoteHash in revealed) return
@@ -390,7 +480,7 @@ class Matchmaker(
         val watch = watching[quoteHash] ?: return
         val quote = Numeric.hexStringToByteArray(quoteHash)
         val sealed = Base64.getDecoder().decode(m.text("sealed"))
-        if (KlippelGoClient.signerOf(positionHash(quote, sealed), m.bytes("sig", 65)) != watch.driver) return
+        if (!speaksFor(m, positionHash(quote, sealed), watch.driver)) return
         val parts = runCatching { openRoute(watch.key.secret, quote, sealed) }.getOrNull()?.split(',') ?: return
         if (parts.size != 3) return
         val position = runCatching { DriverPosition(parts[0].toInt(), parts[1].toInt(), parts[2].toLong()) }.getOrNull() ?: return
@@ -448,7 +538,42 @@ class Matchmaker(
 
     private fun closeHash(requestId: BigInteger) = KlippelGoClient.abiHash(Bytes32(CLOSE_DOMAIN), Uint256(requestId))
 
-    private fun encode(vararg fields: Pair<String, Any>): ByteArray = json.writeValueAsBytes(mapOf(*fields))
+    /**
+     * A message as JSON. A signed one carries the certificate of the session key that signed it, so a peer can
+     * tell which account it speaks for ([speaksFor]).
+     */
+    private fun encode(vararg fields: Pair<String, Any>): ByteArray {
+        val map = linkedMapOf(*fields)
+        if ("sig" in map) {
+            val c = client.sessionKey().certificate
+            map["cert"] = mapOf(
+                "account" to c.account,
+                "session" to c.session,
+                "expiresAt" to c.expiresAt,
+                "sig" to Numeric.toHexString(c.signature),
+            )
+        }
+        return json.writeValueAsBytes(map)
+    }
+
+    /**
+     * Whether `m` was signed over `hash` for `account`: its signature recovers a session key, and its certificate
+     * says that key speaks for that account, which the account itself confirms on chain ([KlippelGoClient.certified]).
+     */
+    private fun speaksFor(m: JsonNode, hash: ByteArray, account: String): Boolean {
+        val session = KlippelGoClient.signerOf(hash, m.bytes("sig", 65)) ?: return false
+        val c = m.get("cert")?.takeIf { it.isObject } ?: return false
+        val certificate = runCatching {
+            SessionCertificate(
+                account = c.address("account"),
+                session = c.address("session"),
+                expiresAt = c.get("expiresAt").asLong(),
+                signature = Numeric.hexStringToByteArray(c.text("sig")).also { require(it.size <= MAX_CERTIFICATE_SIGNATURE) },
+            )
+        }.getOrNull() ?: return false
+        if (!certificate.account.equals(account, ignoreCase = true) || !certificate.session.equals(session, ignoreCase = true)) return false
+        return client.certified(certificate)
+    }
 
     private fun JsonNode.text(key: String): String = get(key)?.takeIf { it.isTextual }?.asText() ?: error("missing $key")
 
@@ -458,8 +583,18 @@ class Matchmaker(
     private fun JsonNode.address(key: String): String = Numeric.toHexString(bytes(key, 20))
 
     companion object {
-        /** The centre of Cascavel, Paraná, the pilot city. Every phone uses this cell until the app reads its location. */
-        const val DEV_CELL = "6g9fp"
+        /** Characters of geohash in a gossip cell: about 5 km. A request's regions have one more, so they lie inside one cell. */
+        const val CELL_PRECISION = 5
+
+        /**
+         * How far around the middle of a driver's cell they hear requests from, in degrees × 10⁷ each way: past the
+         * edge of the cell (0.022° from its middle) and short of the far edge of its neighbours (0.066°), so the
+         * cell and its eight neighbours.
+         */
+        const val AROUND_E7 = 450_000
+
+        /** Under the height and width of a cell (0.044°): sampling a box this often meets every cell it touches. */
+        private const val CELL_STEP_E7 = 200_000
 
         /** Port the bootstrap node listens on (`make gossip-node`). */
         const val DEFAULT_PORT = 4001
@@ -467,6 +602,9 @@ class Matchmaker(
         /** How long a request and a quote stay valid, in seconds. */
         const val REQUEST_TTL = 600L
         const val OFFER_TTL = 300L
+
+        /** Quotes remembered with their rider: more than a driver sends in the life of one. */
+        const val MAX_SENT_QUOTES = 200
         private const val MAX_TTL = 3600L
 
         private const val ANNOUNCE_EVERY_MS = 2_500L
@@ -477,11 +615,15 @@ class Matchmaker(
         private const val RIDER_CHECK_MS = 5 * 60_000L
         private const val MAX_OFFERS_PER_REQUEST = 50
 
-        private val REQUEST_DOMAIN: ByteArray = Hash.sha3("KlippelGo request v3".toByteArray())
-        private val OFFER_DOMAIN: ByteArray = Hash.sha3("KlippelGo offer v2".toByteArray())
-        private val CLOSE_DOMAIN: ByteArray = Hash.sha3("KlippelGo close v1".toByteArray())
-        private val ROUTE_DOMAIN: ByteArray = Hash.sha3("KlippelGo sealed route v2".toByteArray())
-        private val POSITION_DOMAIN: ByteArray = Hash.sha3("KlippelGo sealed position v1".toByteArray())
+        // Signed by a session key since these versions, with its certificate alongside (A2: a new version).
+        private val REQUEST_DOMAIN: ByteArray = Hash.sha3("KlippelGo request v4".toByteArray())
+        private val OFFER_DOMAIN: ByteArray = Hash.sha3("KlippelGo offer v3".toByteArray())
+        private val CLOSE_DOMAIN: ByteArray = Hash.sha3("KlippelGo close v2".toByteArray())
+        private val ROUTE_DOMAIN: ByteArray = Hash.sha3("KlippelGo sealed route v3".toByteArray())
+        private val POSITION_DOMAIN: ByteArray = Hash.sha3("KlippelGo sealed position v2".toByteArray())
+
+        /** A certificate's signature is one signer and one signature, ABI encoded: well under this. */
+        private const val MAX_CERTIFICATE_SIGNATURE = 1024
 
         /** How often a driver's position goes out at most, and how long a rider treats the last one as current. */
         private const val POSITION_EVERY_MS = 4_000L
@@ -490,10 +632,57 @@ class Matchmaker(
         private const val POSITION_ON_THE_RIDE_EVERY_MS = 900L
         private const val POSITION_FRESH_MS = 30_000L
 
+        private const val TOPIC_PREFIX = "/klippelgo/match/1/"
+
+        /** Rides whose driver's positions a rider's phone listens for. More than one person has under way. */
+        private const val MAX_WATCHES = 8
+
         /** Gossip topic for matching in one geohash-5 cell. */
-        fun topicFor(cell: String) = "/klippelgo/match/1/$cell"
+        fun topicFor(cell: String) = TOPIC_PREFIX + cell
+
+        /** The gossip cell of a request: the one its pickup region is in. */
+        fun cellOf(request: RideRequest): String = cellOf(request.route.pickupCell)
+
+        /** The gossip cell a region cell (`regionCell` in the core) lies in: a geohash's prefix is the cell holding it. */
+        fun cellOf(region: String): String = region.take(CELL_PRECISION)
+
+        /** The gossip cell a point is in. */
+        fun cellAt(at: Coordinate): String = cellOf(regionCell(at))
+
+        /**
+         * The cells a driver at `at` hears: the cell they are in and its eight neighbours. It depends on the cell
+         * alone, not on where in it they are: what a phone subscribes to is seen by the router and by its peers,
+         * and a set that moved with the driver would trace them to the metre each time it changed (A9).
+         */
+        fun around(at: Coordinate): Set<String> {
+            val cell = cellAt(at)
+            // A geohash's first child is its south-west corner and its last the north-east one.
+            val sw = regionBounds(cell + "0")?.southWest ?: return setOf(cell)
+            val ne = regionBounds(cell + "z")?.northEast ?: return setOf(cell)
+            val mid = Coordinate((sw.latE7 + ne.latE7) / 2, (sw.lonE7 + ne.lonE7) / 2)
+            return covering(Bounds(Coordinate(mid.latE7 - AROUND_E7, mid.lonE7 - AROUND_E7), Coordinate(mid.latE7 + AROUND_E7, mid.lonE7 + AROUND_E7)))
+        }
+
+        /** Every cell a box touches. */
+        fun covering(box: Bounds): Set<String> {
+            val cells = LinkedHashSet<String>()
+            var lat = box.southWest.latE7
+            while (true) {
+                var lon = box.southWest.lonE7
+                while (true) {
+                    cells += cellAt(Coordinate(lat, lon))
+                    if (lon >= box.northEast.lonE7) break
+                    lon = minOf(lon + CELL_STEP_E7, box.northEast.lonE7)
+                }
+                if (lat >= box.northEast.latE7) break
+                lat = minOf(lat + CELL_STEP_E7, box.northEast.latE7)
+            }
+            return cells
+        }
 
         private fun hex(id: BigInteger) = Numeric.toHexStringWithPrefixZeroPadded(id, 64)
+
+        private fun short(id: BigInteger) = hex(id).take(10)
 
         private fun now(): Long = System.currentTimeMillis() / 1000
     }

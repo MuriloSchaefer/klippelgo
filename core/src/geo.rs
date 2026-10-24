@@ -1,5 +1,5 @@
-//! Geohash cells for P2P discovery. Drivers announce presence in a geohash-5 cell (about 5 km) and riders post
-//! requests to the pickup cell and its neighbours, so exact positions never reach the gossip network.
+//! Geohash cells for P2P discovery. Riders post requests to the geohash-5 cell (about 5 km) of the pickup and
+//! drivers listen to the cells around them, so exact positions never reach the gossip network.
 
 const BASE32: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 

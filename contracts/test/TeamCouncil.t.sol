@@ -95,7 +95,8 @@ contract TeamCouncilTest is Test, TeamDeployer {
                 credentialing: credentialing,
                 security: security,
                 recovery: recovery,
-                local: false
+                local: false,
+                paymaster: address(0)
             })
         );
         TeamCouncil.Call[] memory s = _stopRides(p, false);

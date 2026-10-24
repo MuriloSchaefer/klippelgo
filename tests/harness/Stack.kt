@@ -60,7 +60,7 @@ class Stack(
     /** How many of [phones] are running, counted from the first. */
     fun phonesUp(): Int = phones.takeWhile { it.booted() }.size
 
-    fun client(account: DevAccount) = KlippelGoClient(rpc, account.privateKey, deployment)
+    fun client(account: DevAccount) = KlippelGoClient(rpc, account.key(), deployment)
 
     /** Runs a command from the repository's root against this stack's chain, and returns what it printed. */
     fun script(vararg command: String): String = script(emptyMap(), *command)
@@ -94,6 +94,14 @@ class Stack(
                 }
             }
         }
+        // A finished ride the account has not rated opens the app on the rating screen, in place of the home
+        // screen a test starts from. Rides played by hand on the same seeded accounts leave these too.
+        for (account in DevAccount.entries) {
+            val c = client(account)
+            for (id in (c.ridesAsRider().take(10) + c.ridesAsDriver().take(10)).distinct()) {
+                runCatching { if (c.ride(id).status == RideStatus.Completed && !c.hasRated(id)) c.rate(id, 5) }
+            }
+        }
     }
 
     companion object {
@@ -112,7 +120,7 @@ class Stack(
             val rpc = env("KLIPPELGO_RPC", "http://127.0.0.1:8545")
             val addresses = Deployment.fromJson(deployment.readText())
             // The tests sign with anvil's public keys and end rides for them. Never on anything but a local testnet.
-            val chainId = runCatching { KlippelGoClient(rpc, DevAccount.RIDER.privateKey, addresses).chainId() }
+            val chainId = runCatching { KlippelGoClient(rpc, DevAccount.RIDER.key(), addresses).chainId() }
                 .getOrElse { error("No chain node answers at $rpc. Bring the stack up first: tests/stack.sh up") }
             check(chainId == LOCAL_CHAIN && addresses.chainId == LOCAL_CHAIN) {
                 "The chain at $rpc (id $chainId, deployment for ${addresses.chainId}) is not a local testnet ($LOCAL_CHAIN). The tests will not touch it."
