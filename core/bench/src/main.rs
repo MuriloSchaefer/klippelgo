@@ -234,6 +234,12 @@ fn headline(run: &Value) -> Vec<(&'static str, String, Option<f64>, bool)> {
             true,
         ),
         (
+            "  ...of drivers in the request's own cell",
+            pct(&d["requests_near_seen"]),
+            d["requests_near_seen"].as_f64(),
+            true,
+        ),
+        (
             "  ...dropped because their list was full",
             pct(&d["requests_dropped_list_full"]),
             d["requests_dropped_list_full"].as_f64(),
@@ -301,6 +307,12 @@ fn headline(run: &Value) -> Vec<(&'static str, String, Option<f64>, bool)> {
             "Driver phone: largest drain (inbox holds 4096)",
             num(&d["largest_drain"]),
             d["largest_drain"].as_f64(),
+            false,
+        ),
+        (
+            "Driver phone: longest request list",
+            num(&d["longest_list"]),
+            d["longest_list"].as_f64(),
             false,
         ),
         (

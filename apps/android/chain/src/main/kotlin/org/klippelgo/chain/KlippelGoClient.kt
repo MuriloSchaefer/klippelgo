@@ -628,6 +628,12 @@ class KlippelGoClient(
     /** When each session key last had its certificate looked up. */
     private val lookups = boundedMap<ArrayDeque<Long>>(CERTIFICATES_KEPT)
 
+    /** Whether the account already confirmed this certificate, so that [certified] will ask the chain nothing. */
+    fun confirmed(certificate: SessionCertificate): Boolean {
+        val id = Numeric.toHexString(Hash.sha3(certificate.hash(deployment.chainId) + certificate.signature))
+        return synchronized(certified) { id in certified }
+    }
+
     /**
      * Whether `certificate` really lets its session key speak for its account: the account's own keys signed it,
      * as the account says on chain (`isValidSignature`), and it has not expired nor claims to last more than two

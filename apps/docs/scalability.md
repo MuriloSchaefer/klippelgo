@@ -41,7 +41,7 @@ flowchart LR
 | Address search | SQLite full-text and R-tree lookup, debounced 150 ms | Region size |
 | Route | One Valhalla search plus one verification | Trip length |
 | Checking a revealed route (driver) | One verification | Trip length |
-| Gossip intake | Parse, a few cached chain lookups and one signature recovery per new message, and one `isValidSignature` read per certificate not seen before | 200 requests, 50 offers per request; certificate lookups four a minute per session key, answers kept up to 4 096 |
+| Gossip intake | Parse, a few cached chain lookups and one signature recovery per new message, and one `isValidSignature` read per certificate not seen before | 200 requests, 50 offers per request, 64 reads per tick for requests under certificates not yet confirmed; certificate lookups four a minute per session key, answers kept up to 4 096 |
 | Drawing | PMTiles read from disk | Screen |
 | Storage | One pack per region in use; older packs of the region are deleted on update | Region size |
 
@@ -59,17 +59,32 @@ flowchart TB
 
 | # | Limit | Where it is | Lever |
 | --- | --- | --- | --- |
-| S5 | **Caps instead of ranking.** Beyond 200 requests or 50 offers, new ones are dropped rather than the least relevant | `Matchmaker` | With real cells the caps are rarely reached; then prefer nearer and newer |
-| S6 | **Re-announcing while open.** A phone with an open request publishes at most every 2.5 s; sealed routes are the largest messages | `Matchmaker.tick` | Send route and positions over a direct channel; back off announcements |
 | S7 | **Foreground only.** Gossip and position sharing stop when Android suspends the app | App lifecycle | A foreground service while online or on a ride |
 | S8 | **A position a second per started ride.** It is published to the whole cell, four times the rate on the way to a pickup; phones it is not for drop it before any signature work, but it takes room in their 4096-message inbox between refreshes. The driver's phone asks for a fix every second while it moves, whenever the driver screen is open | `AppViewModel.positions`, `startLocation` | Send positions over a direct channel; ask for fast fixes only on a started ride |
 | S9 | **App size.** The debug APK is 123 MB with two architectures, mostly native libraries | Build | Per-ABI splits, release shrinking |
 | S10 | **First scans from the deploy block.** A new phone, or a rider waiting for a driver it never looked at, reads every 2 000-block range since `deployBlock` one after another before it shows those rides | `KlippelGoClient.scan` | Scan backwards from the head and stop at the account's first ride, or start from a checkpoint the app ships |
-| S11 | **Closed requests fill the list.** A driver's phone keeps every request it heard until the request expires, ten minutes by default, closed or not, and drops new ones past 200. Nine busy cells pass 200 at one new ride every 27 s per cell | `Matchmaker.tick`, `receiveRequest` | Forget a request once its close is seen; with S5, rank instead of cap |
 | S12 | **Every poll downloads the escrow's events of 17 blocks.** `changedSince` reads all escrow logs from 16 blocks before the last read to the head, for every phone on screen, and filters on the phone. At 14 rides a second that is about 1 900 logs, 2.4 GB an hour per phone | `KlippelGoClient.changedSince` | Filter by the indexed rider and driver topics on the node; read only the new blocks and the reorganised ones |
 
-None of these is a redesign. S5 and S6 are the next steps already listed for gossip in
-[core scalability](../../core/docs/scalability.md).
+None of these is a redesign.
+
+## Announcing
+
+Gossip keeps no history, so a message is said again for peers who missed it or came later. Those are fewer the
+older the message is, so each gap is twice the last (`Cadence`), from 2.5 s up to a ceiling. The loop runs every
+2 s, so a gap in practice ends at the next tick after it.
+
+| Message | Widest gap | Stops |
+| --- | --- | --- |
+| Request | 5 s | At the close |
+| Offer | 5 s | At the close, or 15 s after the rider was last heard |
+| Close | 10 s | 15 s after closing, when phones that missed it have dropped the request anyway. A replay of the request heard by the rider's phone says it again |
+| Sealed route | 60 s | At the driver's first position, whose signature and sealing show the route arrived, or when the request expires. Not at the accept: the driver can accept without the route (P14) |
+
+A driver's phone holds a request while it is open: it forgets one at the close, or 15 s after last hearing it,
+unless it quoted it, when it keeps it for the route until it expires. So 200 is reached only by traffic, not by
+the past. When it is reached, the list gives up its farthest request, in bands of about 2 km from the phone, and
+of those the one first heard longest ago; a newcomer farther than that is dropped before any signature or chain read.
+Fifty offers are ranked differently: by the policy and the fare, after the signature ([security.md](security.md), P5).
 
 ## Reading the chain
 
@@ -147,8 +162,8 @@ These figures were measured before the check replaced reading everything every 2
 
 [`core/bench`](../../core/bench/README.md) models what 100 000 drivers and 1 000 000 riders put on each shared
 service and on each phone, and measures the gossip part through the real router. Its findings for the app: in
-the busiest cell a driver's phone would receive 1 400 to 2 600 gossip messages a second (S6, S8), overflowing
-the 4096-message inbox at every drain and the 200-request list (S11), and poll 2.4 GB an hour of escrow events
+the busiest cell a driver's phone would receive up to 1 840 gossip messages a second, 97% of them positions (S8),
+which fills 90% of the 4096-message inbox, holds about 33 requests of its 200, and polls 2.4 GB an hour of escrow events
 (S12); RPC nodes would answer about 230 000 requests a second (S12). `make bench-model` reruns the model
 at any scale. Before any of these, matching itself fails in a cell with more than about a dozen phones: the
 router forwards a cell's messages eagerly to its GossipSub mesh only (K11 in

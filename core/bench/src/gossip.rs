@@ -2,9 +2,10 @@
 //!
 //! The router is `klippelgo-node`, started as its own process so its CPU and memory can be read. Each phone is a
 //! real `GossipNode`, as in the app, dialling only the router. What the phones send follows the app: a rider
-//! announces their request every 2.5 s while asking, drivers who hear it quote and re-announce, the rider locks
-//! one offer and announces the close and the sealed route until the request expires, and the chosen driver
-//! sends positions every 4 s to the pickup and every 0.9 s on the trip. Sizes are those of the real messages.
+//! announces their request while asking, drivers who hear it quote and re-announce, the rider locks one offer and
+//! announces the close briefly and the sealed route until the driver's first position shows it arrived, and the
+//! chosen driver sends positions every 4 s to the pickup and every 0.9 s on the trip. Announcements back off as
+//! `Cadence` does in the app. Sizes are those of the real messages.
 //! The run starts with the rides of the last twenty minutes already under way, so it measures a steady state.
 //!
 //! A cell has hundreds of drivers at the target scale, more than one computer runs phones for. So each phone
@@ -13,10 +14,10 @@
 //! receives is measured at full traffic; the router forwards to fewer phones than it would, and its cost per
 //! message delivered is what the model scales up.
 //!
-//! Each phone drains its inbox at the app's cadence and keeps at most `max_requests` requests until they
-//! expire, as `Matchmaker` does, so a request lost to a full inbox or a full list counts as not seen.
+//! Each phone drains its inbox at the app's cadence and keeps at most `max_requests` requests while they are
+//! open, as `Matchmaker` does, so a request lost to a full inbox or a full list counts as not seen.
 
-use crate::model::{CellTraffic, Demand};
+use crate::model::{gap, CellTraffic, Demand};
 use crate::params::Params;
 use klippelgo_core::gossip::{GossipConfig, GossipNode};
 use serde_json::{json, Value};
@@ -110,12 +111,21 @@ impl Header {
     }
 }
 
+/// A request on a phone's list.
+struct Held {
+    cell: usize,
+    first_us: i64,
+    last_us: i64,
+    expires_us: i64,
+}
+
 struct Phone {
     node: Arc<GossipNode>,
     driver: bool,
     cell: usize,
-    /// Requests this phone's matchmaker holds, until they expire.
-    held: HashMap<u64, i64>,
+    /// Requests this phone's matchmaker holds: open ones, and those it quoted.
+    held: HashMap<u64, Held>,
+    longest_list: usize,
     /// Requests and routes this phone has had, so each counts once.
     seen: HashSet<(Kind, u64)>,
     received: u64,
@@ -133,6 +143,7 @@ struct Offerer {
     driver: usize,
     offer: u64,
     started_us: Option<i64>,
+    sends: u32,
 }
 
 struct Trip {
@@ -144,8 +155,16 @@ struct Trip {
     offers_seen: Vec<u64>,
     chosen: Option<usize>,
     positions_from_us: i64,
-    announcing: bool,
+    locked_us: i64,
+    asking: bool,
+    closing: bool,
+    revealing: bool,
     driving: bool,
+    request_sends: u32,
+    close_sends: u32,
+    route_sends: u32,
+    /// The rider's phone had a position from the driver: the route arrived.
+    acknowledged: bool,
     /// Asked while measuring: counts towards the figures about whole requests.
     measured: bool,
 }
@@ -154,6 +173,8 @@ struct Trip {
 enum Event {
     Arrival(usize),
     Announce(u64),
+    Close(u64),
+    Route(u64),
     Offer(u64, usize),
     Choose(u64),
     Position(u64),
@@ -193,6 +214,8 @@ struct Tally {
     unmatched: u64,
     requests_expected: u64,
     requests_seen: u64,
+    requests_near_expected: u64,
+    requests_near_seen: u64,
     requests_full: u64,
     request_first_ms: Vec<f64>,
     offers_expected: u64,
@@ -327,8 +350,15 @@ impl World<'_> {
                 offers_seen: vec![],
                 chosen: None,
                 positions_from_us: 0,
-                announcing: true,
+                locked_us: 0,
+                asking: true,
+                closing: false,
+                revealing: false,
                 driving: false,
+                request_sends: 0,
+                close_sends: 0,
+                route_sends: 0,
+                acknowledged: false,
                 measured,
             },
         );
@@ -344,26 +374,46 @@ impl World<'_> {
                     driver,
                     offer: self.next_offer,
                     started_us: None,
+                    sends: 0,
                 });
             }
             self.trips.get_mut(&id).unwrap().offerers = offerers;
             if measured {
                 self.tally.trips += 1;
                 self.tally.requests_expected += self.listeners[cell] as u64;
+                self.tally.requests_near_expected += self.p.get("driver_nodes") as u64;
             }
             self.at(now, Event::Announce(id));
             self.at(t0_us + ask, Event::Choose(id));
         } else {
-            // Locked before the run began: a driver has it, and the rider announces the close and the route.
+            // Locked before the run began: a driver has it, and what the rider still announces depends on how
+            // long ago. A route already acknowledged reached the driver's phone.
             let idle = self.idle_drivers_around(cell);
             if idle.is_empty() {
                 self.trips.remove(&id);
                 return;
             }
             let driver = idle[self.rng.below(idle.len())];
-            self.start_ride(id, driver, t0_us + ask);
+            let locked = t0_us + ask;
+            self.start_ride(id, driver, locked);
+            let closing = now - locked < us(self.p.get("live_for_s"));
+            let revealing = now - locked < us(self.p.get("accept_s") + self.p.get("drain_s"));
+            let phone = self.drivers[driver].phone;
+            let trip = self.trips.get_mut(&id).unwrap();
+            trip.asking = false;
+            trip.closing = closing;
+            trip.revealing = revealing;
+            if !revealing {
+                self.phones[phone].seen.insert((Kind::Route, id));
+            }
             let phase = us(self.rng.unit() * self.p.get("announce_s"));
-            self.at(now + phase, Event::Announce(id));
+            if closing {
+                self.at(now + phase, Event::Close(id));
+            }
+            if revealing {
+                self.at(now + phase, Event::Route(id));
+            }
+            self.maybe_forget(id);
         }
     }
 
@@ -373,6 +423,7 @@ impl World<'_> {
         let phase = us(self.rng.unit() * self.p.get("position_ride_s"));
         let trip = self.trips.get_mut(&id).unwrap();
         trip.chosen = Some(driver);
+        trip.locked_us = locked_us;
         trip.positions_from_us = from;
         if end > self.now {
             trip.driving = true;
@@ -396,22 +447,47 @@ impl World<'_> {
                 let Some(trip) = self.trips.get(&id) else {
                     return;
                 };
-                let (cell, rider, t0, chosen) = (trip.cell, trip.rider, trip.t0_us, trip.chosen);
-                let age = now - t0;
-                let ask = us(self.p.get("ask_s"));
-                if age < ask {
-                    self.publish(rider, Kind::Request, cell, CELL, id, t0);
-                } else if let (Some(driver), true) = (chosen, age < us(self.p.get("request_ttl_s")))
-                {
-                    self.publish(rider, Kind::Close, cell, CELL, id, t0 + ask);
-                    let phone = self.drivers[driver].phone as u32;
-                    self.publish(rider, Kind::Route, cell, phone, id, t0 + ask);
-                } else if chosen.is_some() || age >= us(self.p.get("request_ttl_s")) {
-                    self.trips.get_mut(&id).unwrap().announcing = false;
+                let (cell, rider, t0, sends) = (trip.cell, trip.rider, trip.t0_us, trip.request_sends);
+                if now - t0 >= us(self.p.get("ask_s")) {
+                    return;
+                }
+                self.publish(rider, Kind::Request, cell, CELL, id, t0);
+                self.trips.get_mut(&id).unwrap().request_sends += 1;
+                let wait = gap(self.p, sends, self.p.get("open_gap_most_s"));
+                self.at(now + us(wait), Event::Announce(id));
+            }
+            Event::Close(id) => {
+                let Some(trip) = self.trips.get(&id) else {
+                    return;
+                };
+                let (cell, rider, locked, sends) =
+                    (trip.cell, trip.rider, trip.locked_us, trip.close_sends);
+                if now - locked >= us(self.p.get("live_for_s")) {
+                    self.trips.get_mut(&id).unwrap().closing = false;
                     self.maybe_forget(id);
                     return;
                 }
-                self.at(now + us(self.p.get("announce_s")), Event::Announce(id));
+                self.publish(rider, Kind::Close, cell, CELL, id, locked);
+                self.trips.get_mut(&id).unwrap().close_sends += 1;
+                let wait = gap(self.p, sends, self.p.get("close_gap_most_s"));
+                self.at(now + us(wait), Event::Close(id));
+            }
+            Event::Route(id) => {
+                let Some(trip) = self.trips.get(&id) else {
+                    return;
+                };
+                let (cell, rider, t0, locked, sends) =
+                    (trip.cell, trip.rider, trip.t0_us, trip.locked_us, trip.route_sends);
+                if trip.acknowledged || now - t0 >= us(self.p.get("request_ttl_s")) {
+                    self.trips.get_mut(&id).unwrap().revealing = false;
+                    self.maybe_forget(id);
+                    return;
+                }
+                let phone = self.drivers[trip.chosen.unwrap()].phone as u32;
+                self.publish(rider, Kind::Route, cell, phone, id, locked);
+                self.trips.get_mut(&id).unwrap().route_sends += 1;
+                let wait = gap(self.p, sends, self.p.get("route_gap_most_s"));
+                self.at(now + us(wait), Event::Route(id));
             }
             Event::Offer(id, k) => {
                 let Some(trip) = self.trips.get(&id) else {
@@ -421,11 +497,18 @@ impl World<'_> {
                     return;
                 }
                 let o = &trip.offerers[k];
-                let (cell, rider, offer, started) =
-                    (trip.cell, trip.rider as u32, o.offer, o.started_us.unwrap());
+                let (cell, rider, offer, started, sends) = (
+                    trip.cell,
+                    trip.rider as u32,
+                    o.offer,
+                    o.started_us.unwrap(),
+                    o.sends,
+                );
                 let phone = self.drivers[o.driver].phone;
                 self.publish(phone, Kind::Offer, cell, rider, offer, started);
-                self.at(now + us(self.p.get("announce_s")), Event::Offer(id, k));
+                self.trips.get_mut(&id).unwrap().offerers[k].sends += 1;
+                let wait = gap(self.p, sends, self.p.get("open_gap_most_s"));
+                self.at(now + us(wait), Event::Offer(id, k));
             }
             Event::Choose(id) => {
                 let Some(trip) = self.trips.get(&id) else {
@@ -447,12 +530,18 @@ impl World<'_> {
                             self.tally.routes_expected += 1;
                         }
                         self.start_ride(id, driver, now);
+                        let trip = self.trips.get_mut(&id).unwrap();
+                        trip.asking = false;
+                        trip.closing = true;
+                        trip.revealing = true;
+                        self.at(now, Event::Close(id));
+                        self.at(now, Event::Route(id));
                     }
                     None => {
                         if measured {
                             self.tally.unmatched += 1;
                         }
-                        self.trips.get_mut(&id).unwrap().announcing = false;
+                        self.trips.get_mut(&id).unwrap().asking = false;
                         self.maybe_forget(id);
                     }
                 }
@@ -476,7 +565,10 @@ impl World<'_> {
                     return;
                 }
                 let phone = self.drivers[driver].phone;
-                self.publish(phone, Kind::Position, cell, rider, id, now);
+                // Positions are sealed to a key that comes with the route: without it the driver has none to send.
+                if self.phones[phone].seen.contains(&(Kind::Route, id)) {
+                    self.publish(phone, Kind::Position, cell, rider, id, now);
+                }
                 let every = if elapsed < pickup {
                     self.p.get("position_pickup_s")
                 } else {
@@ -495,7 +587,7 @@ impl World<'_> {
         if self
             .trips
             .get(&id)
-            .is_some_and(|t| !t.announcing && !t.driving)
+            .is_some_and(|t| !t.asking && !t.closing && !t.revealing && !t.driving)
         {
             self.trips.remove(&id);
         }
@@ -513,6 +605,12 @@ impl World<'_> {
             }
         }
         let ask = us(self.p.get("ask_s"));
+        // As Matchmaker.tick: a request not heard for a while is gone. The app keeps those its phone quoted, a
+        // few; here a phone quotes for all its people, so keeping them would fill the list as no real phone's is.
+        let live = us(self.p.get("live_for_s"));
+        self.phones[phone]
+            .held
+            .retain(|_, h| h.expires_us > now && now - h.last_us < live);
         for m in messages {
             if measuring {
                 self.tally.deliveries += 1;
@@ -564,8 +662,19 @@ impl World<'_> {
                             .push((now - h.origin_us) as f64 / 1000.0);
                     }
                 }
-                Kind::Close | Kind::Position => {}
+                Kind::Close => {
+                    self.phones[phone].held.remove(&h.about);
+                }
+                Kind::Position => {
+                    if let Some(trip) = self.trips.get_mut(&h.about) {
+                        trip.acknowledged = true;
+                    }
+                }
             }
+        }
+        let ph = &mut self.phones[phone];
+        if measuring {
+            ph.longest_list = ph.longest_list.max(ph.held.len());
         }
     }
 
@@ -573,31 +682,54 @@ impl World<'_> {
         let now = self.now;
         let ttl = us(self.p.get("request_ttl_s"));
         let cap = self.p.get("max_requests") as usize;
-        let measured = self.trips.get(&id).is_some_and(|t| t.measured);
-        let ph = &mut self.phones[phone];
-        if ph.held.contains_key(&id) {
-            return;
-        }
-        // As Matchmaker: a request is kept until it expires, closed or not, and a full list drops new ones.
-        if ph.held.len() >= cap {
-            ph.held.retain(|_, expires| *expires > now);
-        }
-        if ph.held.len() >= cap {
-            // Counted once per phone, under a key of its own: the request may still get in once room frees.
-            if measured && ph.seen.insert((Kind::Close, id)) {
-                self.tally.requests_full += 1;
-            }
-            return;
-        }
-        ph.held.insert(id, origin_us + ttl);
-        let Some(trip) = self.trips.get_mut(&id) else {
+        let rank = self.p.get("rank_requests") > 0.0;
+        let Some((measured, cell)) = self.trips.get(&id).map(|t| (t.measured, t.cell)) else {
             return;
         };
+        let ph = &mut self.phones[phone];
+        if let Some(h) = ph.held.get_mut(&id) {
+            h.last_us = now;
+            return;
+        }
+        // As Matchmaker: a full list gives up its farthest request, the oldest of those. A newcomer no nearer
+        // than that one is dropped. In a neighbouring cell counts as far, in the phone's own as near.
+        if ph.held.len() >= cap {
+            let far = |c: usize| usize::from(c != ph.cell);
+            let worst = ph
+                .held
+                .iter()
+                .max_by_key(|(_, h)| (far(h.cell), Reverse(h.first_us)))
+                .map(|(k, h)| (*k, far(h.cell)));
+            match worst {
+                Some((out, band)) if rank && far(cell) <= band => {
+                    ph.held.remove(&out);
+                }
+                _ => {
+                    // Counted once per phone, under a key of its own: it may still get in once room frees.
+                    if measured && ph.seen.insert((Kind::Close, id)) {
+                        self.tally.requests_full += 1;
+                    }
+                    return;
+                }
+            }
+        }
+        ph.held.insert(
+            id,
+            Held {
+                cell,
+                first_us: now,
+                last_us: now,
+                expires_us: origin_us + ttl,
+            },
+        );
+        let near = ph.cell == cell;
+        let trip = self.trips.get_mut(&id).unwrap();
         if now >= trip.t0_us + us(self.p.get("ask_s")) {
             return;
         }
         if trip.measured && ph.seen.insert((Kind::Request, id)) {
             self.tally.requests_seen += 1;
+            self.tally.requests_near_seen += u64::from(near);
             self.tally
                 .request_first_ms
                 .push((now - origin_us) as f64 / 1000.0);
@@ -768,6 +900,7 @@ pub fn run(p: &Params, node_binary: &Path) -> Result<Value, String> {
                 driver: k < driver_nodes,
                 cell,
                 held: HashMap::new(),
+                longest_list: 0,
                 seen: HashSet::new(),
                 received: 0,
                 received_bytes: 0,
@@ -988,7 +1121,9 @@ pub fn run(p: &Params, node_binary: &Path) -> Result<Value, String> {
             "mb_per_hour": driver_bytes * 3600.0 / 1e6,
             "largest_drain": driver_phones.iter().map(|ph| ph.largest_drain).max().unwrap_or(0),
             "drains_at_inbox_cap": driver_phones.iter().map(|ph| ph.full_drains).sum::<u64>(),
+            "longest_list": driver_phones.iter().map(|ph| ph.longest_list).max().unwrap_or(0),
             "requests_seen": ratio(t.requests_seen, t.requests_expected),
+            "requests_near_seen": ratio(t.requests_near_seen, t.requests_near_expected),
             "requests_dropped_list_full": ratio(t.requests_full, t.requests_expected),
             "request_first_seen_ms": percentiles(&mut t.request_first_ms),
             "routes_seen": ratio(t.routes_seen, t.routes_expected),

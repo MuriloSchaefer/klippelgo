@@ -165,7 +165,7 @@ certified for a day, and each phone checks the signature and the certificate,
 the expiry, the max fare, the rider's registration and that the request's map pack is one governance activated
 before showing anything. A quote names the route's hash, rider, driver, token, fare, chain, escrow and expiry,
 so it cannot be replayed elsewhere or moved to another route. Gossip keeps no history, so a
-rider's app announces its request every few seconds, and a request nobody announces for 10 seconds disappears.
+rider's app announces its request every few seconds, and a request nobody announces for 15 seconds disappears.
 
 Still missing from the architecture plan and its security review: offers encrypted to the rider (the whole cell sees who quoted what), driver presence,
 a cost for posting requests, relays for phones behind

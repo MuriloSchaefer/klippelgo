@@ -32,7 +32,7 @@ flowchart LR
 | Topics, cells, message sizes, cadences | As the app uses them: `/klippelgo/match/1/<cell>`, the nine cells around a driver, the sizes of the signed JSON messages, `Matchmaker`'s intervals |
 | Message content | A 41-byte header the benchmark reads back, padded to the real message's size. The router never reads content, so this changes nothing it does |
 | People | Simulated: riders arrive at random (Poisson) at the busiest cell's rate; drivers quote, are chosen and drive on fixed durations |
-| Matchmaker's limits | Simulated on each phone: the 2 s drain and the 200-request list kept until expiry |
+| Matchmaker's limits | Simulated on each phone: the 2 s drain, the 200-request list and what leaves it. A request a phone quoted is not kept past its close here: one phone quotes for hundreds of people, and keeping them would fill a list as no real phone's fills |
 | Chain, bundler, RPC, mirrors | Not run. The model computes their load from the app's cadences and measured gas |
 
 ## Code structure
@@ -91,9 +91,10 @@ flowchart LR
 
 | Kind | Messages a second in a cell |
 | --- | --- |
-| Request | λ × `ask_s` ÷ `announce_s` |
-| Offer | λ × `offers_per_request` × (`ask_s` − `quote_delay_s`) ÷ `announce_s` |
-| Close, and route | λ × (`request_ttl_s` − `ask_s`) ÷ `announce_s` each: the rider announces both until the request expires |
+| Request | λ × announcements in `ask_s`, gaps from `announce_s` up to `open_gap_most_s`, doubling |
+| Offer | λ × `offers_per_request` × announcements in `ask_s` − `quote_delay_s`, the same gaps |
+| Close | λ × announcements in `live_for_s`, gaps up to `close_gap_most_s` |
+| Route | λ × announcements in `accept_s` + `drain_s`, gaps up to `route_gap_most_s`: the rider stops at the driver's first position |
 | Position | λ × (`pickup_s` ÷ `position_pickup_s` + `ride_s` ÷ `position_ride_s`) |
 
 A driver's phone hears nine cells, so it receives nine times that. A row marked `scales_out` (bundler, RPC,
@@ -148,11 +149,11 @@ forwards to fewer phones than it would, and the model scales its measured cost p
 ```mermaid
 stateDiagram-v2
     [*] --> Asking: Arrival (Poisson, rate λ per cell)
-    Asking --> Asking: Announce every announce_s: request to the cell
+    Asking --> Asking: Announce: request to the cell, gaps doubling
     Asking --> Unmatched: Choose at ask_s, no offer reached the rider
     Asking --> Locked: Choose at ask_s, first offer the rider's phone had
-    Locked --> Locked: Announce every announce_s: close to the cell, route to the chosen driver's phone
-    Locked --> Announced: request_ttl_s after asking
+    Locked --> Locked: Close to the cell for live_for_s, route to the chosen driver's phone
+    Locked --> Announced: the first position reached the rider, or request_ttl_s after asking
     Locked --> ToPickup: accept_s after the lock (in parallel)
     ToPickup --> ToPickup: position every position_pickup_s
     ToPickup --> OnTrip: after pickup_s
@@ -164,10 +165,11 @@ stateDiagram-v2
 
 Offers follow the request: when a driver phone first holds a request, each logical driver on that phone who
 was picked to quote it starts announcing an offer `quote_delay_s` later, until asking ends. A driver phone that
-never received the request sends no offer, as on a real phone.
+never received the request sends no offer, and one that never received the route sends no positions, as on a
+real phone.
 
 The run starts in steady state: `new_trip` is called for rides asked up to `rider_listen_s` before the start (about twenty minutes), each
-placed in the phase it would be in now (still asking, announcing the route, driving to the pickup, on the trip).
+placed in the phase it would be in now (still asking, closing, announcing the route, driving to the pickup, on the trip).
 
 ### The event loop
 
@@ -177,10 +179,12 @@ loop sleeps until the next one is due (5 ms at most) and handles everything that
 | Event | Does |
 | --- | --- |
 | `Arrival(cell)` | A new trip in the cell, picks the drivers who will quote it, schedules the next arrival |
-| `Announce(trip)` | Publishes the request while asking, then the close and the route until the request expires |
+| `Announce(trip)` | Publishes the request while asking |
+| `Close(trip)` | Publishes the close for `live_for_s` after the lock |
+| `Route(trip)` | Publishes the route until a position reached the rider, or the request expires |
 | `Offer(trip, k)` | Publishes the k-th driver's offer while asking |
 | `Choose(trip)` | At the end of asking: the first offer the rider's phone had, from a driver still free, or unmatched |
-| `Position(trip)` | Publishes the chosen driver's position, every 4 s to the pickup and every 0.9 s on the trip |
+| `Position(trip)` | Publishes the chosen driver's position once their phone has the route, every 4 s to the pickup and every 0.9 s on the trip |
 | `Drain(phone)` | Drains the phone's inbox and accounts every message. Phones are staggered across `drain_s` |
 
 `most_behind_ms` records how late the loop handled any event while measuring. If it grows, or the process uses
@@ -209,11 +213,14 @@ flowchart TB
     meant -- yes --> sent{Sent in the measured window?}
     sent -- yes --> deliv[delivered and latency by kind]
     meant -- yes --> kind{Kind}
-    kind -- request --> list{Room in the phone's<br/>200-request list?}
-    list -- no --> full[dropped, list full]
-    list -- yes --> seen[seen while open:<br/>time to first see it,<br/>start this phone's offers]
+    kind -- request --> list{Room in the phone's<br/>request list?}
+    list -- no --> rank{Nearer than or as near as<br/>the farthest held?}
+    rank -- no --> full[dropped, list full]
+    rank -- yes --> seen[seen while open:<br/>time to first see it,<br/>start this phone's offers]
     kind -- offer --> offer[the rider has it before choosing]
     kind -- route --> route[the chosen driver has it]
+    kind -- close --> forget[off the phone's list]
+    kind -- position --> ack[the rider stops announcing the route]
 ```
 
 | Figure | Numerator | Denominator |

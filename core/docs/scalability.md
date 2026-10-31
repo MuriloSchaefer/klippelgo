@@ -81,19 +81,20 @@ What one cell carries, from the constants in the code:
 
 | Message | Size | How often |
 | --- | --- | --- |
-| Request | a few hundred bytes | Re-announced at most every 2.5 s while open (gossip keeps no history) |
-| Offer | a few hundred bytes | Re-announced with the request's cycle while valid |
-| Sealed route | a few KB; tens for a trip across a large city; 64 KB at most | Re-announced until the request expires |
+| Request | a few hundred bytes | Re-announced while open, gaps growing from 2.5 s to 5 s (gossip keeps no history) |
+| Offer | a few hundred bytes | The same, while the rider is heard and the request is not closed |
+| Close | a few hundred bytes | About three times in 15 s |
+| Sealed route | a few KB; tens for a trip across a large city; 64 KB at most | Gaps growing from 2.5 s to 60 s, until the driver's first position shows it arrived, or the request expires |
 | Sealed position | a few hundred bytes | At most every 4 s per ride on the way to its pickup, and every second once it has started |
 
-A phone keeps at most 200 requests and 50 offers per request, and the node's inbox holds 4096 messages between
+A phone keeps at most 200 requests, those it can act on, and 50 offers per request, and the node's inbox holds 4096 messages between
 two drains, dropping the oldest. Memory per phone is therefore bounded whatever the cell does.
 
 ### What limits gossip, and the levers
 
 | Limit | Where it bites | Lever |
 | --- | --- | --- |
-| Re-announcing | Bandwidth in a cell grows with open requests × 0.4 messages per second, plus their offers. Sealed routes are the heavy part | Announce less often once peers have acknowledged; send sealed routes and positions directly between the two phones (the ride channel) instead of to the cell |
+| Positions to the whole cell | Most of what a cell carries once announcing backs off ([apps scalability](../../apps/docs/scalability.md), Announcing) | Send positions directly between the two phones (the ride channel) instead of to the cell |
 | One router subscribes to every topic it hears | A single bootstrap node carries all cells of all cities | Run routers per region and give phones the routers of their region; routers are stateless, so adding one needs no coordination |
 | A very busy cell | A stadium exit puts thousands of phones on one topic | Split to geohash 6 when a cell is busy: the topic format already carries the cell, and `geo` already computes both precisions |
 | No peer scoring | A flooding peer costs every phone in the cell bandwidth | GossipSub scoring and an application-level validator ([security.md](security.md), K1) |
@@ -120,15 +121,15 @@ static hosting. A phone downloads a region once per release, and only files whos
 [`bench/`](../bench/README.md) ([how it works](benchmark.md)) models every shared service at a number of drivers and riders, and runs a 3×3
 square of cells at the busiest cell's traffic through `klippelgo-node`, with real `GossipNode` phones. At
 100 000 drivers and 1 000 000 riders (the busiest cell: 667 drivers, a new ride every 5.4 s), on a developer's
-computer, 2026-10-24:
+computer, 2026-10-31:
 
 | Measure | Value |
 | --- | --- |
-| Messages one cell carries | 292 a second, 420 KB: positions 199, re-announced closes and sealed routes 43 each, offers 6, requests 1.5 |
-| A driver's phone, nine cells | 1 400 messages a second measured (1 600 modelled), about 7.5 GB an hour; its 4096-message inbox fills at every 2 s drain |
-| Delivery, 10 phones per cell | 100% of requests, offers, routes and positions; request to a driver's screen 1.0 s at the median, 3.9 s at p99 |
-| Delivery, 20 driver and 5 rider phones per cell | Under 1% of requests and closes, 6.5% of positions |
-| Router | 15 CPU seconds per million deliveries on one thread; 0.2 cores at 14 000 deliveries a second |
+| Messages one cell carries | 205 a second, 187 KB: positions 199, offers 3.7, requests 0.9, closes and sealed routes 0.6 each |
+| A driver's phone, averaged over the square | 921 messages a second measured (1 100 modelled), about 3 GB an hour; its largest drain 3 300 of the inbox's 4096. In the middle of a city, nine cells: 1 840 a second and 6 GB an hour modelled, which is 90% of the inbox |
+| Delivery, 2 phones per cell | 100% of requests, offers, routes and positions; request to a driver's screen 1.0 s at the median, 2.0 s at p99 |
+| Delivery, 20 driver and 5 rider phones per cell | No requests or offers; 6 to 11% of positions, from run to run |
+| Router | 16 to 20 CPU seconds per million deliveries on one thread; 0.2 cores at 10 000 deliveries a second |
 
 `make bench` reruns all of it; `make bench-model ARGS="--drivers … --riders …"` gives the model at any scale.
 

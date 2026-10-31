@@ -18,20 +18,33 @@ pub struct CellTraffic {
     pub position: f64,
 }
 
+/// Seconds until the next announcement, after `sends` of them: `Cadence` in the app.
+pub fn gap(p: &Params, sends: u32, most: f64) -> f64 {
+    (p.get("announce_s") * 2f64.powi(sends.min(30) as i32)).min(most)
+}
+
+/// Times a message goes out in `span` seconds: once at the start, then at the cadence.
+pub fn sends_within(p: &Params, span: f64, most: f64) -> f64 {
+    let (mut t, mut n) = (0.0, 0);
+    while t < span {
+        t += gap(p, n, most);
+        n += 1;
+    }
+    n as f64
+}
+
 impl CellTraffic {
     pub fn for_rate(p: &Params, rides_per_s: f64) -> Self {
-        let announce = p.get("announce_s");
-        let announced_after_lock = (p.get("request_ttl_s") - p.get("ask_s")).max(0.0);
+        let open_most = p.get("open_gap_most_s");
+        // The rider stops announcing the route at the driver's first position: the accept, then a drain.
+        let route_for = (p.get("accept_s") + p.get("drain_s")).min(p.get("request_ttl_s"));
         Self {
-            request: rides_per_s * p.get("ask_s") / announce,
+            request: rides_per_s * sends_within(p, p.get("ask_s"), open_most),
             offer: rides_per_s
                 * p.get("offers_per_request")
-                * (p.get("ask_s") - p.get("quote_delay_s")).max(0.0)
-                / announce,
-            // A rider who locked keeps announcing the close, and the route sealed to the driver, until the
-            // request expires.
-            close: rides_per_s * announced_after_lock / announce,
-            route: rides_per_s * announced_after_lock / announce,
+                * sends_within(p, p.get("ask_s") - p.get("quote_delay_s"), open_most),
+            close: rides_per_s * sends_within(p, p.get("live_for_s"), p.get("close_gap_most_s")),
+            route: rides_per_s * sends_within(p, route_for, p.get("route_gap_most_s")),
             position: rides_per_s
                 * (p.get("pickup_s") / p.get("position_pickup_s")
                     + p.get("ride_s") / p.get("position_ride_s")),
@@ -296,17 +309,17 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
         have: p.get("inbox"),
         unit: "msgs",
         scales_out: false,
-        lever: "apps S6, S8: positions and routes over a direct channel; back off announcements",
+        lever: "apps S8: positions over a direct channel",
     });
-    // A phone keeps every request it heard until the request expires, closed or not.
+    // A phone keeps a request while it is open: it forgets it at the close.
     rows.push(Row {
         area: "phone",
         what: "Requests a driver's phone holds in the busiest cell, against its cap".into(),
-        need: 9.0 * d.hot_rides_per_s * p.get("request_ttl_s"),
+        need: 9.0 * d.hot_rides_per_s * p.get("ask_s"),
         have: p.get("max_requests"),
         unit: "requests",
         scales_out: false,
-        lever: "apps S5: forget closed requests; rank instead of cap",
+        lever: "the list ranks by distance and age; raise the cap, or a cost for posting (P17)",
     });
     rows.push(Row {
         area: "phone",
@@ -315,7 +328,7 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
         have: p.get("phone_mb_hour_ok"),
         unit: "MB/h",
         scales_out: false,
-        lever: "apps S6, S8 and 'Reading the chain'",
+        lever: "apps S8, S12 and 'Reading the chain'",
     });
     facts.push((
         "Gossip a driver's phone receives in the busiest cell".into(),
@@ -354,7 +367,7 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
         have: 1e9 / 8.0,
         unit: "B/s",
         scales_out: true,
-        lever: "core scalability: fewer re-announcements, direct channel, routers per region",
+        lever: "core scalability: direct channel for positions, routers per region",
     });
     let routers_cpu = measured.map(|m| deliveries * m.router_cpu_s_per_million / 1e6);
     if let Some(cores) = routers_cpu {
@@ -480,11 +493,18 @@ mod tests {
     fn a_cells_traffic_follows_the_apps_cadences() {
         let (p, _) = Params::from_args(&[]).unwrap();
         let t = CellTraffic::for_rate(&p, 0.1);
-        // 20 s asking, announced every 2.5 s; five offers from 3 s on; close and route for the other 580 s.
-        assert!((t.request - 0.8).abs() < 1e-9);
-        assert!((t.offer - 0.1 * 5.0 * 17.0 / 2.5).abs() < 1e-9);
-        assert!((t.close - 0.1 * 580.0 / 2.5).abs() < 1e-9 && t.route == t.close);
+        // Gaps of 2.5, then 5 s: 0, 2.5, 7.5, 12.5, 17.5 of 20 s asked, and of the 17 s five drivers quote.
+        assert!((t.request - 0.5).abs() < 1e-9);
+        assert!((t.offer - 0.1 * 5.0 * 4.0).abs() < 1e-9);
+        // A close at 0, 2.5, 7.5 and no more within 15 s; a route the same until the first position, at 12 s.
+        assert!((t.close - 0.3).abs() < 1e-9 && (t.route - 0.3).abs() < 1e-9);
         assert!((t.position - 0.1 * (300.0 / 4.0 + 900.0 / 0.9)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_route_nobody_acknowledges_goes_out_a_few_times_a_minute() {
+        let (p, _) = Params::from_args(&[]).unwrap();
+        assert_eq!(sends_within(&p, 580.0, 60.0), 14.0);
     }
 
     #[test]

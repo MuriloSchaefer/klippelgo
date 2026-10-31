@@ -1040,7 +1040,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun refreshGossip(c: KlippelGoClient, m: Matchmaker?, role: Role) {
         // Gossip first and on its own: matching must keep running while the chain node is unreachable.
         runCatching {
-            m?.listen(area(role))
+            m?.listen(area(role), _state.value.location.takeIf { role == Role.DRIVER })
             m?.tick()
         }
         val open = m?.openRequests().orEmpty()

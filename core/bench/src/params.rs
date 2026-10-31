@@ -82,9 +82,33 @@ pub const PARAMS: &[Param] = &[
     p(
         "request_ttl_s",
         600.0,
-        "code: Matchmaker.REQUEST_TTL; a locked request's close and route are announced until then",
+        "code: Matchmaker.REQUEST_TTL; a route nobody acknowledged is announced until then",
     ),
-    p("announce_s", 2.5, "code: Matchmaker.ANNOUNCE_EVERY_MS"),
+    p(
+        "announce_s",
+        2.5,
+        "code: Matchmaker.ANNOUNCE_EVERY_MS, the first gap; each one after is twice the last",
+    ),
+    p(
+        "open_gap_most_s",
+        5.0,
+        "code: Matchmaker.OPEN_GAP_MOST_MS, widest gap between a request's or an offer's announcements",
+    ),
+    p(
+        "close_gap_most_s",
+        10.0,
+        "code: Matchmaker.CLOSE_GAP_MOST_MS, widest gap between a close's announcements",
+    ),
+    p(
+        "route_gap_most_s",
+        60.0,
+        "code: Matchmaker.ROUTE_GAP_MOST_MS, widest gap between a route's announcements",
+    ),
+    p(
+        "live_for_s",
+        15.0,
+        "code: Matchmaker.LIVE_FOR_MS; unheard this long a request is gone, so a close is said for this long",
+    ),
     p(
         "position_pickup_s",
         4.0,
@@ -99,6 +123,11 @@ pub const PARAMS: &[Param] = &[
         "max_requests",
         200.0,
         "code: Matchmaker.MAX_REQUESTS a phone keeps",
+    ),
+    p(
+        "rank_requests",
+        1.0,
+        "code: 1 a full list gives up the farthest and oldest; 0 it drops the newcomer, as it did before",
     ),
     // Gossip messages: JSON, signed, each with the session key's certificate.
     p("size_request", 1100.0, "bytes of a request"),

@@ -38,7 +38,8 @@ about people and about services KlippelGo does not run; they are the first thing
 | Rides per rider per day, share in the busiest hour | 0.5, 10% | assumed: 13.9 new rides a second |
 | Populated geohash-5 cells, busiest over average | 300, ×4 | assumed: the busiest has 667 drivers and a ride every 5.4 s |
 | Asking, accept, pickup, trip | 20 s, 10 s, 5 min, 15 min | assumed |
-| Announce, positions, request lifetime, inbox, list cap | 2.5 s; 4 s and 0.9 s; 10 min; 4096; 200 | code |
+| Announcing: first gap, widest gap for requests and offers, closes, routes | 2.5 s; 5 s, 10 s, 60 s | code |
+| Positions, request lifetime, unheard request gone, inbox, list cap | 4 s and 0.9 s; 10 min; 15 s; 4096; 200 | code |
 | Chain | Polygon PoS: 45 M gas per 2 s block, 25% of it for KlippelGo | assumed |
 
 ## How the load test scales down
@@ -57,19 +58,23 @@ It runs in two standard ways, which `make bench` does one after the other:
 | **light** (`--driver-nodes 1 --rider-nodes 1`) | 1 and 1 | Under the mesh limit: what one phone receives at full traffic, and the router's cost per delivery, which the model uses |
 
 The run begins with the last twenty minutes' rides already under way, then measures for `duration_s` after
-`warmup_s`. Phones drain their inbox every 2 s and hold at most 200 requests until they expire, as
-`Matchmaker` does, so a request lost to a full inbox or a full list counts as not seen.
+`warmup_s`. Phones drain their inbox every 2 s and hold at most 200 open requests, giving up the farthest and
+oldest when full, as `Matchmaker` does, so a request lost to a full inbox or a full list counts as not seen.
+The list does not fill at the target's traffic. To exercise it, lower the cap (`--max-requests 20`), and
+`--rank-requests 0` shows what dropping the newcomer would do. "Seen" then means on the list at some moment, not
+that it stayed there.
 
 ### What a run reports
 
 | Figure | Meaning |
 | --- | --- |
-| Drivers who saw a request while it was open | Of the driver phones that hear the request's cell, the share that had it on screen before the rider locked |
+| Drivers who saw a request while it was open | Of the driver phones that hear the request's cell, the share that had it on screen before the rider locked. Also for those in the request's own cell alone |
 | Offers that reached their rider in time | Of the offers drivers sent, the share the rider's phone had before choosing |
 | Routes, positions | Share delivered to the one phone each is for |
 | Time to first see it | From the first announcement to the phone's drain: includes the app's 2 s cadence |
 | Driver phone: messages a second (model) | Measured, and what the model says a phone should receive |
 | Largest drain | Most messages one drain returned; at 4096 the inbox is dropping messages |
+| Longest request list | Most requests one phone held. About the requests open in nine cells |
 | Router: CPU seconds per million deliveries | What the model uses to say how many router cores the target needs |
 | Load generator | If it falls behind or uses most cores, the computer is the limit: lower `driver_nodes`, `rider_nodes` or `grid` |
 
@@ -78,17 +83,17 @@ router, without rides: phones on one topic, each publishing `rate` messages a se
 receives. Use it to tell a network problem from a ride-model one. `RUST_LOG=libp2p_gossipsub=debug` shows what
 the phones' GossipSub does (GRAFT, PRUNE, IHAVE); the router's own logs are not captured.
 
-## What it found, 2026-10-24
+## What it found, 2026-10-31
 
 At 100 000 drivers and 1 000 000 riders the system does not hold. In order of how hard each is to fix:
 
 | Area | Finding | Kind |
 | --- | --- | --- |
 | Gossip | **Delivery collapses past about a dozen phones per cell.** At the target traffic, 10 phones on a cell receive 100%; with 19, 2% of drivers see a request; with 46 or more, none do. The router forwards eagerly only to its GossipSub mesh (6 to 12 phones per topic), the others get lazy gossip that cannot keep up with tens of messages a second, and phones only connect to the router, so nobody else forwards. A busy cell at the target has about 6 000 phones. Router CPU is not the limit (0.2 cores) | Design: phones must reach more than one forwarder, or cells need far fewer subscribers |
-| Phone | **A driver's phone would receive 1 400 to 2 600 messages a second, about 7.5 to 13.7 GB an hour.** 90% of the bytes are positions and sealed routes of other people's rides, sent to the whole cell, the routes again every 2.5 s for ten minutes. The 4096-message inbox overflows every drain, and the 200-request list fills with closed requests kept for 10 minutes | Design: apps S5, S6, S8 |
+| Phone | **A driver's phone would receive 920 to 1 840 messages a second, about 3 to 6 GB an hour.** 97% of the messages are positions of other people's rides, sent to the whole cell. Announcing is now a small part: closes and routes went from 43 a second each to 0.6 per cell. The inbox holds, at 90% in the busiest place, and the 200-request list holds about 33 | Design: apps S8 |
 | Chain | 18.6 M gas a second: 83% of Polygon PoS's whole block space, 3.3× the 25% assumed available | Design: a rollup or per-region escrows |
 | RPC | Each phone on screen reads every escrow event of the last 17 blocks every 2 s: 1 900 logs, 2.4 GB an hour per phone; 232 000 requests and 44 GB a second across phones | Mostly design: filter by topic, stop re-reading, push instead of poll |
-| Bundler, mirrors, routers | 56 operations a second; 80 TB per pack release; about 50 GB a second of gossip | Scale out, once the above is fixed |
+| Bundler, mirrors, routers | 56 operations a second; 80 TB per pack release; about 22 GB a second of gossip | Scale out, once the above is fixed |
 
 Smaller scales show where each breaks first: `make bench-model ARGS="--drivers 2000 --riders 20000"`.
 
