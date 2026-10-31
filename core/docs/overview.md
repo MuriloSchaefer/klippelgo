@@ -46,6 +46,7 @@ flowchart TB
 | `klippelgo-proofs` | [`proofs/`](../proofs/src/lib.rs) | Opens a pack and checks it against its manifest, cuts witnesses from the proof index, turns Valhalla output into `(way, node)` steps, reads and writes evidence, address search | Files only |
 | `klippelgo-core` | [`src/`](../src/lib.rs) | The UniFFI surface the apps see, the gossip node, sealing, money, geohash cells, network settings | Files and network |
 | `mappack` | [`../mappack/`](../../mappack/README.md) | Builds a region's pack from OpenStreetMap. Not part of the app | Yes |
+| `klippelgo-bench` | [`bench/`](../bench/README.md) | The scalability benchmark ([benchmark.md](benchmark.md)): a capacity model of the shared services, and a gossip load test of `klippelgo-node` with real `GossipNode` phones. Not part of the app | Yes |
 
 ### Modules of `klippelgo-core`
 
@@ -136,6 +137,7 @@ These are the rules new core code follows. The skill that applies them is
 | Finds or prepares those bytes (files, JSON, Valhalla output) | `proofs` |
 | Is called by an app, or talks to the network | `klippelgo-core`, exported through UniFFI |
 | Reads OpenStreetMap or builds a pack | `mappack` |
+| Measures load, or models it at a number of users | `bench`. It uses the core's public API only, so it measures what the apps run |
 
 **Patterns**
 

@@ -1,4 +1,4 @@
-.PHONY: bundler explorer explorer-verify explorer-down explorer-reset test-hooks test-gov test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-three-phones android-four-phones android-apk android-test-chain e2e e2e-integrity e2e-security e2e-performance e2e-up e2e-down e2e-three-phones android-drive
+.PHONY: bench bench-model bench-gossip bench-build bundler explorer explorer-verify explorer-down explorer-reset test-hooks test-gov test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-three-phones android-four-phones android-apk android-test-chain e2e e2e-integrity e2e-security e2e-performance e2e-up e2e-down e2e-three-phones android-drive
 
 test: test-contracts test-core test-mappack
 
@@ -10,6 +10,25 @@ test-core:
 
 test-mappack:
 	cd mappack && cargo test
+
+## Scalability benchmark (core/bench/README.md). Parameters go in ARGS: make bench-model ARGS="--drivers 20000"
+##   make bench-model     the load 100k drivers and 1M riders put on every shared service, in a second
+##   make bench-gossip    the busiest cell's traffic through the real router, many phones per cell (stress)
+##   make bench           both gossip runs (stress, then light: one phone per role per cell) and the model
+##                        with the light run's measured router cost
+bench-build:
+	cd core && cargo build --release -p klippelgo-bench --bin klippelgo-bench -p klippelgo-core --bin klippelgo-node
+
+bench-model: bench-build
+	core/target/release/klippelgo-bench model $(ARGS)
+
+bench-gossip: bench-build
+	core/target/release/klippelgo-bench gossip --label stress $(ARGS)
+
+bench: bench-build
+	core/target/release/klippelgo-bench gossip --label stress $(ARGS)
+	core/target/release/klippelgo-bench gossip --label light --driver-nodes 1 --rider-nodes 1 $(ARGS)
+	core/target/release/klippelgo-bench model --measured core/bench/runs/gossip-latest.json $(ARGS)
 
 ## Start the local chain (foreground). Run deploy and demo from another terminal.
 testnet:

@@ -173,7 +173,10 @@ quotes, and what was actually paid when the ride ends.
 make test         # forge test + cargo test in core/ and mappack/
 make test-gov     # gov/klippel-gov against the running local testnet
 make e2e          # the real app on an emulator, against the real chain, gossip and map: integrity, security, performance
+make bench        # scalability: the model at 100k drivers and 1M riders, and a gossip load test through the real router
 ```
+
+[core/bench](core/bench/README.md) explains the benchmark's parameters and how to compare runs.
 
 `make e2e` brings up whatever is missing (or uses the chain at `KLIPPELGO_RPC`), installs the app and runs
 every suite. Nothing in it is mocked; the other people in a ride are peer accounts on the same network.

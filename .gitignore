@@ -21,3 +21,5 @@ mappack/target/
 # Transactions klippel-gov --safe prepared for a multisig
 klippel-gov-*.json
 .claude/.sweep.*
+# Scalability benchmark runs (core/bench): kept locally to compare against
+core/bench/runs/

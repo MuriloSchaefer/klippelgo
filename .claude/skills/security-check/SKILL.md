@@ -11,7 +11,7 @@ to the reviewer. It adds no rule of its own.
 | Area changed | Document | Invariants | Known limits |
 | --- | --- | --- | --- |
 | `contracts/`, `gov/` | `contracts/docs/security.md` | C1 to C22 | L1 to L32 |
-| `core/`, `mappack/` | `core/docs/security.md` | R1 to R12 | K1 to K10 |
+| `core/`, `mappack/` | `core/docs/security.md` | R1 to R12 | K1 to K11 |
 | `apps/` | `apps/docs/security.md` | A1 to A15 | P2 to P21 |
 
 A change that crosses areas (a new gossip message, a new hash, a new contract call from the app) is checked

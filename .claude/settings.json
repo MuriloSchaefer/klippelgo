@@ -43,7 +43,8 @@
     ],
     "additionalDirectories": [
       "/home/schaefer/Documents/personal/klippelgo/.claude/skills/security-check",
-      "/home/schaefer/Documents/personal/klippelgo/contracts/src/account"
+      "/home/schaefer/Documents/personal/klippelgo/contracts/src/account",
+      "/home/schaefer/Documents/personal/klippelgo/.claude/skills/sync-docs"
     ]
   },
   "hooks": {

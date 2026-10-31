@@ -65,6 +65,8 @@ flowchart TB
 | S8 | **A position a second per started ride.** It is published to the whole cell, four times the rate on the way to a pickup; phones it is not for drop it before any signature work, but it takes room in their 4096-message inbox between refreshes. The driver's phone asks for a fix every second while it moves, whenever the driver screen is open | `AppViewModel.positions`, `startLocation` | Send positions over a direct channel; ask for fast fixes only on a started ride |
 | S9 | **App size.** The debug APK is 123 MB with two architectures, mostly native libraries | Build | Per-ABI splits, release shrinking |
 | S10 | **First scans from the deploy block.** A new phone, or a rider waiting for a driver it never looked at, reads every 2 000-block range since `deployBlock` one after another before it shows those rides | `KlippelGoClient.scan` | Scan backwards from the head and stop at the account's first ride, or start from a checkpoint the app ships |
+| S11 | **Closed requests fill the list.** A driver's phone keeps every request it heard until the request expires, ten minutes by default, closed or not, and drops new ones past 200. Nine busy cells pass 200 at one new ride every 27 s per cell | `Matchmaker.tick`, `receiveRequest` | Forget a request once its close is seen; with S5, rank instead of cap |
+| S12 | **Every poll downloads the escrow's events of 17 blocks.** `changedSince` reads all escrow logs from 16 blocks before the last read to the head, for every phone on screen, and filters on the phone. At 14 rides a second that is about 1 900 logs, 2.4 GB an hour per phone | `KlippelGoClient.changedSince` | Filter by the indexed rider and driver topics on the node; read only the new blocks and the reorganised ones |
 
 None of these is a redesign. S5 and S6 are the next steps already listed for gossip in
 [core scalability](../../core/docs/scalability.md).
@@ -141,7 +143,15 @@ what a phone will do.
 What moves a ride along is the two-second check for a new block and the block time, not the phone's own work.
 These figures were measured before the check replaced reading everything every 2 s.
 
-## Not measured yet
+## At a hundred thousand drivers
 
-RPC calls per hour with the change check, battery drain while online, time to route on low-end devices, and gossip throughput per
-cell beyond 150 open requests. Measure before choosing among the levers above.
+[`core/bench`](../../core/bench/README.md) models what 100 000 drivers and 1 000 000 riders put on each shared
+service and on each phone, and measures the gossip part through the real router. Its findings for the app: in
+the busiest cell a driver's phone would receive 1 400 to 2 600 gossip messages a second (S6, S8), overflowing
+the 4096-message inbox at every drain and the 200-request list (S11), and poll 2.4 GB an hour of escrow events
+(S12); RPC nodes would answer about 230 000 requests a second (S12). `make bench-model` reruns the model
+at any scale. Before any of these, matching itself fails in a cell with more than about a dozen phones: the
+router forwards a cell's messages eagerly to its GossipSub mesh only (K11 in
+[core security](../../core/docs/security.md)).
+
+Not measured yet: battery drain while online and time to route on low-end devices.

@@ -16,6 +16,7 @@ changing code, and keep them true when the code changes.
 
 How contracts go from this repository to a network, and what happens to old versions, is
 [contracts/docs/deployment.md](contracts/docs/deployment.md).
+How the scalability benchmark is built and runs is [core/docs/benchmark.md](core/docs/benchmark.md).
 The design of maps, routes and trip proofs is [docs/maps-and-routing.md](docs/maps-and-routing.md).
 The design of user accounts, recovery, gas and Pix top-ups is [docs/accounts-and-pix.md](docs/accounts-and-pix.md).
 The design of team governance (members, roles, permissions, the guardian) is [docs/governance.md](docs/governance.md).

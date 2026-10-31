@@ -167,6 +167,7 @@ flowchart TB
 | K8 | A geohash-6 region in a sparse area may hold very few addresses | The region can identify a place | Coarser cells where density is low |
 | K9 | The UniFFI layer accepts strings and JSON from the app | A malformed input must fail, not panic across the FFI boundary | Keep returning errors; fuzz the parsers |
 | K10 | Sealed positions reuse the route's key-derivation tag (`KlippelGo sealed route v1`) | The two are told apart by their signature domains and by which key they are sealed to, not by the sealing itself | A context tag as a parameter of the sealing functions |
+| K11 | A router forwards each topic eagerly only to its GossipSub mesh, 6 to 12 peers, and phones have no other peer | Anyone who subscribes enough connections to a cell can fill the router's mesh for it, leaving honest phones on lazy gossip, which loses most of a busy cell's messages ([scalability.md](scalability.md), measured by [the benchmark](benchmark.md)). The same happens with no attacker once a cell has more than a dozen phones | Phones that reach several forwarders; GossipSub peer scoring (K1); routers that serve each subscriber of a cell |
 
 K5 (account keys signed every gossip message) was closed: messages are signed by a session key the account
 certifies once a day (apps security, "Gossip messages and their checks").

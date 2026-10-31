@@ -98,6 +98,7 @@ two drains, dropping the oldest. Memory per phone is therefore bounded whatever 
 | A very busy cell | A stadium exit puts thousands of phones on one topic | Split to geohash 6 when a cell is busy: the topic format already carries the cell, and `geo` already computes both precisions |
 | No peer scoring | A flooding peer costs every phone in the cell bandwidth | GossipSub scoring and an application-level validator ([security.md](security.md), K1) |
 | Phones only dial out | Two phones behind NAT always talk through a router | Relays and hole punching, with the ride channel |
+| A router forwards a topic to its GossipSub mesh only | The mesh holds 6 to 12 peers per topic. Phones outside it get lazy gossip (IHAVE), which loses most messages once a cell carries tens a second; phones have no other peer to hear from. Measured: 100% delivered with 10 phones on a busy cell, about 2% with 19, none past 46 | Phones that reach several forwarders (other phones, several routers per cell); far fewer subscribers per topic (smaller cells, a direct channel for routes and positions); mesh parameters sized for a router |
 
 Routers hold no state worth keeping: restarting one loses nothing, because phones re-announce.
 
@@ -114,8 +115,21 @@ static hosting. A phone downloads a region once per release, and only files whos
 - One global gossip topic.
 - State on routers.
 
-## Not measured yet
+## Measured under load
 
-Gossip under load (messages per second per cell before phones fall behind), battery cost of staying subscribed,
-and Valhalla route time on low-end phones. Until they are, the tables above are structure, not capacity
-figures.
+[`bench/`](../bench/README.md) ([how it works](benchmark.md)) models every shared service at a number of drivers and riders, and runs a 3×3
+square of cells at the busiest cell's traffic through `klippelgo-node`, with real `GossipNode` phones. At
+100 000 drivers and 1 000 000 riders (the busiest cell: 667 drivers, a new ride every 5.4 s), on a developer's
+computer, 2026-10-24:
+
+| Measure | Value |
+| --- | --- |
+| Messages one cell carries | 292 a second, 420 KB: positions 199, re-announced closes and sealed routes 43 each, offers 6, requests 1.5 |
+| A driver's phone, nine cells | 1 400 messages a second measured (1 600 modelled), about 7.5 GB an hour; its 4096-message inbox fills at every 2 s drain |
+| Delivery, 10 phones per cell | 100% of requests, offers, routes and positions; request to a driver's screen 1.0 s at the median, 3.9 s at p99 |
+| Delivery, 20 driver and 5 rider phones per cell | Under 1% of requests and closes, 6.5% of positions |
+| Router | 15 CPU seconds per million deliveries on one thread; 0.2 cores at 14 000 deliveries a second |
+
+`make bench` reruns all of it; `make bench-model ARGS="--drivers … --riders …"` gives the model at any scale.
+
+Not measured yet: battery cost of staying subscribed, and Valhalla route time on low-end phones.

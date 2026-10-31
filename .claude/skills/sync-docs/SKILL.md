@@ -13,8 +13,8 @@ describe the code as it is. The skills and the security reviewer read them and n
 | Folder | `overview.md` | `security.md` | `scalability.md` |
 | --- | --- | --- | --- |
 | `contracts/docs/` | Contracts, state machine, governance, patterns | Access table, flows, C1–C22, L1–L32 | Gas per step, growth limits |
-| `core/docs/` | Crates, modules, hashes, patterns | Trust table, flows, R1–R12, K1–K10 | Pack and witness sizes, gossip load |
-| `apps/docs/` | Layers, state loop, ride flow, storage, patterns | Message checks, flows, A1–A15, P2–P21 | Dependencies, S1–S9 |
+| `core/docs/` | Crates, modules, hashes, patterns | Trust table, flows, R1–R12, K1–K11 | Pack and witness sizes, gossip load |
+| `apps/docs/` | Layers, state loop, ride flow, storage, patterns | Message checks, flows, A1–A15, P2–P21 | Dependencies, S1–S12 |
 
 `docs/maps-and-routing.md` is the design of maps and proofs and its section "What is built". The root
 `README.md` and `apps/android/README.md` say how to run things. Do not repeat their content in the three
