@@ -376,5 +376,5 @@ Paulo, a much denser network:
   explicitly opened to motor vehicles. `mappack/README.md` has the commands to repeat all of this on any pack.
 
 Not measured: anything on a real phone. Route time, memory and battery on a mid-range Android device, and real
-GPS logs instead of simulated ones, are still open. The debug APK is 123 MB with two architectures, most of it
-Valhalla and MapLibre.
+GPS logs instead of simulated ones, are still open. A release APK for phones is 35 MB, most of it MapLibre and
+Valhalla.

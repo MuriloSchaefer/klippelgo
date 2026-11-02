@@ -182,6 +182,14 @@ NAT, and the encrypted ride channel.
 The Gradle build runs `cargo ndk`, so the NDK and `cargo-ndk` must be installed, and `make gossip-node` must be
 running for the two phones to find each other.
 
+### A release build
+
+`./gradlew :app:assembleRelease` shrinks the code with R8 and writes one APK per architecture to
+`app/build/outputs/apk/release/`: about 35 MB for phones (`arm64-v8a`) and 37 MB for emulators (`x86_64`), and a
+universal one of about 63 MB with both. The app is built for those two architectures only, since the Rust core is.
+Code reached only by reflection or from native code must be kept in `app/proguard-rules.pro`, or the release
+breaks where the debug build works. The APKs are unsigned; there is no release key yet.
+
 ## Moving the car
 
 An emulator stays where it was put, so the driver's dot never moves by itself. This moves it along the route

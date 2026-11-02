@@ -18,11 +18,30 @@ android {
 
         // No tests run on the phone. This is what starts the UI agent the test harness talks to (tests/README.md).
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // The core is built for these two only (cargoNdk below). MapLibre and Valhalla also bring x86 and 32-bit
+        // ARM, which would only add 37 MB to an app that cannot start there.
+        ndk { abiFilters += setOf("arm64-v8a", "x86_64") }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 drops the code and resources nothing reaches. What is found by reflection is kept in
+            // proguard-rules.pro.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+
+    // A release is one APK per architecture, each carrying only its own native libraries, plus a universal one.
+    // Debug builds stay a single APK, which is what the scripts and the test harness install.
+    splits {
+        abi {
+            isEnable = gradle.startParameter.taskNames.any { it.contains("Release") }
+            reset()
+            include("arm64-v8a", "x86_64")
+            isUniversalApk = true
         }
     }
 
@@ -76,6 +95,13 @@ val rustJniLibs = layout.buildDirectory.dir("rustJniLibs")
 val cargoNdk by tasks.registering(Exec::class) {
     workingDir = coreDir
     environment("ANDROID_HOME", android.sdkDirectory.path)
+    // Symbols are a third of the library and nothing on the phone reads them. Set here rather than in Cargo.toml
+    // so the host build, whose library UniFFI reads, keeps them.
+    environment("CARGO_PROFILE_RELEASE_STRIP", "symbols")
+    // cargo ndk only adds files, so a library the core no longer builds would be packaged forever. It also copies
+    // every shared library cargo built, such as if-watch's, which the core links statically and never loads.
+    doFirst { delete(rustJniLibs) }
+    doLast { delete(fileTree(rustJniLibs) { exclude("**/libklippelgo_core.so") }) }
     commandLine(
         "cargo", "ndk", "-t", "arm64-v8a", "-t", "x86_64", "-o", rustJniLibs.get().asFile.path,
         "build", "--release", "--lib",
