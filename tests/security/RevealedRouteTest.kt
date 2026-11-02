@@ -2,6 +2,7 @@ package org.klippelgo.tests.security
 
 import org.klippelgo.chain.DevAccount
 import org.klippelgo.chain.KlippelGoClient
+import org.klippelgo.chain.RideStatus
 import org.klippelgo.tests.Peer
 import org.klippelgo.tests.Places
 import org.klippelgo.tests.Scenario
@@ -94,5 +95,7 @@ class RevealedRouteTest : Scenario() {
         }
         app.driverRide.decline(copy.toString())
         rider.cancel(real)
+        // The decline goes out in the background: the next test's fresh app would drop it, and find the copy waiting.
+        waitUntil("the copy to be declined on chain", 60_000) { true.takeIf { rider.ride(copy).status == RideStatus.Cancelled } }
     }
 }
