@@ -38,9 +38,10 @@ import kotlin.math.abs
  * gone, which also covers a rider whose app closed without saying so.
  *
  * Gossip is split into cells of about 5 km (geohash 5), one topic each. A request goes to the cell its pickup is
- * in, and everything about it (offers, the close, the sealed route, the driver's positions) follows it there. A
- * driver hears the cells around them ([listen]); a rider, only the cells of their own requests and rides. So a
- * phone receives its neighbourhood's traffic, not the city's.
+ * in, and its offers, close and sealed route follow it there. A driver hears the cells around them ([listen]); a
+ * rider, only the cells of their own requests. So a phone receives its neighbourhood's traffic, not the city's.
+ * A driver's positions, the most frequent message by far, go to a topic of the ride's own ([rideTopic]), which
+ * only that ride's rider listens to.
  *
  * Call [tick] every second or two, off the main thread.
  *
@@ -86,9 +87,6 @@ class Matchmaker(
     /** Driver: the rider each quote this phone sent was for, by quote hash. Kept after its request is gone. */
     private val quotedFor = LinkedHashMap<String, String>()
 
-    /** Driver: the cell of the request each quote was for, by quote hash, where its positions go. */
-    private val quoteCells = LinkedHashMap<String, String>()
-
     /** Rider: the sealed route announced for each request whose offer this phone took, until the driver shows they have it. */
     private class Reveal(val message: ByteArray, val cadence: Cadence)
     private val reveals = HashMap<BigInteger, Reveal>()
@@ -101,10 +99,10 @@ class Matchmaker(
     private var positionSentAt = 0L
 
     /**
-     * Rider: for each ride this phone locked, by quote hash, the key positions are sealed to, whose they are and
-     * the cell they arrive in. The newest [MAX_WATCHES].
+     * Rider: for each ride this phone locked, by quote hash, the key positions are sealed to and whose they are.
+     * This phone listens on each one's [rideTopic]. The newest [MAX_WATCHES].
      */
-    private class Watch(val key: OfferKey, val driver: String, val cell: String, val request: BigInteger, var last: DriverPosition? = null, var newest: Long = 0)
+    private class Watch(val key: OfferKey, val driver: String, val request: BigInteger, var last: DriverPosition? = null, var newest: Long = 0)
     private val watching = LinkedHashMap<String, Watch>()
 
     /**
@@ -129,19 +127,20 @@ class Matchmaker(
             val offers = quotes[id].orEmpty().values.joinToString { "${it.offer.driver}@${it.offer.fare}" }
             appendLine("request ${short(id)} $whose cell ${cellOf(r)} closed ${id in closed} heard ${System.currentTimeMillis() - seen.at} ms ago, offers [$offers]")
         }
-        for ((quote, w) in watching) appendLine("watching ${quote.take(10)} driver ${w.driver} cell ${w.cell}")
+        for ((quote, w) in watching) appendLine("watching ${quote.take(10)} driver ${w.driver}")
     }
 
     /** The cells whose requests this phone wants to hear ([listen]), and the cells it is subscribed to. */
     private val area = HashSet<String>()
     private val subscribed = HashSet<String>()
+    private val rideTopics = HashSet<String>()
 
     /** Peers this phone is connected to. Zero means nothing sent or received is reaching anyone. */
     fun peers(): Int = node.connectedPeers().toInt()
 
     /**
      * The cells whose requests this phone hears: a driver's neighbourhood ([around]). A rider's phone needs none:
-     * it hears the cells of its own requests and rides whatever this says. Requests from a cell left behind are
+     * it hears the cells of its own requests whatever this says. Requests from a cell left behind are
      * forgotten, unless this phone quoted them. `at` is where the phone is, if it knows: when its list is full it
      * keeps the requests nearest there.
      */
@@ -158,10 +157,12 @@ class Matchmaker(
     private fun resubscribe() {
         val wanted = HashSet(area)
         for ((id, seen) in requests) if (seen.request.rider == client.address || id in myQuotes) wanted += cellOf(seen.request)
-        watching.values.mapTo(wanted) { it.cell }
         requests.values.removeIf { cellOf(it.request) !in wanted }
         for (cell in wanted - subscribed) runCatching { node.subscribe(topicFor(cell)) }.onSuccess { subscribed += cell; note("subscribed to $cell") }
         for (cell in subscribed - wanted) runCatching { node.unsubscribe(topicFor(cell)) }.onSuccess { subscribed -= cell; note("left $cell") }
+        val rides = watching.keys.mapTo(HashSet(), ::rideTopic)
+        for (topic in rides - rideTopics) runCatching { node.subscribe(topic) }.onSuccess { rideTopics += topic }
+        for (topic in rideTopics - rides) runCatching { node.unsubscribe(topic) }.onSuccess { rideTopics -= topic }
     }
 
     /** Takes in what peers gossiped since the last call and announces this account's own messages again. */
@@ -171,6 +172,8 @@ class Matchmaker(
             val cell = message.topic.removePrefix(TOPIC_PREFIX)
             if (message.topic.startsWith(TOPIC_PREFIX) && cell in subscribed) {
                 runCatching { receive(cell, message.data) }.onFailure { note("a message in $cell failed: ${it.message}") }
+            } else if (message.topic in rideTopics) {
+                runCatching { receiveOnRide(message.topic, message.data) }.onFailure { note("a position failed: ${it.message}") }
             }
         }
         checksLeft = MAX_CHECKS_PER_TICK
@@ -311,7 +314,7 @@ class Matchmaker(
         val sealed = sealRoute(Numeric.hexStringToByteArray(offer.routeKey), Numeric.hexStringToByteArray(offer.quoteHash), quoteJson)
         // A key of the rider's own goes with the route, for the driver to seal their position to once this ride
         // is the one they are on.
-        val watch = watching.getOrPut(offer.quoteHash.lowercase()) { Watch(newOfferKey(), offer.driver, cellOf(request), request.id) }
+        val watch = watching.getOrPut(offer.quoteHash.lowercase()) { Watch(newOfferKey(), offer.driver, request.id) }
         while (watching.size > MAX_WATCHES) watching.remove(watching.keys.first())
         val message = encode(
             "t" to "route",
@@ -339,29 +342,33 @@ class Matchmaker(
 
     /**
      * Driver: tells the rider of the ride this phone is on where it is. The position is sealed to the rider's
-     * key. The cell sees that this driver is sending something for the ride with this quote hash, which ties it
-     * to the ride on chain, and not where the driver is. Sent at most every few seconds on the way to the
-     * pickup, and every second once the rider is in the car (`onTheRide`); call it as often as fixes arrive.
-     * It goes to `cell`, the cell of the ride's pickup, where the rider listens; without one, to the cell of the
-     * request this phone quoted, if it still knows it. Knowing neither, it is not sent.
+     * key, on the ride's own topic. Sent at most every few seconds on the way to the pickup, and every second
+     * once the rider is in the car (`onTheRide`); call it as often as fixes arrive.
      */
     @Synchronized
-    fun sharePosition(quoteHash: String, riderKey: ByteArray, latE7: Int, lonE7: Int, onTheRide: Boolean = false, cell: String? = null) {
-        val topic = topicFor(cell ?: quoteCells[quoteHash.lowercase()] ?: return)
+    fun sharePosition(quoteHash: String, riderKey: ByteArray, latE7: Int, lonE7: Int, onTheRide: Boolean = false) {
+        val topic = rideTopic(quoteHash)
         val now = System.currentTimeMillis()
         if (now - positionSentAt < (if (onTheRide) POSITION_ON_THE_RIDE_EVERY_MS else POSITION_EVERY_MS)) return
         positionSentAt = now
+        node.publish(topic, positionMessage(quoteHash, riderKey, latE7, lonE7, now))
+    }
+
+    internal fun positionMessage(quoteHash: String, riderKey: ByteArray, latE7: Int, lonE7: Int, now: Long): ByteArray {
         val quote = Numeric.hexStringToByteArray(quoteHash)
         val sealed = sealRoute(riderKey, quote, "$latE7,$lonE7,$now")
-        node.publish(
-            topic,
-            encode(
-                "t" to "position",
-                "quote" to quoteHash.lowercase(),
-                "sealed" to Base64.getEncoder().encodeToString(sealed),
-                "sig" to Numeric.toHexString(client.sign(positionHash(quote, sealed))),
-            ),
+        return encode(
+            "t" to "position",
+            "quote" to quoteHash.lowercase(),
+            "sealed" to Base64.getEncoder().encodeToString(sealed),
+            "sig" to Numeric.toHexString(client.sign(positionHash(quote, sealed))),
         )
+    }
+
+    /** Rider: this ride is over, so its driver has nothing more to say. Leaves its topic at the next tick. */
+    @Synchronized
+    fun forgetRide(quoteHash: String) {
+        watching.remove(quoteHash.lowercase())
     }
 
     /**
@@ -390,8 +397,6 @@ class Matchmaker(
         myQuotes.getOrPut(request.id) { mutableListOf() } += Numeric.toHexString(quoteHash)
         quotedFor[Numeric.toHexString(quoteHash).lowercase()] = request.rider.lowercase()
         while (quotedFor.size > MAX_SENT_QUOTES) quotedFor.remove(quotedFor.keys.first())
-        quoteCells[Numeric.toHexString(quoteHash).lowercase()] = cellOf(request)
-        while (quoteCells.size > MAX_SENT_QUOTES) quoteCells.remove(quoteCells.keys.first())
         val sig = Numeric.toHexString(client.sign(offerHash(quoteHash, seq, public)))
         val message = encode(
             "t" to "offer",
@@ -425,8 +430,13 @@ class Matchmaker(
             "offer" -> receiveOffer(m, data)
             "close" -> receiveClose(m, data)
             "route" -> receiveRoute(m)
-            "position" -> receivePosition(m)
         }
+    }
+
+    /** A ride's topic carries that ride's positions and nothing else. */
+    private fun receiveOnRide(topic: String, data: ByteArray) {
+        val m = json.readTree(data)
+        if (m.text("t") == "position" && rideTopic(m.text("quote")) == topic) receivePosition(m)
     }
 
     private fun receiveRequest(m: JsonNode, data: ByteArray, cell: String) {
@@ -753,6 +763,7 @@ class Matchmaker(
         private const val POSITION_FRESH_MS = 30_000L
 
         private const val TOPIC_PREFIX = "/klippelgo/match/1/"
+        private const val RIDE_TOPIC_PREFIX = "/klippelgo/ride/1/"
 
         /** Rides whose driver's positions a rider's phone listens for. More than one person has under way. */
         private const val MAX_WATCHES = 8
@@ -765,6 +776,9 @@ class Matchmaker(
             if (here == null || middle == null) return 0
             return (maxOf(abs(here.latE7.toLong() - middle.latE7), abs(here.lonE7.toLong() - middle.lonE7)) / BAND_E7).toInt()
         }
+
+        /** Gossip topic of one ride, by the hash of its quote: its rider listens, its driver sends. */
+        fun rideTopic(quoteHash: String) = RIDE_TOPIC_PREFIX + quoteHash.lowercase()
 
         /** Gossip topic for matching in one geohash-5 cell. */
         fun topicFor(cell: String) = TOPIC_PREFIX + cell

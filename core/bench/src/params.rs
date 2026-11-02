@@ -120,6 +120,11 @@ pub const PARAMS: &[Param] = &[
         "code: Matchmaker.POSITION_ON_THE_RIDE_EVERY_MS",
     ),
     p(
+        "ride_topics",
+        1.0,
+        "code: 1 positions go to a topic of the ride's own; 0 to the whole cell, as they did before",
+    ),
+    p(
         "max_requests",
         200.0,
         "code: Matchmaker.MAX_REQUESTS a phone keeps",
@@ -139,6 +144,11 @@ pub const PARAMS: &[Param] = &[
         "bytes of a sealed route; tens of KB across a large city",
     ),
     p("size_position", 900.0, "bytes of a sealed position"),
+    p(
+        "size_subscription",
+        90.0,
+        "assumed: bytes of the router telling a phone it joined or left a ride's topic",
+    ),
     p(
         "phone_mb_hour_ok",
         100.0,

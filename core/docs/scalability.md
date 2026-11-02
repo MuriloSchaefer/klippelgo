@@ -85,7 +85,7 @@ What one cell carries, from the constants in the code:
 | Offer | a few hundred bytes | The same, while the rider is heard and the request is not closed |
 | Close | a few hundred bytes | About three times in 15 s |
 | Sealed route | a few KB; tens for a trip across a large city; 64 KB at most | Gaps growing from 2.5 s to 60 s, until the driver's first position shows it arrived, or the request expires |
-| Sealed position | a few hundred bytes | At most every 4 s per ride on the way to its pickup, and every second once it has started |
+| Sealed position | a few hundred bytes | At most every 4 s per ride on the way to its pickup, and every second once it has started. On a topic of the ride's own, not the cell's |
 
 A phone keeps at most 200 requests, those it can act on, and 50 offers per request, and the node's inbox holds 4096 messages between
 two drains, dropping the oldest. Memory per phone is therefore bounded whatever the cell does.
@@ -94,12 +94,12 @@ two drains, dropping the oldest. Memory per phone is therefore bounded whatever 
 
 | Limit | Where it bites | Lever |
 | --- | --- | --- |
-| Positions to the whole cell | Most of what a cell carries once announcing backs off ([apps scalability](../../apps/docs/scalability.md), Announcing) | Send positions directly between the two phones (the ride channel) instead of to the cell |
+| A topic per ride | A router joins and leaves each one, and tells every phone: 9 MB an hour per phone at the target, and about 1.5 MB in one exchange when a phone connects, 3 MB at most. So a router holds 2¹⁵ topics at most, a phone accepts that exchange and a router does not. It leaves topics nobody is on every 30 s, and joins any it had no room for. A join costs one frame per connected phone, which is most of what `core/tests/gossip_full.rs` spends its time on, and about 1.7 GB of a router filling with 340 phones connected. And each second a router looks through its connected phones for every topic with too few peers, as a ride's always has: 60 ns per topic and phone, measured up to 200 phones on 10 000 topics, 0.12 of a core. Extrapolated, that is 100 cores on one router at the target and a tenth of one on each of thirty, and the model does not count it | Routers per region; a ride channel directly between the two phones |
 | One router subscribes to every topic it hears | A single bootstrap node carries all cells of all cities | Run routers per region and give phones the routers of their region; routers are stateless, so adding one needs no coordination |
 | A very busy cell | A stadium exit puts thousands of phones on one topic | Split to geohash 6 when a cell is busy: the topic format already carries the cell, and `geo` already computes both precisions |
 | No peer scoring | A flooding peer costs every phone in the cell bandwidth | GossipSub scoring and an application-level validator ([security.md](security.md), K1) |
 | Phones only dial out | Two phones behind NAT always talk through a router | Relays and hole punching, with the ride channel |
-| A router forwards a topic to its GossipSub mesh only | The mesh holds 6 to 12 peers per topic. Phones outside it get lazy gossip (IHAVE), which loses most messages once a cell carries tens a second; phones have no other peer to hear from. Measured: 100% delivered with 10 phones on a busy cell, about 2% with 19, none past 46 | Phones that reach several forwarders (other phones, several routers per cell); far fewer subscribers per topic (smaller cells, a direct channel for routes and positions); mesh parameters sized for a router |
+| A router forwards a topic to its GossipSub mesh only | The mesh holds 6 to 12 peers per topic. Phones outside it get lazy gossip (IHAVE), which loses a message's first sends, so what arrives is what is announced again. Measured with a cell's 6 messages a second: 58% of messages per send, and over a request's announcements 97% of drivers in 15 s at p95, with 225 or 459 phones on the square of cells. Not measured at a target cell's 6 000 | Phones that reach several forwarders (other phones, several routers per cell); far fewer subscribers per topic (smaller cells, routes on the ride's topic); mesh parameters sized for a router |
 
 Routers hold no state worth keeping: restarting one loses nothing, because phones re-announce.
 
@@ -125,11 +125,12 @@ computer, 2026-10-31:
 
 | Measure | Value |
 | --- | --- |
-| Messages one cell carries | 205 a second, 187 KB: positions 199, offers 3.7, requests 0.9, closes and sealed routes 0.6 each |
-| A driver's phone, averaged over the square | 921 messages a second measured (1 100 modelled), about 3 GB an hour; its largest drain 3 300 of the inbox's 4096. In the middle of a city, nine cells: 1 840 a second and 6 GB an hour modelled, which is 90% of the inbox |
-| Delivery, 2 phones per cell | 100% of requests, offers, routes and positions; request to a driver's screen 1.0 s at the median, 2.0 s at p99 |
-| Delivery, 20 driver and 5 rider phones per cell | No requests or offers; 6 to 11% of positions, from run to run |
-| Router | 16 to 20 CPU seconds per million deliveries on one thread; 0.2 cores at 10 000 deliveries a second |
+| Messages one cell carries | 5.8 a second, 7.6 KB: offers 3.7, requests 0.9, closes and sealed routes 0.6 each. Positions, 199 a second, go to one rider each |
+| A driver's phone, averaged over the square | 26 messages a second measured (31 modelled), 130 MB an hour; its largest drain 125 of the inbox's 4096. In the middle of a city, nine cells: 52 a second and 255 MB an hour modelled |
+| Delivery, 4 phones per cell | 100% of requests, offers, routes and positions; request to a driver's screen 1.1 s at the median, 2.6 s at p99 |
+| Delivery, 20 driver and 5 rider phones per cell | 97% of drivers saw a request, 4 s at the median, 15 s at p95; 87% of offers reached the rider in time, no request got none; 89% of routes and 100% of positions arrived. Offers move between runs: see the next row |
+| Delivery, 46 driver and 5 rider phones per cell | 97%, 79%, 7%, 91%, 100% |
+| Router | 28 CPU seconds per million deliveries on one thread; 0.06 cores at 2 200 deliveries a second; 88 MB with 4 phones per cell, 350 MB with 51 |
 
 `make bench` reruns all of it; `make bench-model ARGS="--drivers … --riders …"` gives the model at any scale.
 

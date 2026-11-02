@@ -9,6 +9,8 @@ COPY src src
 # The core's own crates for map packs and trip proofs.
 COPY verify verify
 COPY proofs proofs
+# A member of the workspace, so cargo needs it to read the workspace, though the router does not use it.
+COPY bench bench
 RUN cargo build --release --locked --bin klippelgo-node
 
 FROM debian:bookworm-slim

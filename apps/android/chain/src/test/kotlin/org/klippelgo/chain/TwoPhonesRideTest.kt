@@ -246,7 +246,7 @@ class TwoPhonesRideTest {
         val forged = json.createObjectNode().put("t", "position").put("quote", offer.quoteHash.lowercase())
             .put("sealed", "AAAA").put("sig", close.get("sig").asText()).set<com.fasterxml.jackson.databind.node.ObjectNode>("cert", close.get("cert"))
         heard.clear()
-        spy.publish(topic, json.writeValueAsBytes(forged))
+        spy.publish(Matchmaker.rideTopic(offer.quoteHash), json.writeValueAsBytes(forged))
         all("the route to go out after a forged position") { heard.any { it.first == "route" } }
 
         // The first position says the route arrived: it is not announced again.
@@ -256,6 +256,20 @@ class TwoPhonesRideTest {
             tickAll()
             rider.driverPosition(offer.quoteHash)
         }
+
+        // A true position, signed by the ride's driver, counts only on the ride's own topic.
+        val moved = driver.positionMessage(offer.quoteHash, riderKey, PICKUP.latE7 + 9_000, PICKUP.lonE7, System.currentTimeMillis())
+        repeat(4) {
+            spy.publish(Matchmaker.topicFor(Matchmaker.cellOf(regionCell(PICKUP))), moved)
+            Thread.sleep(500)
+            tickAll()
+        }
+        assertEquals(PICKUP.latE7, rider.driverPosition(offer.quoteHash)?.latE7, "a position on the cell's topic was believed")
+        all("the same position on the ride's topic to be believed") {
+            spy.publish(Matchmaker.rideTopic(offer.quoteHash), moved)
+            rider.driverPosition(offer.quoteHash)?.latE7 == PICKUP.latE7 + 9_000
+        }
+
         heard.clear()
         repeat(70) { tickAll(); Thread.sleep(1_000) } // past the widest gap a route reaches
         assertEquals(0, heard.count { it.first == "route" })

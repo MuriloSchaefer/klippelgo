@@ -103,7 +103,7 @@ fun RiderApp(state: UiState, vm: AppViewModel) {
     // middle of the map and the rider moves it.
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { vm.startLocation() }
     LaunchedEffect(Unit) {
-        permission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        permission.launch(appPermissions)
     }
 
     when {

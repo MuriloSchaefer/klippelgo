@@ -51,8 +51,17 @@ impl CellTraffic {
         }
     }
 
-    pub fn messages(&self) -> f64 {
-        self.request + self.offer + self.close + self.route + self.position
+    /// What goes to the whole cell. Positions do only with `ride_topics` off: otherwise each reaches its rider.
+    fn cell_position(&self, p: &Params) -> f64 {
+        if p.get("ride_topics") > 0.0 {
+            0.0
+        } else {
+            self.position
+        }
+    }
+
+    pub fn messages(&self, p: &Params) -> f64 {
+        self.request + self.offer + self.close + self.route + self.cell_position(p)
     }
 
     pub fn bytes(&self, p: &Params) -> f64 {
@@ -60,13 +69,13 @@ impl CellTraffic {
             + self.offer * p.get("size_offer")
             + self.close * p.get("size_close")
             + self.route * p.get("size_route")
-            + self.position * p.get("size_position")
+            + self.cell_position(p) * p.get("size_position")
     }
 
-    pub fn to_json(self) -> Value {
+    pub fn to_json(self, p: &Params) -> Value {
         json!({
             "request": self.request, "offer": self.offer, "close": self.close,
-            "route": self.route, "position": self.position, "total": self.messages(),
+            "route": self.route, "position": self.position, "total": self.messages(p),
         })
     }
 }
@@ -299,8 +308,11 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
     ));
 
     // ------------------------------------------------------------- gossip, one phone
-    let driver_msgs = 9.0 * hot_cells_traffic.messages();
-    let driver_bytes = 9.0 * hot_cells_traffic.bytes(p);
+    let driver_msgs = 9.0 * hot_cells_traffic.messages(p);
+    // A phone hears its router join and leave every ride's topic, whoever's it is.
+    let ride_topic_bytes =
+        p.get("ride_topics").clamp(0.0, 1.0) * d.rides_per_s * 2.0 * p.get("size_subscription");
+    let driver_bytes = 9.0 * hot_cells_traffic.bytes(p) + ride_topic_bytes;
     rows.push(Row {
         area: "phone",
         what: "Gossip a driver's phone receives in the busiest cell, per drain, against its inbox"
@@ -309,7 +321,7 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
         have: p.get("inbox"),
         unit: "msgs",
         scales_out: false,
-        lever: "apps S8: positions over a direct channel",
+        lever: "cells' traffic: smaller cells, a cost for posting",
     });
     // A phone keeps a request while it is open: it forgets it at the close.
     rows.push(Row {
@@ -328,7 +340,7 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
         have: p.get("phone_mb_hour_ok"),
         unit: "MB/h",
         scales_out: false,
-        lever: "apps S8, S12 and 'Reading the chain'",
+        lever: "apps S12 and 'Reading the chain'",
     });
     facts.push((
         "Gossip a driver's phone receives in the busiest cell".into(),
@@ -338,10 +350,14 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
         ),
     ));
     facts.push((
+        "Of that, a router's comings and goings on rides' topics".into(),
+        format!("{:.0} MB an hour", ride_topic_bytes * 3600.0 / mb),
+    ));
+    facts.push((
         "Gossip a driver's phone receives in an average cell".into(),
         format!(
             "{:.0} msgs/s, {:.0} MB an hour",
-            9.0 * avg_traffic.messages(),
+            9.0 * avg_traffic.messages(p),
             9.0 * avg_traffic.bytes(p) * 3600.0 / mb
         ),
     ));
@@ -349,8 +365,11 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
     // ------------------------------------------------------------- gossip, routers
     let avg_subscribers = 9.0 * d.avg_drivers + d.avg_rides_per_s * d.rider_listen_s;
     let hot_subscribers = 9.0 * d.hot_drivers + d.hot_rides_per_s * d.rider_listen_s;
-    let deliveries = p.get("cells") * avg_traffic.messages() * avg_subscribers;
-    let delivered_bytes = p.get("cells") * avg_traffic.bytes(p) * avg_subscribers;
+    // Positions on a ride's own topic reach one phone each.
+    let own_topic = p.get("ride_topics").clamp(0.0, 1.0) * p.get("cells") * avg_traffic.position;
+    let deliveries = p.get("cells") * avg_traffic.messages(p) * avg_subscribers + own_topic;
+    let delivered_bytes = p.get("cells") * avg_traffic.bytes(p) * avg_subscribers
+        + own_topic * p.get("size_position");
     rows.push(Row {
         area: "router",
         what: "Phones subscribed to the busiest cell, against GossipSub's mesh".into(),
@@ -367,7 +386,7 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
         have: 1e9 / 8.0,
         unit: "B/s",
         scales_out: true,
-        lever: "core scalability: direct channel for positions, routers per region",
+        lever: "core scalability: routers per region",
     });
     let routers_cpu = measured.map(|m| deliveries * m.router_cpu_s_per_million / 1e6);
     if let Some(cores) = routers_cpu {
@@ -418,8 +437,8 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
             "area": r.area, "what": r.what, "need": r.need, "have": r.have, "unit": r.unit,
             "load": r.load(), "verdict": r.verdict(), "scales_out": r.scales_out, "lever": r.lever,
         })).collect::<Vec<_>>(),
-        "busiest_cell": hot_cells_traffic.to_json(),
-        "average_cell": avg_traffic.to_json(),
+        "busiest_cell": hot_cells_traffic.to_json(p),
+        "average_cell": avg_traffic.to_json(p),
     });
     Report { rows, facts, json }
 }

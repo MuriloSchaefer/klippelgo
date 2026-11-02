@@ -25,6 +25,7 @@ import java.math.BigInteger
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CopyOnWriteArraySet
 
 /**
  * Someone on the gossip network who follows no rules: a node that hears everything said in the pilot city's cells and can say
@@ -43,9 +44,12 @@ class Stranger(private val stack: Stack) : AutoCloseable {
 
     @Volatile private var open = true
 
+    /** Rides' own topics the stranger joined: anyone can, knowing the quote hash, which is on chain. */
+    private val rides = CopyOnWriteArraySet<String>()
+
     private val listener = Thread {
         while (open) {
-            runCatching { node.drain().filter { it.topic in topics }.forEach { messages += it.data } }
+            runCatching { node.drain().filter { it.topic in topics || it.topic in rides }.forEach { messages += it.data } }
             Thread.sleep(200)
         }
     }.apply {
@@ -89,6 +93,22 @@ class Stranger(private val stack: Stack) : AutoCloseable {
             } catch (e: InterruptedException) {
                 return
             }
+        }
+    }
+
+    /** Joins the topic of the ride locked on `quoteHash`, and hears what is said there from now on. */
+    fun joinRide(quoteHash: String) {
+        val topic = "/klippelgo/ride/1/${quoteHash.lowercase()}"
+        node.subscribe(topic)
+        rides += topic
+        Thread.sleep(2_500)
+    }
+
+    /** Says something on the topic of the ride locked on `quoteHash`, again every second for a while. */
+    fun sayOnRide(quoteHash: String, message: ByteArray, seconds: Int = 6) {
+        repeat(seconds) {
+            node.publish("/klippelgo/ride/1/${quoteHash.lowercase()}", message)
+            Thread.sleep(1_000)
         }
     }
 

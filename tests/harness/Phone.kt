@@ -178,6 +178,7 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
         // The system's own permission dialog is not the app's UI. Answer it ahead of time, as "allow".
         shell("pm grant $APP android.permission.ACCESS_FINE_LOCATION")
         shell("pm grant $APP android.permission.ACCESS_COARSE_LOCATION")
+        shell("pm grant $APP android.permission.POST_NOTIFICATIONS")
         shell("nohup am instrument -w -e class $APP.agent.UiAgent $APP.test/androidx.test.runner.AndroidJUnitRunner >/dev/null 2>&1 &")
         waitUntil("the UI agent to answer", 30_000) { runCatching { ask("op" to "dump") }.getOrNull() }
         // A scripted launch, as scripts/two-phones.sh does it: the role to start in, and which of the two
@@ -260,6 +261,9 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
     // ---------------------------------------------------------------- looking
 
     fun screen(): Screen = Screen.parse(ask("op" to "dump").get("xml").asText())
+
+    /** What is on screen as UI Automator says it, for what is not the app's own, like the notification shade. */
+    fun rawDump(): String = ask("op" to "dump").get("xml").asText()
 
     fun find(tag: String): Node? = screen()[tag]
 

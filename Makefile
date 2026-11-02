@@ -27,7 +27,7 @@ bench-gossip: bench-build
 
 bench: bench-build
 	core/target/release/klippelgo-bench gossip --label stress $(ARGS)
-	core/target/release/klippelgo-bench gossip --label light --driver-nodes 1 --rider-nodes 1 $(ARGS)
+	core/target/release/klippelgo-bench gossip --label light --driver-nodes 1 --rider-nodes 3 $(ARGS)
 	core/target/release/klippelgo-bench model --measured core/bench/runs/gossip-latest.json $(ARGS)
 
 ## Start the local chain (foreground). Run deploy and demo from another terminal.

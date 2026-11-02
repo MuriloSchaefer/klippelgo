@@ -106,7 +106,7 @@
     <string name="stat_today">Hoy</string>
     <string name="stat_score">Nota</string>
     <string name="stat_rides">Viajes</string>
-    <string name="go_online_body">Mantén KlippelGo abierto mientras estés en línea para que los pasajeros te encuentren.</string>
+    <string name="go_online_body">Mientras estés en línea, los pasajeros te encuentran aunque la pantalla esté apagada.</string>
     <string name="waiting_rides">Esperando solicitudes de viaje…</string>
     <string name="cannot_accept">Aceptar viajes está bloqueado por la política de la red.</string>
     <string name="blocked_score">Tu nota es %1$s. El mínimo para aceptar viajes es %2$s.</string>
@@ -234,4 +234,6 @@
         <item quantity="one">%d solicitud más</item>
         <item quantity="other">%d solicitudes más</item>
     </plurals>
+    <string name="on_duty_channel">En servicio</string>
+    <string name="on_duty_text">Conectado mientras estás en línea o en un viaje</string>
 </resources>

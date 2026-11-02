@@ -95,9 +95,9 @@ flowchart LR
 | Offer | λ × `offers_per_request` × announcements in `ask_s` − `quote_delay_s`, the same gaps |
 | Close | λ × announcements in `live_for_s`, gaps up to `close_gap_most_s` |
 | Route | λ × announcements in `accept_s` + `drain_s`, gaps up to `route_gap_most_s`: the rider stops at the driver's first position |
-| Position | λ × (`pickup_s` ÷ `position_pickup_s` + `ride_s` ÷ `position_ride_s`) |
+| Position | λ × (`pickup_s` ÷ `position_pickup_s` + `ride_s` ÷ `position_ride_s`), each to one phone on the ride's topic, not to the cell, unless `ride_topics` is 0 |
 
-A driver's phone hears nine cells, so it receives nine times that. A row marked `scales_out` (bundler, RPC,
+A driver's phone hears nine cells, so it receives nine times what goes to the cell. A row marked `scales_out` (bundler, RPC,
 router bytes and CPU, mirrors) reports how many machines it needs. The others are limits of the design (block
 space, a phone's inbox and request list, its mobile data, GossipSub's mesh), which more machines do not lift.
 
@@ -142,7 +142,7 @@ forwards to fewer phones than it would, and the model scales its measured cost p
 | --- | --- |
 | A driver phone in the middle cell | All nine cells, as a driver in a city does. The figures for one phone come from these |
 | A driver phone at an edge or corner | Its in-grid neighbours only (six or four) |
-| A rider phone | Its own cell |
+| A rider phone | Its own cell, and the topics of the rides it carries. The router ignores a phone on more than 100 |
 
 ### A ride
 
@@ -184,7 +184,7 @@ loop sleeps until the next one is due (5 ms at most) and handles everything that
 | `Route(trip)` | Publishes the route until a position reached the rider, or the request expires |
 | `Offer(trip, k)` | Publishes the k-th driver's offer while asking |
 | `Choose(trip)` | At the end of asking: the first offer the rider's phone had, from a driver still free, or unmatched |
-| `Position(trip)` | Publishes the chosen driver's position once their phone has the route, every 4 s to the pickup and every 0.9 s on the trip |
+| `Position(trip)` | Publishes the chosen driver's position on the ride's topic, which the rider's phone joins at the lock, once the driver's phone has the route, every 4 s to the pickup and every 0.9 s on the trip |
 | `Drain(phone)` | Drains the phone's inbox and accounts every message. Phones are staggered across `drain_s` |
 
 `most_behind_ms` records how late the loop handled any event while measuring. If it grows, or the process uses

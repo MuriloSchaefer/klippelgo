@@ -90,7 +90,7 @@ flowchart LR
 The UI never keeps a second copy of anything on chain or on gossip. It renders `UiState`; the loop rebuilds
 the parts that come from outside. Gossip is taken in on every turn. The chain is read in full only when the logs
 of the new blocks show something about this account, after an action, when the app comes back on screen, and
-every 30 s; off screen with no ride under way it is not read at all
+every 30 s; off screen with no ride under way and not online it is not read at all
 ([scalability.md](scalability.md), "Reading the chain"). An action that changes the chain does the call, then lets the next refresh
 show the result.
 
@@ -125,11 +125,11 @@ sequenceDiagram
     Note over R,D: both rate the ride
 ```
 
-Every message about a request goes to the gossip cell (geohash 5, about 5 km) its pickup is in, and the
-driver's position for that ride too. A driver hears the cell their phone is in and the eight around it, while
+Every message about a request goes to the gossip cell (geohash 5, about 5 km) its pickup is in. The driver's
+position for a ride goes to a topic of that ride's own, which only its rider's phone listens to. A driver hears the cell their phone is in and the eight around it, while
 the phone is inside the map pack; without a position there, the whole pack, or its middle when the pack is large. A
 driver keeps hearing the cell of a request they quoted after driving out of it, and a rider hears only the cells
-of their own requests and of the rides whose driver they watch.
+of their own requests, and leaves a ride's topic when the ride is final.
 
 The pickup pin starts where the rider's phone is, when the rider allows reading it and the place is inside
 the map pack, and follows the phone until the rider moves the home map under the pin, picks a pickup by name
@@ -186,6 +186,7 @@ These are the rules new app code follows. The skill that applies them is
 | Reads or writes a contract, or encodes something the contracts hash | `KlippelGoClient` |
 | Must give the same answer on iOS, or on a juror's machine | The Rust core, not Kotlin |
 | Downloads, verifies or opens map data | `MapStore` |
+| Keeps the app running off screen | `OnDutyService`, which holds no logic: the work stays in `AppViewModel` |
 
 **Patterns**
 

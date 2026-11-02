@@ -41,7 +41,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Off screen the app stops reading the chain, unless a ride is under way.
+    // Off screen the app stops reading the chain, unless a driver is online or a ride is under way.
     override fun onStart() {
         super.onStart()
         vm.foreground(true)

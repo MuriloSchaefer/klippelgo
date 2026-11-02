@@ -1,6 +1,7 @@
 package org.klippelgo.app.ui
 
 import android.Manifest
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.HorizontalDivider
@@ -88,6 +89,7 @@ fun DriverApp(state: UiState, vm: AppViewModel) {
     // At most two rides locked: the one in hand and the next. With both, no more quotes go out.
     val roomForNext = mine.size < 2
     var online by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(online) { vm.setOnline(online) }
     // The request being quoted on with a ride in hand, by id: a newer one arriving must not take its place
     // under the driver's finger.
     var quoting by rememberSaveable { mutableStateOf<String?>(null) }
@@ -107,7 +109,7 @@ fun DriverApp(state: UiState, vm: AppViewModel) {
     // The driver's own position, for their own map. Asked once; without it the map simply has no blue dot.
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { vm.startLocation() }
     LaunchedEffect(Unit) {
-        permission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        permission.launch(appPermissions)
     }
 
     when {
@@ -667,3 +669,11 @@ private fun RideSummary(state: UiState, ride: Ride, next: Boolean, slot: String)
         }
     }
 }
+
+/** What the app asks for once: where the phone is, and on Android 13 and later leave to show that it is on duty. */
+internal val appPermissions: Array<String>
+    get() = buildList {
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+        add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
+    }.toTypedArray()

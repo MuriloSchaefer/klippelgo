@@ -28,9 +28,9 @@ flowchart LR
 
 | Dependency | Load per phone | Grows with |
 | --- | --- | --- |
-| Chain RPC | While the app is on screen, or a ride is under way: the newest block every 2 s; when it is new, one batch of four log queries over the new blocks; a full read (about ten requests, the rides and ratings in one batch each) when those show something about this account, after each action, and every 30 s. A few more reads before each operation (nonce, block, balances, allowance). Nothing while the app is off screen with no ride | Number of open apps |
+| Chain RPC | While the app is on screen, a driver is online, or a ride is under way: the newest block every 2 s; when it is new, one batch of four log queries over the new blocks; a full read (about ten requests, the rides and ratings in one batch each) when those show something about this account, after each action, and every 30 s. A few more reads before each operation (nonce, block, balances, allowance). Nothing while the app is off screen with no ride and not online | Number of open apps |
 | Bundler | Two operations per ride per side (the rider's `open` and `complete`, the driver's `accept` and `start`), each an estimate, a send and a receipt polled every half second | Rides |
-| Gossip router | The messages of the cells the phone hears: a driver's own and the eight around it, a rider's only those of their own requests and rides | How busy those cells are |
+| Gossip router | The messages of the cells the phone hears: a driver's own and the eight around it, a rider's only those of their own requests. A rider also receives their own ride's positions, a driver sends them. Every phone hears the router join and leave each ride's topic, about 9 MB an hour at the target | How busy those cells are |
 | Pack mirror | One download per region per release, resumable, only changed files | Releases |
 | Everything else | The phone's own CPU, storage and battery | Nothing shared |
 
@@ -59,13 +59,25 @@ flowchart TB
 
 | # | Limit | Where it is | Lever |
 | --- | --- | --- | --- |
-| S7 | **Foreground only.** Gossip and position sharing stop when Android suspends the app | App lifecycle | A foreground service while online or on a ride |
-| S8 | **A position a second per started ride.** It is published to the whole cell, four times the rate on the way to a pickup; phones it is not for drop it before any signature work, but it takes room in their 4096-message inbox between refreshes. The driver's phone asks for a fix every second while it moves, whenever the driver screen is open | `AppViewModel.positions`, `startLocation` | Send positions over a direct channel; ask for fast fixes only on a started ride |
 | S9 | **App size.** The debug APK is 123 MB with two architectures, mostly native libraries | Build | Per-ABI splits, release shrinking |
 | S10 | **First scans from the deploy block.** A new phone, or a rider waiting for a driver it never looked at, reads every 2 000-block range since `deployBlock` one after another before it shows those rides | `KlippelGoClient.scan` | Scan backwards from the head and stop at the account's first ride, or start from a checkpoint the app ships |
 | S12 | **Every poll downloads the escrow's events of 17 blocks.** `changedSince` reads all escrow logs from 16 blocks before the last read to the head, for every phone on screen, and filters on the phone. At 14 rides a second that is about 1 900 logs, 2.4 GB an hour per phone | `KlippelGoClient.changedSince` | Filter by the indexed rider and driver topics on the node; read only the new blocks and the reorganised ones |
 
 None of these is a redesign.
+
+## Off screen
+
+While a driver is online, on a ride they accepted, or a rider has a ride that is not in dispute, `OnDutyService` keeps the process and the CPU running, with a
+notification, so gossip, the refresh loop and the driver's position go on with the screen off. Off screen an online
+driver's phone also reads the chain, for a ride opened naming them. The service asks for the location type, or
+data sync for a rider who refused location. Android starts one only from the foreground: a ride that begins off
+screen for someone not online waits until they next open the app. Swiping the app away ends it all, service
+included. The app does not yet alert a driver off screen when a request arrives.
+
+## Location
+
+A driver's phone asks for a fix a second while the car moves on a started ride, and one every four seconds otherwise,
+which is the rate positions go to a pickup. The change follows the refresh that saw the ride start.
 
 ## Announcing
 
@@ -162,11 +174,11 @@ These figures were measured before the check replaced reading everything every 2
 
 [`core/bench`](../../core/bench/README.md) models what 100 000 drivers and 1 000 000 riders put on each shared
 service and on each phone, and measures the gossip part through the real router. Its findings for the app: in
-the busiest cell a driver's phone would receive up to 1 840 gossip messages a second, 97% of them positions (S8),
-which fills 90% of the 4096-message inbox, holds about 33 requests of its 200, and polls 2.4 GB an hour of escrow events
-(S12); RPC nodes would answer about 230 000 requests a second (S12). `make bench-model` reruns the model
-at any scale. Before any of these, matching itself fails in a cell with more than about a dozen phones: the
-router forwards a cell's messages eagerly to its GossipSub mesh only (K11 in
+the busiest cell a driver's phone would receive about 52 gossip messages a second, 255 MB an hour, a thirtieth of
+its inbox, hold about 33 requests of its 200, and poll 2.4 GB an hour of escrow events (S12); RPC nodes would answer
+about 230 000 requests a second (S12). `make bench-model` reruns the model at any scale. Past GossipSub's mesh a
+message arrives by lazy gossip: requests reach 97% of drivers with 46 phones on a cell, but take 15 s at p95 where they
+take 2 s inside the mesh, and a busy cell at the target has about 6 000 phones (K11 in
 [core security](../../core/docs/security.md)).
 
 Not measured yet: battery drain while online and time to route on low-end devices.

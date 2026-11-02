@@ -55,12 +55,12 @@ It runs in two standard ways, which `make bench` does one after the other:
 | Run | Phones per cell | What it measures |
 | --- | --- | --- |
 | **stress** (the default) | 20 drivers, 5 riders | Whether messages reach their phones when a cell has more subscribers than GossipSub's mesh. The figure to improve |
-| **light** (`--driver-nodes 1 --rider-nodes 1`) | 1 and 1 | Under the mesh limit: what one phone receives at full traffic, and the router's cost per delivery, which the model uses |
+| **light** (`--driver-nodes 1 --rider-nodes 3`) | 1 and 3 | Under the mesh limit: what one phone receives at full traffic, and the router's cost per delivery, which the model uses |
 
 The run begins with the last twenty minutes' rides already under way, then measures for `duration_s` after
 `warmup_s`. Phones drain their inbox every 2 s and hold at most 200 open requests, giving up the farthest and
 oldest when full, as `Matchmaker` does, so a request lost to a full inbox or a full list counts as not seen.
-The list does not fill at the target's traffic. To exercise it, lower the cap (`--max-requests 20`), and
+A rider phone carrying over 100 rides is ignored by the router, as a real phone would be: at the target's traffic keep at least three per cell. The list does not fill at the target's traffic. To exercise it, lower the cap (`--max-requests 20`), and
 `--rank-requests 0` shows what dropping the newcomer would do. "Seen" then means on the list at some moment, not
 that it stayed there.
 
@@ -89,11 +89,11 @@ At 100 000 drivers and 1 000 000 riders the system does not hold. In order of ho
 
 | Area | Finding | Kind |
 | --- | --- | --- |
-| Gossip | **Delivery collapses past about a dozen phones per cell.** At the target traffic, 10 phones on a cell receive 100%; with 19, 2% of drivers see a request; with 46 or more, none do. The router forwards eagerly only to its GossipSub mesh (6 to 12 phones per topic), the others get lazy gossip that cannot keep up with tens of messages a second, and phones only connect to the router, so nobody else forwards. A busy cell at the target has about 6 000 phones. Router CPU is not the limit (0.2 cores) | Design: phones must reach more than one forwarder, or cells need far fewer subscribers |
-| Phone | **A driver's phone would receive 920 to 1 840 messages a second, about 3 to 6 GB an hour.** 97% of the messages are positions of other people's rides, sent to the whole cell. Announcing is now a small part: closes and routes went from 43 a second each to 0.6 per cell. The inbox holds, at 90% in the busiest place, and the 200-request list holds about 33 | Design: apps S8 |
+| Gossip | **Past about a dozen phones per cell, a message arrives late.** The router forwards eagerly only to its GossipSub mesh (6 to 12 phones per topic), and the others get lazy gossip. With positions on their own topics a cell carries 6 messages a second, which lazy gossip keeps up with: with 20 or with 46 driver phones per cell, 97% of drivers see a request, at 15 s p95 against 2 s inside the mesh, 79 to 87% of offers arrive in time and about 90% of routes. Each send reaches 58%, so it is repetition that gets them there. A busy cell at the target has about 6 000 phones, which this computer cannot run | Design: phones must reach more than one forwarder, or cells need far fewer subscribers |
+| Phone | **A driver's phone would receive 26 to 52 messages a second, 130 to 255 MB an hour,** a thirtieth of its inbox, and hold about 33 requests of its 200. Over the assumed 100 MB an hour, and most of a phone's data is now the chain's escrow logs, 2.4 GB an hour | Design: apps S12 |
 | Chain | 18.6 M gas a second: 83% of Polygon PoS's whole block space, 3.3× the 25% assumed available | Design: a rollup or per-region escrows |
 | RPC | Each phone on screen reads every escrow event of the last 17 blocks every 2 s: 1 900 logs, 2.4 GB an hour per phone; 232 000 requests and 44 GB a second across phones | Mostly design: filter by topic, stop re-reading, push instead of poll |
-| Bundler, mirrors, routers | 56 operations a second; 80 TB per pack release; about 22 GB a second of gossip | Scale out, once the above is fixed |
+| Bundler, mirrors, routers | 56 operations a second; 80 TB per pack release; about 900 MB a second of gossip | Scale out, once the above is fixed |
 
 Smaller scales show where each breaks first: `make bench-model ARGS="--drivers 2000 --riders 20000"`.
 

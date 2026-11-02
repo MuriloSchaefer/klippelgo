@@ -40,7 +40,8 @@ class RoutePrivacyTest : Scenario() {
         driver.accept(ride.id)
         app.onTheWay.awaitStatus("Accepted")
 
-        // The driver is somewhere the test chose; the rider's phone is told, sealed.
+        // The driver is somewhere the test chose; the rider's phone is told, sealed, on the ride's own topic.
+        stranger.joinRide(ride.quoteHash)
         val driverAt = Coordinate(route.pickup.latE7 + 31_337, route.pickup.lonE7 - 27_183)
         waitUntil("the rider to see the driver's position", 60_000) {
             driver.sharePosition(ride.id, driverAt)
@@ -49,7 +50,7 @@ class RoutePrivacyTest : Scenario() {
 
         // A position from anyone but the ride's driver is not believed: a stranger cannot place a car on the
         // rider's map. The app is already showing the real one, so this checks only that nothing breaks.
-        stranger.say(stranger.position(stranger.newKey(), ride.quoteHash), seconds = 3)
+        stranger.sayOnRide(ride.quoteHash, stranger.position(stranger.newKey(), ride.quoteHash), seconds = 3)
         assertTrue(app.onTheWay.driverLive())
 
         // What went over the wire as text, and what the sealed fields hold once their base64 is undone: if

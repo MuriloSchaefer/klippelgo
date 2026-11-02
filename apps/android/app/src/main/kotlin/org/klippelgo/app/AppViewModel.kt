@@ -15,6 +15,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -80,6 +82,8 @@ data class UiState(
     val rides: List<Ride> = emptyList(),
     val rated: Set<BigInteger> = emptySet(),
     val canAccept: Boolean = false,
+    /** Driver: online, hearing requests. */
+    val online: Boolean = false,
     /** Driver: what the accept policy still asks of this account. Empty while `canAccept`. */
     val blockers: List<Blocker> = emptyList(),
     val fees: Map<Coin, BigInteger> = emptyMap(),
@@ -184,6 +188,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var poller: Job? = null
 
     init {
+        viewModelScope.launch {
+            _state.map(::onDuty).distinctUntilChanged().collect { OnDutyService.keep(getApplication(), it) }
+        }
         _state.value.role?.let { connect(it, _state.value.rpcUrl) }
     }
 
@@ -230,7 +237,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         client = c
         _state.value = _state.value.let {
             // Where the phone is does not change with the role: it is told again only when it moves.
-            UiState(role = role, rpcUrl = rpcUrl, address = c.address, name = it.name, minPerKm = it.minPerKm, maxBelowPercent = it.maxBelowPercent, location = it.location)
+            UiState(role = role, rpcUrl = rpcUrl, address = c.address, name = it.name, minPerKm = it.minPerKm, maxBelowPercent = it.maxBelowPercent, location = it.location, online = it.online && it.role == role)
         }
         pinByHand = false
         leaveGossip()
@@ -295,11 +302,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Whether the app is on screen. Off screen it reads nothing from the chain unless a ride is under way, which
-     * still needs its state confirmed for the driver's position to go out (A10); back on screen it reads in full.
+     * still needs its state confirmed for the driver's position to go out (A10), or the driver is online, for a
+     * ride opened naming them; back on screen it reads in full.
      */
     fun foreground(on: Boolean) {
         if (on && !inForeground) seenBlock = null
         inForeground = on
+        // A service can start only from the foreground: one refused off screen starts here.
+        if (on) OnDutyService.keep(getApplication(), onDuty(_state.value))
+    }
+
+    /** Driver: whether they are online, which only their screen knows. */
+    fun setOnline(on: Boolean) = _state.update { it.copy(online = on) }
+
+    /**
+     * Whether Android must keep this phone working off screen. Anyone can open a ride naming a driver, so for a
+     * driver a ride counts once they accepted it (P12). A dispute waits on jurors, with no position to send.
+     */
+    private fun onDuty(s: UiState) = when (s.role) {
+        null -> false
+        Role.DRIVER -> s.online || s.rides.any { it.status == RideStatus.Accepted || it.status == RideStatus.Started }
+        Role.RIDER -> s.rides.any { it.status.isActive && it.status != RideStatus.Disputed }
     }
 
     @Volatile private var inForeground = true
@@ -664,11 +687,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (providers.isEmpty()) return
         locating = true
         providers.mapNotNull { runCatching { manager.getLastKnownLocation(it) }.getOrNull() }.maxByOrNull { it.time }?.let(locationListener::onLocationChanged)
-        // A fix a second while the car moves: on a ride the rider watches it, and the route behind it is taken
-        // off the map. None while it stands still.
-        for (provider in providers) manager.requestLocationUpdates(provider, 1_000L, 3f, locationListener, Looper.getMainLooper())
+        locationProviders = providers
+        requestFixes()
     }
 
+    /**
+     * A fix a second while the car moves on a started ride: the rider watches it, and the route behind it is taken
+     * off the map. Otherwise as often as a position goes out to a pickup. None while it stands still.
+     */
+    @SuppressLint("MissingPermission")
+    private fun requestFixes() {
+        val manager = getApplication<Application>().getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val every = if (fastFixes) 1_000L else 4_000L
+        for (provider in locationProviders) runCatching { manager.requestLocationUpdates(provider, every, 3f, locationListener, Looper.getMainLooper()) }
+    }
+
+    private fun fixesFor(started: Boolean) {
+        if (started == fastFixes) return
+        fastFixes = started
+        if (locating) requestFixes()
+    }
+
+    private var locationProviders = emptyList<String>()
+    @Volatile private var fastFixes = false
     private var locating = false
     private val locationListener = LocationListener { fix ->
         _state.update { it.copy(location = Coordinate((fix.latitude * 1e7).toInt(), (fix.longitude * 1e7).toInt())) }
@@ -745,9 +786,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val file = File(getApplication<Application>().filesDir, "rides").apply { mkdirs() }.resolve("${current.quoteHash.lowercase()}.riderkey")
         val key = m?.riderKey(current.quoteHash)?.also { if (!file.exists()) file.writeBytes(it) }
             ?: file.takeIf { it.exists() }?.readBytes() ?: return
-        // Into the cell of the ride's pickup, where its rider listens.
-        val cell = s.rideRoutes[current.id]?.let { Matchmaker.cellAt(it.pickup) }
-        runCatching { m?.sharePosition(current.quoteHash, key, here.latE7, here.lonE7, onTheRide = current.status == RideStatus.Started, cell = cell) }
+        runCatching { m?.sharePosition(current.quoteHash, key, here.latE7, here.lonE7, onTheRide = current.status == RideStatus.Started) }
     }
 
     /**
@@ -990,7 +1029,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * ride under way still holds, and the time it is believed from moves to now (A10).
      */
     private fun chainDue(c: KlippelGoClient, m: Matchmaker?): Boolean {
-        if (!inForeground && _state.value.rides.none { it.status.isActive }) return false
+        if (!inForeground && !onDuty(_state.value)) return false
         val seen = seenBlock ?: return true
         val checkedAt = android.os.SystemClock.elapsedRealtime()
         if (checkedAt - fullReadAt > FULL_READ_EVERY_MS) return true
@@ -1011,7 +1050,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * The cells whose requests this phone hears. A driver hears those around them while their position is inside
      * the map pack, and the whole pack's otherwise, or the pack's middle when the pack is large. A rider hears only
-     * the cells of their own requests and rides, which the matchmaker follows by itself.
+     * the cells of their own requests, which the matchmaker follows by itself.
      */
     private fun area(role: Role): Set<String> {
         if (role != Role.DRIVER) return emptySet()
@@ -1101,6 +1140,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val before = _state.value.rides.firstOrNull { it.status.isActive }
                 rides.firstOrNull { it.id == before?.id && it.status == RideStatus.Cancelled }?.let { afterCancelled(m, it) }
             }
+            // Not while a ride on the same quote goes on: nothing stops a rider from opening one twice (P12).
+            if (role == Role.RIDER) {
+                val going = rides.filterNot { it.status.isFinal }.mapTo(HashSet()) { it.quoteHash }
+                rides.filter { it.status.isFinal && it.quoteHash !in going }.forEach { m?.forgetRide(it.quoteHash) }
+            }
             val rideRoutes = if (role == Role.DRIVER) rideRoutes(c, m, rides) else ownRoutes(c, rides)
             // Rider: is the driver still busy with someone else, and if not, where are they.
             val mine = rides.firstOrNull { it.status.isActive }.takeIf { role == Role.RIDER }
@@ -1112,6 +1156,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             synchronized(matchLock) {
                 if (m != null && match === m) {
                     sharingFor = underWay.firstOrNull()
+                    fixesFor(role == Role.DRIVER && underWay.any { it.status == RideStatus.Started })
                     rideConfirmedAt = readAt
                     watchingQuote = mine?.takeIf { ridesAhead == 0 }?.quoteHash
                 }
@@ -1193,6 +1238,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        OnDutyService.keep(getApplication(), false)
         stopLocation()
         leaveGossip()
         pack?.close()

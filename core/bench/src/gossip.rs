@@ -256,7 +256,11 @@ fn us(seconds: f64) -> i64 {
 }
 
 fn topic(cell: usize) -> String {
-    format!("/klippelgo/match/1/bench{cell:03}")
+    format!("/klippelgo/match/1/bc{cell:03}")
+}
+
+fn ride_topic(trip: u64) -> String {
+    format!("/klippelgo/ride/1/0x{trip:064x}")
 }
 
 /// The cells within one step of `cell` on a `grid` by `grid` square, itself included: what a driver there hears.
@@ -291,6 +295,23 @@ impl World<'_> {
         t >= self.measure_from && t < self.measure_to
     }
 
+    /// The rider's phone listens on the ride's topic from the lock, as `Matchmaker.revealRoute` does.
+    fn join_ride(&self, id: u64) {
+        if self.p.get("ride_topics") > 0.0 {
+            let _ = self.phones[self.trips[&id].rider]
+                .node
+                .subscribe(ride_topic(id));
+        }
+    }
+
+    fn leave_ride(&self, id: u64) {
+        if self.p.get("ride_topics") > 0.0 {
+            let _ = self.phones[self.trips[&id].rider]
+                .node
+                .unsubscribe(ride_topic(id));
+        }
+    }
+
     fn publish(
         &mut self,
         from: usize,
@@ -320,7 +341,12 @@ impl World<'_> {
                 1
             };
         }
-        let _ = self.phones[from].node.publish(topic(cell), data);
+        let to = if kind == Kind::Position && self.p.get("ride_topics") > 0.0 {
+            ride_topic(about)
+        } else {
+            topic(cell)
+        };
+        let _ = self.phones[from].node.publish(to, data);
     }
 
     fn idle_drivers_around(&self, cell: usize) -> Vec<usize> {
@@ -428,6 +454,7 @@ impl World<'_> {
         if end > self.now {
             trip.driving = true;
             self.drivers[driver].busy = true;
+            self.join_ride(id);
             let first = from.max(self.now + phase);
             self.at(first, Event::Position(id));
         }
@@ -447,7 +474,8 @@ impl World<'_> {
                 let Some(trip) = self.trips.get(&id) else {
                     return;
                 };
-                let (cell, rider, t0, sends) = (trip.cell, trip.rider, trip.t0_us, trip.request_sends);
+                let (cell, rider, t0, sends) =
+                    (trip.cell, trip.rider, trip.t0_us, trip.request_sends);
                 if now - t0 >= us(self.p.get("ask_s")) {
                     return;
                 }
@@ -476,8 +504,13 @@ impl World<'_> {
                 let Some(trip) = self.trips.get(&id) else {
                     return;
                 };
-                let (cell, rider, t0, locked, sends) =
-                    (trip.cell, trip.rider, trip.t0_us, trip.locked_us, trip.route_sends);
+                let (cell, rider, t0, locked, sends) = (
+                    trip.cell,
+                    trip.rider,
+                    trip.t0_us,
+                    trip.locked_us,
+                    trip.route_sends,
+                );
                 if trip.acknowledged || now - t0 >= us(self.p.get("request_ttl_s")) {
                     self.trips.get_mut(&id).unwrap().revealing = false;
                     self.maybe_forget(id);
@@ -560,6 +593,7 @@ impl World<'_> {
                 let (pickup, ride) = (us(self.p.get("pickup_s")), us(self.p.get("ride_s")));
                 if elapsed >= pickup + ride || now >= self.measure_to {
                     self.drivers[driver].busy = false;
+                    self.leave_ride(id);
                     self.trips.get_mut(&id).unwrap().driving = false;
                     self.maybe_forget(id);
                     return;
@@ -1065,7 +1099,7 @@ pub fn run(p: &Params, node_binary: &Path) -> Result<Value, String> {
         phones.iter().map(|ph| f(ph)).sum::<f64>() / phones.len().max(1) as f64
     };
     let driver_msgs = mean(&driver_phones, &|ph| ph.received as f64 / seconds);
-    let driver_msgs_model = mean(&driver_phones, &|ph| heard(ph) * cell_traffic.messages());
+    let driver_msgs_model = mean(&driver_phones, &|ph| heard(ph) * cell_traffic.messages(p));
     let driver_bytes = mean(&driver_phones, &|ph| ph.received_bytes as f64 / seconds);
     let driver_bytes_model = mean(&driver_phones, &|ph| heard(ph) * cell_traffic.bytes(p));
     // Phones in the middle of the square hear nine cells, as a driver in a city does.
@@ -1077,7 +1111,8 @@ pub fn run(p: &Params, node_binary: &Path) -> Result<Value, String> {
     let subscribers: f64 = (0..cells)
         .map(|c| (world.listeners[c] + rider_nodes) as f64)
         .sum();
-    let deliveries_model = cell_traffic.messages() * subscribers;
+    let own_topic = p.get("ride_topics").clamp(0.0, 1.0) * cells as f64 * cell_traffic.position;
+    let deliveries_model = cell_traffic.messages(p) * subscribers + own_topic;
     let router_cpu = router_to.cpu_s - router_from.cpu_s;
     let deliveries_per_s = t.deliveries as f64 / seconds;
 
