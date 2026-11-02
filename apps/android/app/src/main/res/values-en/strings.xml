@@ -106,7 +106,7 @@
     <string name="stat_today">Today</string>
     <string name="stat_score">Score</string>
     <string name="stat_rides">Rides</string>
-    <string name="go_online_body">Keep KlippelGo open while you are online so riders can find you.</string>
+    <string name="go_online_body">While you are online, riders can find you even with the screen off.</string>
     <string name="waiting_rides">Waiting for ride requests…</string>
     <string name="cannot_accept">Accepting rides is blocked by the network policy.</string>
     <string name="blocked_score">Your score is %1$s. The minimum to accept rides is %2$s.</string>
@@ -115,6 +115,7 @@
     <string name="blocked_credential">A credential the policy requires is missing.</string>
     <string name="blocked_role">This account is not registered as a driver.</string>
     <string name="blocked_age">Your account is too new to accept rides.</string>
+    <string name="blocked_account">This account was blocked by Instituto Klippel.</string>
     <string name="new_request">New request</string>
     <string name="pays_at_most">Rider proposes</string>
     <string name="lower_offer">Lower offer</string>
@@ -178,6 +179,8 @@
     <string name="route_needs_map">Download the map to see this ride\'s route.</string>
     <string name="map_needed_driver">Download the map of the region to see the streets and each ride\'s route. Without it you still get requests and can make offers.</string>
     <string name="decline_ride">Decline ride</string>
+    <string name="accept_after_pickup">You can take this ride once your current rider is in the car.</string>
+    <string name="accept_declines_others">Taking one gives back the others you quoted before it.</string>
     <string name="decline_hint">Declining costs nothing: the rider gets everything back.</string>
     <string name="asked_again">The driver gave up the ride and you have everything back. The same request went out again to the other drivers.</string>
 
@@ -231,4 +234,6 @@
         <item quantity="one">%d more request</item>
         <item quantity="other">%d more requests</item>
     </plurals>
+    <string name="on_duty_channel">On duty</string>
+    <string name="on_duty_text">Connected while you are online or on a ride</string>
 </resources>

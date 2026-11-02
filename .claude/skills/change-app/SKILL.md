@@ -13,7 +13,7 @@ file disagree, the doc wins; if the code and a doc disagree, stop and tell the u
 1. Read `apps/docs/overview.md`, section "Structure and patterns". The table "Where code goes" decides the
    file. If the code must give the same answer on iOS or for a juror, it belongs in the core: switch to the
    `change-core` skill.
-2. Read `apps/docs/security.md`: the message table, invariants A1 to A14, and the known limits. Name the
+2. Read `apps/docs/security.md`: the message table, invariants A1 to A15, and the known limits. Name the
    invariants your change touches before you write it. Anything that receives from gossip, a mirror or an
    intent is covered there.
 3. If the change adds a chain read, a gossip message, a timer or stored data, read `apps/docs/scalability.md`,
@@ -31,7 +31,7 @@ message goes in `Matchmaker.receive…` and nowhere else; strings go in `values/
 
 1. `make android-test-chain` when `:chain` changed. It needs the local testnet (`make testnet`, `make deploy`).
 2. `cd apps/android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew :app:assembleDebug`
-3. For a visible change, play it on emulators (`make android-two-phones` or `make android-four-phones`) and
+3. For a visible change, play it on emulators (`make android-two-phones`, `make android-three-phones` or `make android-four-phones`) and
    look at the screen. Build and usage notes are in `apps/android/README.md`.
 4. Run the `sync-docs` skill for the app.
 5. Run the `security-check` skill. It ends by handing the change to the `security-reviewer` agent.

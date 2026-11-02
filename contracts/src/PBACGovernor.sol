@@ -5,18 +5,19 @@ import {IPBACGovernor} from "./interfaces/IPBACGovernor.sol";
 import {IdentityRegistry} from "./IdentityRegistry.sol";
 import {Reputation} from "./Reputation.sol";
 
-/// @notice Policy-based access control plus on-chain governance. Every protocol parameter and every policy is
-/// changed only through a proposal that passes a vote and waits out a timelock.
+/// @notice Policy-based access control, and the one authority over the protocol: the guardian.
 ///
 /// A policy is a rule evaluated against the caller's on-chain attributes, keyed by (target contract, function
-/// selector): roles, stake, reputation score, account age and a required credential kind. Changing a policy
-/// is itself an action, guarded by the policy on this contract's `propose` (the meta-policy) plus quorum and
-/// timelock.
+/// selector): roles, stake, reputation score, account age and a required credential kind. An account blocked
+/// in the registry satisfies no policy.
 ///
-/// Votes are weighted by completed rides and stake, not by a tradeable token.
+/// The guardian is Instituto Klippel. It governs who may use the network and every parameter of it: whatever
+/// a contract guards with `onlyGovernor`, the guardian does through `execute`, at once. Nobody else can, and
+/// nobody but the guardian can name its successor. The contracts' code never changes: a fix is a new contract
+/// the guardian wires in, next to the ledgers that keep everyone's stake, credentials and reputation.
 ///
 /// Deployment needs a short bootstrap: the deployer wires the contracts together through `bootstrapCall`, then
-/// calls `finishBootstrap`, after which nobody holds any privilege outside governance.
+/// calls `finishBootstrap`, after which the guardian alone holds any privilege.
 contract PBACGovernor is IPBACGovernor {
     struct Policy {
         bool enabled;
@@ -27,72 +28,44 @@ contract PBACGovernor is IPBACGovernor {
         bytes32 credential; // required credential kind, 0 = none
     }
 
-    struct Proposal {
-        address proposer;
-        uint64 voteEnd;
-        uint64 eta;
-        bool executed;
-        uint256 forVotes;
-        uint256 againstVotes;
-        bytes32 callsHash;
-    }
-
-    struct Params {
-        uint64 votingPeriod;
-        uint64 timelockDelay;
-        uint256 quorum; // minimum forVotes
-        uint256 rideWeight; // votes per completed ride
-        uint256 stakeUnit; // stake base units per vote
-    }
-
     IdentityRegistry public registry;
     Reputation public reputation;
     address public bootstrapper;
-    Params public params;
+    address public guardian;
+    /// @notice Who the guardian named to take over. They become guardian only by accepting.
+    address public pendingGuardian;
 
     mapping(address target => mapping(bytes4 action => Policy)) internal _policies;
-    mapping(uint256 => Proposal) public proposals;
-    mapping(uint256 => mapping(address => bool)) public hasVoted;
-    uint256 public proposalCount;
 
     event PolicySet(address indexed target, bytes4 indexed action, Policy policy);
-    event ParamsSet(Params params);
     event ModulesSet(address registry, address reputation);
     event BootstrapFinished();
-    event ProposalCreated(
-        uint256 indexed id,
-        address indexed proposer,
-        address[] targets,
-        uint256[] values,
-        bytes[] calldatas,
-        string description
-    );
-    event VoteCast(uint256 indexed id, address indexed voter, bool support, uint256 weight);
-    event ProposalQueued(uint256 indexed id, uint64 eta);
-    event ProposalExecuted(uint256 indexed id);
+    event Executed(address indexed target, bytes data);
+    event GuardianProposed(address indexed guardian, address indexed proposed);
+    event GuardianChanged(address indexed from, address indexed to);
 
     error NotSelf();
     error NotBootstrapper();
-    error NotPermitted(address subject, bytes4 action);
-    error InvalidProposal();
-    error VotingClosed();
-    error VotingOpen();
-    error AlreadyVoted();
-    error NoVotingWeight();
-    error Defeated();
-    error NotQueued();
-    error AlreadyQueued();
-    error TimelockActive();
+    error NotGuardian();
+    error NotPendingGuardian();
+    error NoGuardian();
+    error InvalidCalls();
     error CallFailed(uint256 index, bytes reason);
 
-    constructor(Params memory params_) {
+    constructor(address guardian_) {
+        if (guardian_ == address(0)) revert NoGuardian();
         bootstrapper = msg.sender;
-        params = params_;
-        emit ParamsSet(params_);
+        guardian = guardian_;
+        emit GuardianChanged(address(0), guardian_);
     }
 
     modifier onlySelf() {
         if (msg.sender != address(this)) revert NotSelf();
+        _;
+    }
+
+    modifier onlyGuardian() {
+        if (msg.sender != guardian) revert NotGuardian();
         _;
     }
 
@@ -101,6 +74,7 @@ contract PBACGovernor is IPBACGovernor {
     function hasPermission(address subject, address target, bytes4 action) public view returns (bool) {
         Policy memory p = _policies[target][action];
         if (!p.enabled) return false;
+        if (registry.blocked(subject)) return false;
 
         if (p.roles != 0 || p.minStake != 0 || p.minAccountAge != 0) {
             IdentityRegistry.Identity memory id = registry.identity(subject);
@@ -122,90 +96,40 @@ contract PBACGovernor is IPBACGovernor {
         return _policies[target][action];
     }
 
-    /// @notice Votes = completed rides x rideWeight + stake / stakeUnit.
-    function votingWeight(address voter) public view returns (uint256) {
-        Params memory p = params;
-        return reputation.completedRides(voter) * p.rideWeight + registry.stakeOf(voter) / p.stakeUnit;
-    }
+    // ---------------------------------------------------------------- the guardian
 
-    // ---------------------------------------------------------------- proposals
-
-    function propose(
-        address[] calldata targets,
-        uint256[] calldata values,
-        bytes[] calldata calldatas,
-        string calldata description
-    ) external returns (uint256 id) {
-        if (!hasPermission(msg.sender, address(this), this.propose.selector)) {
-            revert NotPermitted(msg.sender, this.propose.selector);
-        }
-        if (targets.length == 0 || targets.length != values.length || targets.length != calldatas.length) {
-            revert InvalidProposal();
-        }
-        id = ++proposalCount;
-        proposals[id] = Proposal({
-            proposer: msg.sender,
-            voteEnd: uint64(block.timestamp) + params.votingPeriod,
-            eta: 0,
-            executed: false,
-            forVotes: 0,
-            againstVotes: 0,
-            callsHash: keccak256(abi.encode(targets, values, calldatas))
-        });
-        emit ProposalCreated(id, msg.sender, targets, values, calldatas, description);
-    }
-
-    function vote(uint256 id, bool support) external {
-        Proposal storage p = proposals[id];
-        if (p.proposer == address(0)) revert InvalidProposal();
-        if (block.timestamp >= p.voteEnd) revert VotingClosed();
-        if (hasVoted[id][msg.sender]) revert AlreadyVoted();
-        uint256 weight = votingWeight(msg.sender);
-        if (weight == 0) revert NoVotingWeight();
-        hasVoted[id][msg.sender] = true;
-        if (support) p.forVotes += weight;
-        else p.againstVotes += weight;
-        emit VoteCast(id, msg.sender, support, weight);
-    }
-
-    function queue(uint256 id) external {
-        Proposal storage p = proposals[id];
-        if (p.proposer == address(0)) revert InvalidProposal();
-        if (block.timestamp < p.voteEnd) revert VotingOpen();
-        if (p.eta != 0) revert AlreadyQueued();
-        if (p.forVotes <= p.againstVotes || p.forVotes < params.quorum) revert Defeated();
-        p.eta = uint64(block.timestamp) + params.timelockDelay;
-        emit ProposalQueued(id, p.eta);
-    }
-
-    function execute(
-        uint256 id,
-        address[] calldata targets,
-        uint256[] calldata values,
-        bytes[] calldata calldatas
-    ) external payable {
-        Proposal storage p = proposals[id];
-        if (p.eta == 0 || p.executed) revert NotQueued();
-        if (block.timestamp < p.eta) revert TimelockActive();
-        if (keccak256(abi.encode(targets, values, calldatas)) != p.callsHash) revert InvalidProposal();
-        p.executed = true;
+    /// @notice Runs the calls as the governor, in order, all or none. This is how the guardian sets a
+    /// parameter, a policy or a block, and how it wires in a contract that replaces another.
+    function execute(address[] calldata targets, bytes[] calldata data) external onlyGuardian {
+        if (targets.length == 0 || targets.length != data.length) revert InvalidCalls();
         for (uint256 i; i < targets.length; ++i) {
-            (bool ok, bytes memory reason) = targets[i].call{value: values[i]}(calldatas[i]);
+            (bool ok, bytes memory reason) = targets[i].call(data[i]);
             if (!ok) revert CallFailed(i, reason);
+            emit Executed(targets[i], data[i]);
         }
-        emit ProposalExecuted(id);
     }
 
-    // ---------------------------------------------------------------- self-governed setters
+    /// @notice Names who may take over as guardian. Nothing changes until they accept, so a mistyped address
+    /// costs nothing: name another. The zero address withdraws the offer. The governor itself cannot be named:
+    /// it could accept through `execute`, and then nobody could call `execute` again.
+    function proposeGuardian(address proposed) external onlyGuardian {
+        if (proposed == address(this)) revert NoGuardian();
+        pendingGuardian = proposed;
+        emit GuardianProposed(msg.sender, proposed);
+    }
+
+    function acceptGuardian() external {
+        if (msg.sender != pendingGuardian) revert NotPendingGuardian();
+        emit GuardianChanged(guardian, msg.sender);
+        guardian = msg.sender;
+        pendingGuardian = address(0);
+    }
+
+    // ---------------------------------------------------------------- setters, reached through execute
 
     function setPolicy(address target, bytes4 action, Policy calldata p) external onlySelf {
         _policies[target][action] = p;
         emit PolicySet(target, action, p);
-    }
-
-    function setParams(Params calldata p) external onlySelf {
-        params = p;
-        emit ParamsSet(p);
     }
 
     function setModules(IdentityRegistry registry_, Reputation reputation_) external onlySelf {

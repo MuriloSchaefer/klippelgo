@@ -5,6 +5,7 @@
 #   contracts  deployed and seeded if the chain does not have them yet (testnet/deploy.sh)
 #   map pack   the pilot city's pack, built if missing (about 15 minutes, once) and activated through governance
 #   gossip     the bootstrap node the phones dial, on port 4001
+#   bundler    the ERC-4337 bundler every account's operations go through, on port 4337
 #   mirror     the pack mirror the app downloads from, on port 4002
 #   router     Valhalla on the pack's own tiles, on port 8002: where the peer riders get their routes
 #   phone      a headless emulator of its own (KlippelGo_Test), with the app and its UI agent installed
@@ -106,6 +107,12 @@ start_phone() { # index, headless|window
 }
 # Remembers that this script started something, so `down` stops it and leaves alone what was already there.
 started() { echo "$1" >>"$RUN/started"; }
+# Whether the bundler answers for the EntryPoint the accounts use.
+bundler_up() {
+  curl -s -m 3 -X POST "http://$HOST:4337/rpc" -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"eth_supportedEntryPoints","params":[]}' 2>/dev/null | grep -qi 433709009b8330fda32311df1c2afa402ed8d009
+}
+
 wait_for() { # what, seconds, command...
   local what=$1 seconds=$2; shift 2
   for _ in $(seq 1 "$seconds"); do "$@" && return 0; sleep 1; done
@@ -156,6 +163,16 @@ up() {
     docker compose -f "$ROOT/testnet/docker-compose.yml" up -d --build gossip >"$RUN/gossip.log" 2>&1 || die "The gossip node did not start. See tests/.run/gossip.log"
     wait_for "the gossip node" 60 listening 127.0.0.1 4001
     say "gossip     bootstrap node on port 4001"
+    # Every account is a smart account: nothing is written to the chain but through the bundler.
+    docker compose -f "$ROOT/testnet/docker-compose.yml" ps --status running --services 2>/dev/null | grep -qx bundler || started bundler
+    docker compose -f "$ROOT/testnet/docker-compose.yml" up -d --build bundler >"$RUN/bundler.log" 2>&1 || die "The bundler did not start. See tests/.run/bundler.log"
+    wait_for "the bundler" 120 bundler_up
+    # Something else on port 4337 (another bundler, for another chain) would answer for it while the container
+    # restarts: make sure the one answering is this stack's.
+    sleep 3
+    docker compose -f "$ROOT/testnet/docker-compose.yml" ps --status running --services 2>/dev/null | grep -qx bundler \
+      || die "The bundler container is not running; something else may hold port 4337. See: docker compose -f testnet/docker-compose.yml logs bundler"
+    say "bundler    on port 4337"
     if listening 127.0.0.1 4002; then
       say "mirror     using the pack mirror on port 4002"
     else
@@ -167,6 +184,7 @@ up() {
     fi
   else
     listening "$HOST" 4001 || die "No gossip bootstrap node at $HOST:4001. The app looks for it next to the chain node."
+    bundler_up || die "No bundler at $HOST:4337. The app sends every operation through it, next to the chain node."
     listening "$HOST" 4002 || die "No pack mirror at $HOST:4002. The app looks for it next to the chain node."
     say "gossip     using $HOST:4001, mirror $HOST:4002"
   fi
@@ -242,6 +260,7 @@ down() {
       emulator-*) "$ADB" -s "$what" emu kill >/dev/null 2>&1 || true; rm -f "$RUN/$what.mode" ;;
       valhalla) docker rm -f "$VALHALLA_CONTAINER" >/dev/null 2>&1 || true ;;
       gossip) docker compose -f "$ROOT/testnet/docker-compose.yml" stop gossip >/dev/null 2>&1 || true ;;
+      bundler) docker compose -f "$ROOT/testnet/docker-compose.yml" stop bundler >/dev/null 2>&1 || true ;;
       anvil|mirror) [ -f "$RUN/$what.pid" ] && kill "$(cat "$RUN/$what.pid")" 2>/dev/null || true; rm -f "$RUN/$what.pid" ;;
     esac
     say "stopped $what"
@@ -252,6 +271,7 @@ down() {
 status() {
   chain_up && say "chain      up at $RPC" || say "chain      down ($RPC)"
   listening "$HOST" 4001 && say "gossip     up" || say "gossip     down"
+  bundler_up && say "bundler    up" || say "bundler    down"
   listening "$HOST" 4002 && say "mirror     up" || say "mirror     down"
   valhalla_up && say "router     up" || say "router     down"
   for i in 1 2 3; do

@@ -28,6 +28,10 @@ class Stack(
     val valhalla: String,
     val serial: String,
 ) {
+    /** The deployment file the app was built with and `klippel-gov` reads. */
+    val deploymentFile: File =
+        File(System.getenv("KLIPPELGO_DEPLOYMENT")?.takeIf { it.isNotBlank() } ?: "$root/deployments/local.json")
+
     /** The gossip bootstrap node runs next to the chain node, as the app assumes. */
     val gossip: String = "/ip4/${hostAddress(rpc)}/tcp/4001"
 
@@ -56,7 +60,21 @@ class Stack(
     /** How many of [phones] are running, counted from the first. */
     fun phonesUp(): Int = phones.takeWhile { it.booted() }.size
 
-    fun client(account: DevAccount) = KlippelGoClient(rpc, account.privateKey, deployment)
+    fun client(account: DevAccount) = KlippelGoClient(rpc, account.key(), deployment)
+
+    /** Runs a command from the repository's root against this stack's chain, and returns what it printed. */
+    fun script(vararg command: String): String = script(emptyMap(), *command)
+
+    /** The same, with more environment: `KLIPPEL_GOV_WALLET`, to sign as another member of the team. */
+    fun script(env: Map<String, String>, vararg command: String): String {
+        val addresses = deploymentFile.path
+        val process = ProcessBuilder(*command).directory(root).redirectErrorStream(true)
+            .apply { environment() += mapOf("RPC_URL" to rpc, "DEPLOYMENT" to addresses, "KLIPPEL_GOV_RPC" to rpc, "KLIPPEL_GOV_DEPLOYMENT" to addresses) + env }
+            .start()
+        val printed = process.inputStream.bufferedReader().readText()
+        check(process.waitFor() == 0) { "${command.joinToString(" ")} failed:\n$printed" }
+        return printed
+    }
 
     /**
      * Ends every ride the test accounts left under way, so a test starts with nobody mid-ride. A chain that
@@ -74,6 +92,14 @@ class Stack(
                         else -> {}
                     }
                 }
+            }
+        }
+        // A finished ride the account has not rated opens the app on the rating screen, in place of the home
+        // screen a test starts from. Rides played by hand on the same seeded accounts leave these too.
+        for (account in DevAccount.entries) {
+            val c = client(account)
+            for (id in (c.ridesAsRider().take(10) + c.ridesAsDriver().take(10)).distinct()) {
+                runCatching { if (c.ride(id).status == RideStatus.Completed && !c.hasRated(id)) c.rate(id, 5) }
             }
         }
     }
@@ -94,7 +120,7 @@ class Stack(
             val rpc = env("KLIPPELGO_RPC", "http://127.0.0.1:8545")
             val addresses = Deployment.fromJson(deployment.readText())
             // The tests sign with anvil's public keys and end rides for them. Never on anything but a local testnet.
-            val chainId = runCatching { KlippelGoClient(rpc, DevAccount.RIDER.privateKey, addresses).chainId() }
+            val chainId = runCatching { KlippelGoClient(rpc, DevAccount.RIDER.key(), addresses).chainId() }
                 .getOrElse { error("No chain node answers at $rpc. Bring the stack up first: tests/stack.sh up") }
             check(chainId == LOCAL_CHAIN && addresses.chainId == LOCAL_CHAIN) {
                 "The chain at $rpc (id $chainId, deployment for ${addresses.chainId}) is not a local testnet ($LOCAL_CHAIN). The tests will not touch it."

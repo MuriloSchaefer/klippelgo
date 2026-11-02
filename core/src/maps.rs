@@ -156,6 +156,13 @@ pub struct CheckedQuote {
     pub duration_s: u32,
     /// The route for drawing: from the pickup, through the nodes it passes, to the drop-off.
     pub line: Vec<Coordinate>,
+    /// The terms the quote hash covers, as the rider sealed them: the fare (a big-endian u256 in the token's
+    /// base units), the token, the rider and the driver (20-byte addresses). A ride whose quote hash matches but
+    /// whose own fare, token or parties differ copied the hash, and is not the ride this route is for.
+    pub fare: Vec<u8>,
+    pub token: Vec<u8>,
+    pub rider: Vec<u8>,
+    pub driver: Vec<u8>,
 }
 
 /// The escrow a quote or receipt is for.
@@ -390,6 +397,10 @@ impl MapPack {
             distance_m: route_quote.distance_m,
             duration_s: route_quote.duration_s,
             line: line.into_iter().map(Coordinate::from).collect(),
+            fare: route_quote.fare.to_vec(),
+            token: route_quote.token.to_vec(),
+            rider: route_quote.rider.to_vec(),
+            driver: route_quote.driver.to_vec(),
         })
     }
 

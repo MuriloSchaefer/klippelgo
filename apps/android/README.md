@@ -12,7 +12,7 @@ or routing service is asked anything.
 
 Request and offers travel over the gossip network (libp2p GossipSub, in the Rust core), through a bootstrap
 node on your computer. Nothing reaches the chain until the rider takes an offer. From then on each step is a
-transaction on `RideEscrow`, and each phone polls the chain every two seconds to see what the other did.
+transaction on `RideEscrow`, and each phone looks at every new block's events to see what the other did.
 
 Portuguese is the default language. English and Spanish can be picked on the first screen. The type is IBM Plex
 (SIL Open Font License), bundled in `app/src/main/res/font`.
@@ -47,21 +47,25 @@ Languages & Frameworks > Android SDK > SDK Tools.
 
 ## Run rider and driver at the same time
 
-From the repo root, in three terminals:
+From the repo root, in four terminals:
 
 ```sh
 make testnet                  # 1. local chain on http://127.0.0.1:8545 (leave it running)
 make deploy                   # 2. contracts, mock BRLA/BRZ, seeded rider and driver
+make bundler                  # 3. the ERC-4337 bundler every phone's writes go through, port 4337 (leave it running)
 make mappack                  #    the pilot city's map pack (Cascavel, Paraná), built with Docker; once
 make publish-pack             #    activate it on the chain: validators attest it, governance votes
-make serve-packs              # 3. serve the pack to the phones on port 4002 (leave it running)
-make android-two-phones       # 4. gossip node, two emulators, app installed, rider on one and driver on the other
+make serve-packs              # 4. serve the pack to the phones on port 4002 (leave it running)
+make android-two-phones       # 5. gossip node, two emulators, app installed, rider on one and driver on the other
 ```
 
-For two riders and two drivers at once, run `make android-four-phones` instead of step 4. It adds the
-emulators `KlippelGo_Rider2` and `KlippelGo_Driver2`, which use a second seeded rider and driver (accounts #8
-and #9), and puts each driver's emulator at a spot in the centre of Cascavel. Four emulators take about 16 GB of
+For two riders and two drivers at once, run `make android-four-phones` instead of step 5. It adds the
+emulators `KlippelGo_Rider2` and `KlippelGo_Driver2`, which use a second seeded rider and driver
+(`DevAccount.RIDER_2` and `DRIVER_2`), and puts each driver's emulator at a spot in the centre of Cascavel. Four emulators take about 16 GB of
 RAM between them.
+
+To see how every phone reacts when two drivers answer the same request, run `make android-three-phones`: one
+rider and both drivers (`KlippelGo_Driver2` is emulator-5560, as with four). Three emulators take about 12 GB.
 
 `make publish-pack` is needed again after every `make testnet-reset`. It moves the chain's clock three minutes
 ahead to get through the vote and the timelock.
@@ -156,15 +160,15 @@ pack.
 
 ### What the gossip layer does and does not do yet
 
-Every request, offer and withdrawal is signed by the account it speaks for, and each phone checks the signature,
+Every request, offer and withdrawal is signed for the account it speaks for, by a session key that account
+certified for a day, and each phone checks the signature and the certificate,
 the expiry, the max fare, the rider's registration and that the request's map pack is one governance activated
 before showing anything. A quote names the route's hash, rider, driver, token, fare, chain, escrow and expiry,
 so it cannot be replayed elsewhere or moved to another route. Gossip keeps no history, so a
-rider's app announces its request every few seconds, and a request nobody announces for 10 seconds disappears.
+rider's app announces its request every few seconds, and a request nobody announces for 15 seconds disappears.
 
-Still missing from the architecture plan and its security review: session certificates (the wallet key signs
-every message for now), offers encrypted to the rider (the whole cell sees who quoted what), driver presence,
-real location cells (every phone uses one fixed cell), a cost for posting requests, relays for phones behind
+Still missing from the architecture plan and its security review: offers encrypted to the rider (the whole cell sees who quoted what), driver presence,
+a cost for posting requests, relays for phones behind
 NAT, and the encrypted ride channel.
 
 ### With Android Studio instead of the script
@@ -185,7 +189,7 @@ the driver is on, a tenth of the way each second:
 
 ```sh
 make android-drive                        # the emulator in driver mode: emulator-5556 with two phones
-make android-drive PHONE=emulator-5560    # the second driver of android-four-phones
+make android-drive PHONE=emulator-5560    # the second driver of android-three-phones or -four-phones
 make android-drive LEG=ride STEPS=20 EVERY=0.5
 ```
 
@@ -203,14 +207,20 @@ route with `run-as`, which only a debug build allows.
 
 ## Accounts
 
-Each phone has one account and keeps it in passenger mode and in driver mode. The phones use four seeded
-accounts from anvil's public test mnemonic: #3 and #4 for the phones that start as rider and driver, and #8
-and #9 for the second pair of `make android-four-phones`. `contracts/script/SeedPhones.s.sol` gives each of
-them R$ 1.000 in each coin, both roles, R$ 100 staked and a CNH credential, so any phone can ride or drive.
-`make deploy` runs it, and so do the emulator scripts on a chain deployed before it existed. Which account a
-phone has is decided the first time it is opened and when a script launches it. These keys are public: the app only uses them on the
-local testnet. Real phones will sign with a Secure Enclave or StrongBox key through a smart account, which is
-not built yet.
+Each phone has one account and keeps it in passenger mode and in driver mode. The account is an ERC-4337 smart
+account: the app makes a P-256 key in the phone's chip (Android Keystore, in StrongBox when there is one) the
+first time, the account's address follows from that key, and its first write creates it on chain. Every write
+goes through the bundler, and its gas is paid in reais, so a new account needs reais first: the Carteira tab
+mints test coins.
+
+Phones launched by the emulator scripts use four seeded smart accounts instead, whose device keys are public
+test secrets (`DevAccount`): `RIDER` and `DRIVER` for the phones that start as rider and driver, and `RIDER_2`
+and `DRIVER_2` for the second rider and driver of `make android-four-phones` (`DRIVER_2` also for the second
+driver of `make android-three-phones`). `contracts/script/SeedPhones.s.sol` gives each of them R$ 1.000 in each
+coin, both roles, R$ 100 staked and a CNH credential, so any phone can ride or drive. `make deploy` runs it, and
+so do the emulator scripts on a chain deployed before it existed. Which account a phone has is decided the first
+time it is opened and when a script launches it. Only a debug build uses the seeded accounts, and only on the
+local testnet.
 
 ## Troubleshooting
 

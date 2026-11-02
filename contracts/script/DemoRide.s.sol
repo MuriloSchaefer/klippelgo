@@ -40,11 +40,11 @@ contract DemoRide is Script, LocalAccounts {
 
         vm.startBroadcast(riderKey);
         escrow.complete(rideId, keccak256("trip receipt signed by both phones"));
-        reputation.rate(rideId, 5);
+        reputation.rate(address(escrow), rideId, 5);
         vm.stopBroadcast();
 
         vm.startBroadcast(driverKey);
-        reputation.rate(rideId, 5);
+        reputation.rate(address(escrow), rideId, 5);
         vm.stopBroadcast();
 
         vm.startBroadcast(deployerKey);

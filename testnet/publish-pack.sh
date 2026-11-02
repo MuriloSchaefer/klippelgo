@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Activates a map pack on the local testnet, the way governance does on a real network: the three seeded
-# validators attest the pack's proof root, one of them proposes the activation, all three vote, and the proposal
-# is queued and executed. The voting period and timelock are skipped by moving the chain's clock, which only
-# anvil allows.
+# Activates a map pack on the local testnet, the way it happens on a real network: the three seeded validators
+# attest the pack's proof root, and Operações activates it through the team council, with klippel-gov as
+# Instituto Klippel (account #1, the local council's only member). The contract refuses the activation unless
+# three validators attested that root.
 #
 #   testnet/publish-pack.sh mappack/build/<region>/pack        # or any folder with a manifest.json
 #
@@ -21,7 +21,6 @@ DEPLOYMENT="${DEPLOYMENT:-$(dirname "$0")/../deployments/local.json}"
 CHAIN_ID=$(cast chain-id --rpc-url "$RPC_URL") || { echo "No node at $RPC_URL. Run testnet/anvil.sh first." >&2; exit 1; }
 [ "$CHAIN_ID" = 31337 ] || { echo "Chain $CHAIN_ID is not the local testnet. Refusing to touch it." >&2; exit 1; }
 MAPS=$(jq -er '.MapRegistry' "$DEPLOYMENT") || { echo "$DEPLOYMENT has no MapRegistry. Deploy again: make testnet-reset, make testnet, make deploy" >&2; exit 1; }
-GOVERNOR=$(jq -er '.PBACGovernor' "$DEPLOYMENT")
 
 # The pack id is the keccak-256 of the manifest's bytes.
 PACK_ID=$(cast keccak "0x$(od -An -tx1 -v "$MANIFEST" | tr -d ' \n')")
@@ -31,7 +30,6 @@ VERSION=$(jq -er '.version' "$MANIFEST")
 
 call() { cast call --rpc-url "$RPC_URL" "$@"; }
 send() { cast send --rpc-url "$RPC_URL" "$@" >/dev/null; }
-skip() { cast rpc --rpc-url "$RPC_URL" evm_increaseTime "$1" >/dev/null && cast rpc --rpc-url "$RPC_URL" evm_mine >/dev/null; }
 
 if [ "$(call "$MAPS" 'proofRootOf(bytes32)(bytes32)' "$PACK_ID")" != 0x0000000000000000000000000000000000000000000000000000000000000000 ]; then
   echo "Pack $REGION $VERSION ($PACK_ID) is already active."
@@ -53,16 +51,7 @@ done
 echo "  attested by 3 validators"
 
 PACK_TUPLE="(\"$REGION\",$VERSION,$(jq -er '.osm.sequence' "$MANIFEST"),$(jq -er '.osm.sha256' "$MANIFEST"),$ROOT,\"${CID:-}\",0,0)"
-ACTIVATE=$(cast calldata 'activate(bytes32,(string,uint32,uint64,bytes32,bytes32,string,uint64,uint64))' "$PACK_ID" "$PACK_TUPLE")
-send "$GOVERNOR" 'propose(address[],uint256[],bytes[],string)' "[$MAPS]" "[0]" "[$ACTIVATE]" "Activate map pack $REGION $VERSION" --private-key "${KEYS[0]}"
-PROPOSAL=$(call "$GOVERNOR" 'proposalCount()(uint256)')
-for key in "${KEYS[@]}"; do send "$GOVERNOR" 'vote(uint256,bool)' "$PROPOSAL" true --private-key "$key"; done
-VOTING=$(call "$GOVERNOR" 'params()(uint64,uint64,uint256,uint256,uint256)' | sed -n 1p | cut -d' ' -f1)
-TIMELOCK=$(call "$GOVERNOR" 'params()(uint64,uint64,uint256,uint256,uint256)' | sed -n 2p | cut -d' ' -f1)
-skip $((VOTING + 1))
-send "$GOVERNOR" 'queue(uint256)' "$PROPOSAL" --private-key "${KEYS[0]}"
-skip $((TIMELOCK + 1))
-send "$GOVERNOR" 'execute(uint256,address[],uint256[],bytes[])' "$PROPOSAL" "[$MAPS]" "[0]" "[$ACTIVATE]" --private-key "${KEYS[0]}"
-
+KLIPPEL_GOV_RPC="$RPC_URL" KLIPPEL_GOV_DEPLOYMENT="$DEPLOYMENT" "$(dirname "$0")/../gov/klippel-gov" --yes \
+  request call MapRegistry 'activate(bytes32,(string,uint32,uint64,bytes32,bytes32,string,uint64,uint64))' "$PACK_ID" "$PACK_TUPLE" >/dev/null
 [ "$(call "$MAPS" 'proofRootOf(bytes32)(bytes32)' "$PACK_ID")" = "$ROOT" ] || { echo "Activation did not take effect." >&2; exit 1; }
-echo "  activated by governance proposal $PROPOSAL (the chain's clock moved $((VOTING + TIMELOCK + 2)) s ahead)"
+echo "  activated by Operações, through the team council"

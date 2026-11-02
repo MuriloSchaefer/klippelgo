@@ -1,6 +1,6 @@
 ---
 name: security-check
-description: Use after implementing any change to code under apps/, contracts/, core/, mappack/ or testnet/, and whenever the user asks whether something is safe. Maps the change to the documented invariants and known limits, then hands it to the security-reviewer agent.
+description: Use after implementing any change to code under apps/, contracts/, core/, gov/, mappack/ or testnet/, and whenever the user asks whether something is safe. Maps the change to the documented invariants and known limits, then hands it to the security-reviewer agent.
 ---
 
 # Security check
@@ -10,9 +10,9 @@ to the reviewer. It adds no rule of its own.
 
 | Area changed | Document | Invariants | Known limits |
 | --- | --- | --- | --- |
-| `contracts/` | `contracts/docs/security.md` | C1 to C14 | L1 to L15 |
-| `core/`, `mappack/` | `core/docs/security.md` | R1 to R12 | K1 to K10 |
-| `apps/` | `apps/docs/security.md` | A1 to A14 | P1 to P17 |
+| `contracts/`, `gov/` | `contracts/docs/security.md` | C1 to C22 | L1 to L32 |
+| `core/`, `mappack/` | `core/docs/security.md` | R1 to R12 | K1 to K12 |
+| `apps/` | `apps/docs/security.md` | A1 to A15 | P2 to P23 |
 
 A change that crosses areas (a new gossip message, a new hash, a new contract call from the app) is checked
 against every area it touches. The flows that cross areas are drawn in `apps/docs/security.md` ("Matching,

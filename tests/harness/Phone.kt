@@ -166,18 +166,27 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
      * (rider or driver) it skips the welcome and starts in that role, as account `pair` (1 or 2) of it. Returns
      * how long Android took to draw the first screen, in milliseconds.
      */
-    fun launch(fresh: Boolean = false, role: String? = null, pair: Int? = null): Long {
+    /**
+     * Starts the app, wiped first when `fresh`. A fresh app is told to use the local testnet's seeded accounts
+     * (`devAccounts`, honoured by debug builds only), so the create-account screen gives the tests the accounts
+     * they know: unless `ownKey`, where it makes its own key in the phone's chip, as on a real phone.
+     */
+    fun launch(fresh: Boolean = false, role: String? = null, pair: Int? = null, ownKey: Boolean = false): Long {
         requireTestDevice()
         stop()
         if (fresh) shell("pm clear $APP")
         // The system's own permission dialog is not the app's UI. Answer it ahead of time, as "allow".
         shell("pm grant $APP android.permission.ACCESS_FINE_LOCATION")
         shell("pm grant $APP android.permission.ACCESS_COARSE_LOCATION")
+        shell("pm grant $APP android.permission.POST_NOTIFICATIONS")
         shell("nohup am instrument -w -e class $APP.agent.UiAgent $APP.test/androidx.test.runner.AndroidJUnitRunner >/dev/null 2>&1 &")
         waitUntil("the UI agent to answer", 30_000) { runCatching { ask("op" to "dump") }.getOrNull() }
         // A scripted launch, as scripts/two-phones.sh does it: the role to start in, and which of the two
         // seeded accounts of that role. The create-account screen only ever gives the first.
-        val extras = if (role == null) "" else " --es role $role --es rpc ${stack.rpcFromPhone}" + (pair?.let { " --ei pair $it" } ?: "")
+        val extras = (if (role == null) "" else " --es role $role --es rpc ${stack.rpcFromPhone}" + (pair?.let { " --ei pair $it" } ?: "")) +
+            (if (fresh && !ownKey) " --ez devAccounts true" else "")
+        // What the app traces from here on is this test's: kept next to the screenshot when the test fails.
+        runCatching { adb("logcat", "-c") }
         val started = shell("am start -W -n $APP/.MainActivity$extras")
         return Regex("""TotalTime:\s*(\d+)""").find(started)?.groupValues?.get(1)?.toLong()
             ?: throw PhoneException("the app did not start: ${started.trim()}")
@@ -252,6 +261,9 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
     // ---------------------------------------------------------------- looking
 
     fun screen(): Screen = Screen.parse(ask("op" to "dump").get("xml").asText())
+
+    /** What is on screen as UI Automator says it, for what is not the app's own, like the notification shade. */
+    fun rawDump(): String = ask("op" to "dump").get("xml").asText()
 
     fun find(tag: String): Node? = screen()[tag]
 

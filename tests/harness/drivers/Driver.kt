@@ -32,6 +32,19 @@ class GoOnline(phone: Phone) : Component(phone, Tags.GO_ONLINE) {
     /** Why the policy will not let this driver accept rides, or null when it does. */
     fun blocked(): String? = readOrNull(Tags.BLOCKED)
 
+    /**
+     * The kinds of reason the driver is shown for not being let to accept rides, empty when there is none:
+     * `account` (blocked), `disabled` (nobody may accept), `cnh`, `stake`, `score`, `role`, `age`, `credential`.
+     */
+    fun blockers(): Set<String> =
+        phone.screen().startingWith(Tags.blocker("")).map { it.tag.removePrefix(Tags.blocker("")) }.toSet()
+
+    /** Waits until the driver is shown exactly these reasons: none, when given none. */
+    fun awaitBlockers(vararg kinds: String, timeoutMs: Long = 60_000): Set<String> =
+        waitUntil("the driver to be shown ${kinds.toSet().ifEmpty { "no reason not to accept" }}", timeoutMs) {
+            blockers().takeIf { it == kinds.toSet() }
+        }
+
     fun riderMode() = phone.tap(Tags.GO_ONLINE_RIDER_MODE)
 }
 
@@ -105,6 +118,13 @@ class IncomingRequest(phone: Phone) : Component(phone, Tags.REQUEST) {
         )
     }
 
+    /** Whether a request from this rider, given as the app shortens addresses, is open or in the list now. */
+    fun listedFrom(rider: String): Boolean {
+        val screen = phone.screen()
+        return screen[Tags.REQUEST_RIDER]?.text == rider ||
+            screen.startingWith(entry).any { it.tag.endsWith(".rider") && it.text == rider }
+    }
+
     /**
      * Waits for a request from this rider, given as the app shortens addresses, and picks it in the list as a
      * driver would, by tapping it, so that it is the one open.
@@ -161,18 +181,39 @@ class IncomingRequest(phone: Phone) : Component(phone, Tags.REQUEST) {
 /** One ride in the driver's sheet. `route` is checked, waiting or needs-map. */
 data class RideShown(val rider: String, val ride: String, val fare: BigDecimal, val route: String, val routeText: String)
 
-/** The driver's rides in hand: the one being driven (`current`) and the one a rider just locked (`chosen`). */
+/**
+ * The driver's rides in hand: the one being driven (`current`) and every one a rider locked and the driver has
+ * not answered, each in a slot of its own (`chosen.<ride id>`), oldest first. `chosen` alone means the oldest of
+ * those; the functions that take a `ride` act on that ride, and on the oldest when given none.
+ */
 class DriverRide(phone: Phone) : Component(phone, Tags.DRIVER_RIDE) {
     /** What the banner says the driver is guaranteed for the ride at the front. */
     fun guaranteed(): BigDecimal = reais(read(Tags.DRIVER_RIDE_GUARANTEED))
 
-    /** `slot` is current or chosen. Null when there is no ride in that slot. */
+    /** The ids of the rides waiting for the driver's answer, oldest first. */
+    fun locked(): List<String> = lockedIn(phone.screen())
+
+    private fun lockedIn(screen: org.klippelgo.tests.Screen): List<String> {
+        val number = Regex("""^driver-ride\.${Tags.SLOT_CHOSEN}\.(\d+)\.ride$""")
+        return screen.startingWith("${Tags.DRIVER_RIDE}.${Tags.chosenSlot("")}").mapNotNull { number.find(it.tag)?.groupValues?.get(1) }
+            .distinct().sortedBy { it.toBigInteger() }
+    }
+
+    /** The slot a test means: `chosen` is the oldest ride waiting for an answer, or none when there is none. */
+    private fun slotIn(screen: org.klippelgo.tests.Screen, slot: String): String? =
+        if (slot == Tags.SLOT_CHOSEN) lockedIn(screen).firstOrNull()?.let(Tags::chosenSlot) else slot
+
+    private fun chosen(ride: String?): String =
+        ride?.let(Tags::chosenSlot) ?: slotIn(phone.screen(), Tags.SLOT_CHOSEN) ?: Tags.chosenSlot("none")
+
+    /** `slot` is current, chosen, or chosen.<ride id>. Null when there is no ride in that slot. */
     fun ride(slot: String): RideShown? {
         val screen = phone.screen()
-        val number = screen[Tags.rideNumber(slot)] ?: return null
-        val route = screen.startingWith(Tags.rideRoute(slot, "")).firstOrNull()
+        val at = slotIn(screen, slot) ?: return null
+        val number = screen[Tags.rideNumber(at)] ?: return null
+        val route = screen.startingWith(Tags.rideRoute(at, "")).firstOrNull()
         return RideShown(
-            rider = screen[Tags.rideRider(slot)]?.text ?: "",
+            rider = screen[Tags.rideRider(at)]?.text ?: "",
             ride = Regex("""\d+""").find(number.text)?.value ?: "",
             fare = number.reais(),
             route = route?.tag?.substringAfterLast('.') ?: "",
@@ -184,12 +225,20 @@ class DriverRide(phone: Phone) : Component(phone, Tags.DRIVER_RIDE) {
 
     /** Waits until the app says the rider's route arrived and held on this phone's map. */
     fun awaitRouteChecked(slot: String, timeoutMs: Long = 60_000): String =
-        phone.awaitTag(Tags.rideRoute(slot, Tags.ROUTE_CHECKED), timeoutMs).text
+        phone.await("the $slot ride's route to be checked", timeoutMs) { screen ->
+            slotIn(screen, slot)?.let { screen[Tags.rideRoute(it, Tags.ROUTE_CHECKED)] }
+        }.text
 
-    /** Takes the ride a rider locked. */
-    fun accept() = phone.tap(Tags.DRIVER_RIDE_ACCEPT)
+    /** Takes a ride a rider locked. */
+    fun accept(ride: String? = null) = phone.tap(Tags.rideAccept(chosen(ride)))
 
-    fun decline() = phone.tap(Tags.DRIVER_RIDE_DECLINE)
+    /** Whether a ride a rider locked can be taken now: it is there, and its button can be tapped. */
+    fun canAccept(ride: String? = null): Boolean = phone.find(Tags.rideAccept(chosen(ride)))?.enabled == true
+
+    /** Whether the driver is told the ride can be taken once the current rider is in the car. */
+    fun afterPickup(ride: String? = null): Boolean = phone.find(Tags.rideAfterPickup(chosen(ride))) != null
+
+    fun decline(ride: String? = null) = phone.tap(Tags.rideDecline(chosen(ride)))
 
     /** Starts the ride at the pickup. */
     fun start() = phone.tap(Tags.DRIVER_RIDE_START)

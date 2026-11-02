@@ -1,49 +1,80 @@
 # Contracts: security
 
 What the contracts protect, who may do what, the rules that must always hold, and where the protection ends
-today. The numbered invariants (`C1` to `C14`) are what the
+today. The numbered invariants (`C1` to `C22`) are what the
 [security reviewer](../../.claude/agents/security-reviewer.md) checks a change against.
 
 Related: [overview.md](overview.md), [core security](../../core/docs/security.md),
-[app security](../../apps/docs/security.md).
+[app security](../../apps/docs/security.md), [team governance](../../docs/governance.md).
 
 ## What is at stake
 
-| Asset | Where | Who could want it |
-| --- | --- | --- |
-| Fares and bonds of rides under way | `RideEscrow` | The other party, a third party, a malicious token |
-| Stake | `IdentityRegistry` | Anyone |
-| Collected fees | `FeeVault` | Anyone |
-| The rules (policies, parameters, tariff, map roots) | `PBACGovernor` and every setter | Anyone who gains from changing them |
-| Reputation and voting weight | `Reputation`, `IdentityRegistry` | Sybil accounts |
+| Asset                                                 | Where                                              | Who could want it                                            |
+| ----------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------ |
+| Fares and bonds of rides under way, and payments owed | `RideEscrow`                                     | The other party, a third party, a malicious token            |
+| Stake                                                 | `IdentityRegistry`                               | Anyone                                                       |
+| Collected fees                                        | `FeeVault`                                       | Anyone                                                       |
+| The rules (policies, parameters, tariff, map roots)   | `PBACGovernor` and every setter                  | Anyone who gains from changing them                          |
+| The guardian's seat: who may change the rules         | `PBACGovernor.guardian`, held by `TeamCouncil` | Anyone, above all                                            |
+| The team: members, roles, what each role may do       | `TeamCouncil`                                    | A member acting alone, a thief of members' keys              |
+| Reputation                                            | `Reputation`                                     | Sybil accounts                                               |
+| People's accounts: their coins, stake and identity    | `KlippelGoAccount` clones                        | Anyone who could sign for them                               |
+| The paymaster's deposit and the reais it collected    | `BrlPaymaster`, its EntryPoint deposit           | Anyone who could make it pay for gas it is not paid back for |
 
-The chain itself is trusted to order and execute transactions. BRL tokens on the allow-list are trusted to
-behave as plain ERC-20s. Nothing else is trusted: not the deployer after bootstrap, not attesters beyond the
-credential they sign, not validators individually.
+The chain itself is trusted to order and execute transactions. BRL tokens on the allow-list are trusted not to
+rebase or call back; that they deliver what is sent is checked (C17), and that their issuer may freeze an
+address is allowed for (C16, C18). The guardian is trusted with every setter: it is Instituto Klippel's team
+council, where no member acts alone on what moves money or changes rules (C14, C19). Nothing else is trusted:
+not the deployer after the seat is handed over, not attesters beyond the credential they sign, not validators
+individually.
 
 ## Who may call what
 
-| Function | Caller | Enforced by |
-| --- | --- | --- |
-| `RideEscrow.open` | Rider role | `permitted` |
-| `RideEscrow.accept` | The driver named in the ride, with driver role, stake, score and CNH credential | `permitted` + `NotDriver` |
-| `RideEscrow.start`, `submitReceipt` | The ride's driver | `NotDriver` |
-| `RideEscrow.complete` | The ride's rider | `NotRider` |
-| `RideEscrow.cancel` | Rider or driver of the ride | `NotParty` |
-| `RideEscrow.timeout` | Anyone, after the driver's receipt stood for `completionTimeout` | time check |
-| `RideEscrow.freeze`, `resolve` | `DisputeCourt` only | `NotCourt` |
-| `DisputeCourt.raise` | Rider or driver of the ride, once | `NotParty`, `AlreadyRaised` |
-| `DisputeCourt.commit` | Validator with stake, not a party to the ride | `permitted` + `PartyCannotJudge` |
-| `DisputeCourt.reveal` | A juror who committed, with the matching value and salt | commitment check |
-| `MapRegistry.attest` | Validator with stake, once per pack | `permitted` |
-| `Reputation.recordCompletion` | `RideEscrow` only | `NotEscrow` |
-| `Reputation.rate` | A party of a completed ride, once | `NotParty`, `AlreadyRated` |
-| `IdentityRegistry.attest` | A trusted attester | `UntrustedAttester` |
-| `IdentityRegistry.revoke` | The credential's attester, or the governor | `NotIssuer` |
-| `FeeVault.sweep` | Anyone: the destination is fixed | none needed |
-| Every `set…`, `MapRegistry.activate`/`retire`, `FeeVault.payClaim` | The governor, executing a passed proposal | `onlyGovernor` |
-| `PBACGovernor.setPolicy`, `setParams`, `setModules` | The governor calling itself | `onlySelf` |
-| `PBACGovernor.bootstrapCall` | The deployer, until `finishBootstrap` | `NotBootstrapper` |
+| Function                                                                                                                                           | Caller                                                                                                                              | Enforced by                                                            |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `RideEscrow.open`                                                                                                                                | Rider role                                                                                                                          | `permitted`                                                          |
+| `RideEscrow.accept`                                                                                                                              | The driver named in the ride, with driver role, stake, score and CNH credential, while no other ride of theirs waits for its pickup | `permitted` + `NotDriver` + `DriverBusy`                         |
+| `RideEscrow.start`                                                                                                                               | The ride's driver, while no other ride of theirs is under way                                                                       | `NotDriver` + `DriverBusy`                                         |
+| `RideEscrow.submitReceipt`                                                                                                                       | The ride's driver                                                                                                                   | `NotDriver`                                                          |
+| `RideEscrow.complete`                                                                                                                            | The ride's rider                                                                                                                    | `NotRider`                                                           |
+| `RideEscrow.cancel`                                                                                                                              | Rider or driver of the ride                                                                                                         | `NotParty`                                                           |
+| `RideEscrow.decline`                                                                                                                             | The ride's driver, while it is Open                                                                                                 | `NotDriver` + `WrongStatus`                                        |
+| `RideEscrow.timeout`                                                                                                                             | Anyone, after the driver's receipt stood for the ride's own `completionTimeout`                                                   | time check                                                             |
+| `RideEscrow.freeze`, `resolve`                                                                                                                 | The court the ride opened with                                                                                                      | `NotCourt`                                                           |
+| `RideEscrow.withdraw(token, payee)`                                                                                                              | Anyone, for a payee the escrow owes a payment it could not make. The money goes only to the payee                                   | `NothingOwed`                                                        |
+| `DisputeCourt.raise`                                                                                                                             | Rider or driver of the ride, once                                                                                                   | `NotParty`, `AlreadyRaised`                                        |
+| `DisputeCourt.commit`                                                                                                                            | Validator with stake, not a party to the ride                                                                                       | `permitted` + `PartyCannotJudge`                                   |
+| `DisputeCourt.reveal`                                                                                                                            | A juror who committed, with the matching value and salt                                                                             | commitment check                                                       |
+| `MapRegistry.attest`                                                                                                                             | Validator with stake, once per pack                                                                                                 | `permitted`                                                          |
+| `Reputation.recordCompletion`                                                                                                                    | An escrow the guardian listed (`setEscrow`)                                                                                       | `NotEscrow`                                                          |
+| `Reputation.rate`                                                                                                                                | A party of a recorded ride, once                                                                                                    | `NotParty`, `AlreadyRated`                                         |
+| `IdentityRegistry.attest`                                                                                                                        | A trusted attester, for an account with no valid credential of that kind from another attester                                      | `UntrustedAttester`, `NotIssuer`                                   |
+| `IdentityRegistry.revoke`                                                                                                                        | The credential's attester, or the governor                                                                                          | `NotIssuer`                                                          |
+| `FeeVault.sweep`                                                                                                                                 | Anyone: the destination is fixed                                                                                                    | none needed                                                            |
+| Every `set…` (among them `IdentityRegistry.setBlocked` and `RideEscrow.setCap`), `MapRegistry.activate`/`retire`, `FeeVault.payClaim` | The governor, running the guardian's calls                                                                                          | `onlyGovernor`                                                       |
+| `PBACGovernor.setPolicy`, `setModules`                                                                                                         | The governor calling itself, for the guardian                                                                                       | `onlySelf`                                                           |
+| `PBACGovernor.execute`, `proposeGuardian`                                                                                                      | The guardian                                                                                                                        | `NotGuardian`                                                        |
+| `PBACGovernor.acceptGuardian`                                                                                                                    | The address the guardian named                                                                                                      | `NotPendingGuardian`                                                 |
+| `PBACGovernor.bootstrapCall`, `finishBootstrap`                                                                                                | The deployer, until `finishBootstrap`                                                                                             | `NotBootstrapper`                                                    |
+| `TeamCouncil.request`, `approve`                                                                                                               | A member, not suspended, of the permission's role, for calls that match the permission and are not about the member                 | `NotMember`, `NotInRole`, `CallsDoNotMatch`, `AboutThemselves` |
+| `TeamCouncil.cancel`                                                                                                                             | A member of the action's role, or of a role that cancels any (not for a protected role's action)                                    | `NotInRole`                                                          |
+| `TeamCouncil.execute`                                                                                                                            | Anyone, once enough members approved and the delay is over, within 14 days of that                                                  | `NotEnoughApprovals`, `TooEarly`, `Expired`, `CallsDoNotMatch` |
+| `TeamCouncil.acceptGuardianSeat`                                                                                                                 | Anyone: it only succeeds when the council is the one named                                                                          | the governor's `NotPendingGuardian`                                  |
+| `TeamCouncil.setMemberRole`, `setSuspended`, `createRole`, `grant`, `grantPlaybook`, `revokePermission`, `setApprovalsAndDelay`      | The council itself, executing an action                                                                                             | `NotSelf`, `Protected`, `WouldLockOut`                           |
+| `KlippelGoAccount.validateUserOp`                                                                                                                | The EntryPoint, for an operation one of the account's keys signed                                                                   | `onlyEntryPoint`, the signers' check                                 |
+| `KlippelGoAccount.execute` (ERC-7821 batch)                                                                                                      | The EntryPoint (after `validateUserOp`), or the account itself                                                                    | `AccountUnauthorized`                                                |
+| `KlippelGoAccount.addSigners`, `removeSigners`, `approvePaymaster`                                                                           | The EntryPoint or the account itself: so only an operation the account signed                                                       | `_checkEntryPointOrSelf`                                             |
+| `KlippelGoAccount.initialize`                                                                                                                    | Once per clone, by the factory in the same transaction that makes it; never on the implementation                                   | `initializer`, `_disableInitializers`                              |
+| `KlippelGoAccount.isValidSignature`                                                                                                              | Anyone (a view): whether the account's keys signed a hash                                                                           | none needed                                                            |
+| `AccountFactory.createAccount`                                                                                                                   | Anyone: an account belongs to whoever holds its key, whoever creates it                                                             | none needed                                                            |
+| `BrlPaymaster.validatePaymasterUserOp`, `postOp`                                                                                               | The EntryPoint                                                                                                                      | `onlyEntryPoint`                                                     |
+| `BrlPaymaster.deposit`, `addStake`                                                                                                             | Anyone: they only add                                                                                                               | none needed                                                            |
+| `BrlPaymaster.withdraw`, `unlockStake`, `withdrawStake`, `withdrawTokens`                                                                  | The governor                                                                                                                        | `onlyGovernor`                                                       |
+
+Instituto Klippel acts through the council, which is the guardian and the trusted attester the team issues
+credentials with. Who in the team may ask for what, with how many approvals and what delay, is
+[docs/governance.md](../../docs/governance.md); [`gov/klippel-gov`](../../gov/README.md) is the tool its members
+use, and holds no power the table does not give.
 
 ## A ride, and what protects each step
 
@@ -60,25 +91,29 @@ sequenceDiagram
 
     R->>E: open(driver, token, fare, quoteHash)
     E->>G: hasPermission(rider, open)
-    Note over E: token on allow-list, fare > fee + tax<br/>fee, bonds, tax and its collector copied into the ride
+    Note over E: token on allow-list, fare > fee + tax<br/>fee, bonds, tax, collector, court and timeout copied into the ride
     R-->>E: fare + rider bond
+    Note over E: under the coin's cap, and exactly that much arrived
     D->>E: accept(rideId)
     E->>G: hasPermission(driver, accept)
     Note over G: driver role, stake, score, CNH credential
+    Note over E: no other ride of the driver waits for its pickup
     D-->>E: driver bond
     D->>E: start(rideId, pickupProofHash)
+    Note over E: no other ride of the driver is under way
     R->>E: complete(rideId, receiptHash)
     Note over E: status set to Completed before any transfer
     E-->>V: fee
     E-->>T: tax
     E-->>D: fare - fee - tax + driver bond
     E-->>R: rider bond
+    Note over E: a payment that fails is kept as owed<br/>to its payee, who withdraws it later
     E->>P: recordCompletion(rideId, rider, driver)
 ```
 
 If the rider never confirms, the driver calls `submitReceipt`, which fixes the driver's evidence on chain and
-starts `completionTimeout`. During that time the rider can still `complete` with the same receipt or raise a
-dispute. After it, anyone can call `timeout`.
+starts the ride's `completionTimeout`. During that time the rider can still `complete` with the same receipt or
+raise a dispute. After it, anyone can call `timeout`.
 
 ## A dispute
 
@@ -92,7 +127,7 @@ sequenceDiagram
 
     X->>C: raise(rideId, evidenceHash)
     C->>E: freeze(rideId)
-    Note over E: Accepted or Started becomes Disputed<br/>complete, cancel and timeout now revert
+    Note over E: only the court the ride opened with<br/>Accepted or Started becomes Disputed<br/>complete, cancel and timeout now revert
     X--)J: evidence, off chain
     Note over J: each juror runs klippelgo-juror<br/>on the evidence and the public map pack
     J->>C: commit(keccak(rideId, juror, riderBps, salt))
@@ -106,6 +141,33 @@ sequenceDiagram
 
 The commitment binds the ride id and the juror's address, so a commitment cannot be copied by another juror or
 reused for another ride.
+
+## A change of a rule
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Member of the role
+    participant B as Another member
+    participant K as TeamCouncil
+    participant G as PBACGovernor
+    participant S as A protocol setter
+
+    A->>K: request(permission, calls)
+    Note over K: A not suspended, in the permission's role<br/>calls match its contract, function and argument rule<br/>none is about A. Hash of the calls stored
+    B->>K: approve(id, calls)
+    Note over K: same checks for B. Until executed, a member<br/>of the role or of the board may cancel
+    Note over K: the permission's delay passes
+    A->>K: execute(id, calls)
+    Note over K: same hash, enough approvals by members<br/>still in the role and not suspended
+    K->>G: execute(targets, data)
+    Note over G: only the guardian
+    G->>S: the setter, as the governor
+```
+
+An action needing one approval and no delay runs inside `request`. Calls to the council's own functions and to
+`IdentityRegistry.attest`/`revoke` and `PBACGovernor.proposeGuardian` run as the council, not through the
+governor.
 
 ## Where data lives
 
@@ -124,6 +186,7 @@ flowchart LR
         ch[credential hash + attester]
         addr[addresses, token, fare, timestamps]
         root[map pack proof root]
+        team[team members' addresses and roles]
     end
     subgraph jurors [Revealed to jurors only in a dispute]
         ev[evidence.json]
@@ -137,65 +200,144 @@ flowchart LR
 
 The route hash inside `quoteHash` is salted, so a known pair of addresses cannot be confirmed by hashing
 guesses. Fares and the pair of addresses in a ride are public: that is what an escrow on a public chain costs.
+Team members are addresses; who each belongs to is in Instituto Klippel's own records.
 
 ## Invariants
 
 A change that breaks one of these is a security bug, whatever the tests say.
 
-- **C1. No privileged key.** After `finishBootstrap`, no address can change a parameter, move funds or bypass
-  a policy except the governor executing a passed proposal.
-- **C2. Escrow is solvent per ride.** For every ride not in a final state, the escrow holds
-  `fare + riderBond` (plus `driverBond` from Accepted on) of that ride's token. Every exit pays out exactly
-  what was locked: nothing is left behind and nothing is taken from another ride.
+- **C1. Only the guardian governs.** After `finishBootstrap`, no address can change a parameter, move the
+  protocol's funds or bypass a policy except the governor running the guardian's calls through `execute`.
+  The guardian changes only by two steps: the guardian names a successor, who must accept. The governor
+  cannot be named. In a deployment, the guardian is `TeamCouncil`.
+- **C2. Escrow is solvent.** For every ride not in a final state, the escrow holds `fare + riderBond` (plus
+  `driverBond` from Accepted on) of that ride's token, and it holds every payment it owes. Every exit pays
+  out, or keeps as owed, exactly what was locked: nothing is left behind and nothing is taken from another
+  ride. `held` counts all of it per token.
 - **C3. One exit per ride.** A ride reaches Completed, Cancelled or Resolved once. The status is written
   before any transfer, and every function that transfers is `nonReentrant`.
 - **C4. Only parties move a ride.** Outside the court and `timeout`, only the ride's rider or driver changes
   its state, and each only through their own functions.
-- **C5. A ride keeps the terms it opened with.** Fee, bonds, the tax amount and the tax collector are read
-  from the ride, never from the current `tokenConfig`, `taxBps` or `taxCollector`. Switching the tax off, or
-  naming another collector, cannot lock or redirect a ride already under way.
+- **C5. A ride keeps the terms it opened with.** Fee, bonds, the tax amount, the tax collector, the court and
+  the completion timeout are read from the ride, never from the current `tokenConfig`, `taxBps`,
+  `taxCollector`, `court` or `completionTimeout`. A change of any of them applies to rides opened afterwards.
+  Only where the fee is paid (`feeVault`) is read at settlement.
 - **C6. Only allow-listed tokens.** `open` reverts for a token whose fee is zero, and for a fare not above
   the fee plus the tax, so a settlement never pays out more than the fare. `setTax` refuses a rate of 100% or
   more, and a non-zero rate with no collector.
-- **C7. A dispute freezes the ride.** While Disputed, only `resolve` from the court moves funds.
+- **C7. A dispute freezes the ride.** Only the ride's own court freezes it, and while Disputed only `resolve`
+  from that court moves funds.
 - **C8. A split is bounded.** `riderBps` is at most 10 000 at both the court and the escrow.
 - **C9. A juror is not a party**, votes once per dispute, and cannot change a committed vote.
 - **C10. A receipt cannot be swapped.** Once a receipt hash is on record, `complete` accepts only the same
   hash and `submitReceipt` reverts.
-- **C11. Stake cannot be borrowed for an instant.** Stake counts for policies and votes only while it is in
-  the registry, and leaves only after `unbondingPeriod`.
-- **C12. Reputation comes only from real settlements.** `recordCompletion` is callable only by the escrow, and
-  only parties of a recorded ride can rate, once each.
+- **C11. Stake cannot be borrowed for an instant.** Stake counts for policies only while it is in the
+  registry, and leaves only after `unbondingPeriod`.
+- **C12. Reputation comes only from listed escrows.** `recordCompletion` is callable only by an escrow the
+  guardian listed, and only parties of a recorded ride can rate, once each. Which escrows are listed is the
+  guardian's to decide (L19).
 - **C13. A map root needs a quorum.** `activate` reverts unless `rebuildQuorum` distinct validators attested
   exactly that root, and a pack is activated once.
-- **C14. A proposal executes exactly what was voted.** `execute` checks the calls against the stored hash,
-  after quorum, majority and timelock, once.
+- **C14. An action runs exactly what was requested, with its approvals and its delay.** The council stores the
+  hash of an action's calls; `execute` runs only calls with that hash, after the permission's delay and no later
+  than 14 days after it, when as many approvers as the permission asks are, at that moment, members of its role
+  and not suspended. The approval that makes an action ready runs it in the same transaction, and reverts with
+  it if its calls revert. A permission
+  covers one function on one contract (and, when set, one value of one argument), or one playbook of calls
+  stored by hash. Once executed, cancelled or expired, an action never runs. An approval counts again if its
+  member is lifted from a suspension or put back in the role while the action is still pending.
+- **C15. A block stops what an account starts, never what it is owed.** A blocked account satisfies no
+  policy, so it cannot `open`, `accept`, `commit` or `attest` a map. No function that returns funds or ends a
+  ride is `permitted`: a blocked rider or driver still completes, cancels, files a receipt, raises a dispute,
+  withdraws what it is owed and withdraws stake. Only the governor sets the flag, and it can clear it.
+- **C16. A payee that cannot receive holds up only its own payment.** Every payment the escrow makes on a ride
+  is tried on its own; one that fails (a frozen or blocked address) is kept in `owed` for its payee, and the ride
+  settles for everyone else. Anyone may send what is owed to its payee with `withdraw(token, payee)`, so a
+  payee that cannot call the escrow (the fee vault, a contract collecting the tax) is paid too.
+- **C17. A deposit arrives whole.** `open` and `accept` check that the escrow's balance grew by exactly the
+  amount transferred, so a token that keeps a share of transfers cannot leave the escrow owing more than it
+  holds.
+- **C18. A coin is capped.** When a cap is set, no deposit takes what the escrow holds of that coin above it.
+- **C19. The team cannot lock itself out, nobody goes round the board's delay, and the board cannot touch
+  recovery.** The board (role 0) always keeps active permissions to grant and to set members. Every
+  permission or playbook that changes who decides (the council's members, roles and permissions, or the
+  guardian's seat) waits at least `minBoardDelay`, whatever role holds it, also when its delay is changed
+  later, and no permission waits more than 30 days. No member leaves a role with fewer members than any of its
+  permissions needs approvals; nobody requests or approves their own entry into a role or their own
+  suspension; and the members and permissions of a protected role change only by that role's own actions,
+  whose actions only its members cancel.
+- **C20. Only an account's own keys act for it.** An account runs calls only for the EntryPoint, after its
+  `validateUserOp` found the operation signed by one of its signers over the EntryPoint's hash of that operation
+  (or for itself, inside such an operation); keys are added and removed only that way. A phone's key signs
+  P-256 over SHA-256 of the hash, checked by `DeviceKeyVerifier` with `s` in the lower half. An account's address
+  is fixed by its first signer alone (a clone at `CREATE2` from the factory), so it can receive money before it
+  exists, and the factory cannot put another first signer at that address. The implementation has a signer no
+  key matches and cannot be initialized.
+- **C21. The paymaster is paid back for the gas it pays.** It charges an operation in a coin on the escrow's
+  allow-list only, at the price `FareGuide` holds for the native coin, never at a price of zero: it takes the
+  most the operation could cost before it runs and returns the rest after. Anything else fails validation and
+  costs it nothing.
+- **C22. A driver has at most two rides in hand.** At most one ride of a driver is Accepted and at most one is
+  Started: `accept` reverts while one waits for its pickup (`pickupOf`), `start` while one is under way
+  (`onTripOf`). Each place is freed by every way a ride leaves that state: `start`, `cancel`, `freeze` and
+  settling. It limits only what the driver does; `open`, by anyone, is never refused for it, so nobody can
+  fill a driver's places but the driver. A Disputed ride holds no place: a driver who raises a dispute on their
+  own ride frees it, at the price of that ride's fare frozen until the court rules. The places are per escrow,
+  so while an old and a new escrow both take rides, a driver can hold two on each.
 
 ## Known limits
 
 These are real today. A change that touches one should either close it or leave it no worse, and say which.
 
-| # | Limit | Why it stands | What closes it |
-| --- | --- | --- | --- |
-| L1 | `pickupProofHash` and `receiptHash` are recorded, not verified | Checking needs both phones' signatures and the proof data | Smart accounts with P-256 keys; later a validity proof from `core/verify` |
-| L2 | `open` does not check the fare against `FareGuide` | The escrow never learns the trip's length | By design: the phones keep the band ([app security](../../apps/docs/security.md)) |
-| L3 | A Started ride with no receipt and no dispute stays locked until a party acts | Nobody else knows what happened | Either party can always act: `complete`, `submitReceipt` then `timeout`, or `raise` |
-| L4 | Jurors are not paid and not slashed; one juror alone decides if only one reveals; no reveal means 50/50 | First version of the court | Juror selection, rewards, slashing, a minimum number of reveals |
-| L5 | Stake is a gate, never seized: there is no slashing anywhere | Not built | Slashing by court or governance decision |
-| L6 | Voting weight is read when the vote is cast, with no snapshot | Simplicity | Safe only while `unbondingPeriod` is longer than `votingPeriod`. Neither setter enforces that: a proposal changing either must keep it |
-| L7 | Completed rides give voting weight and cost R$ 1,00 plus the tax each to fake between two own accounts | Sybil cost is the fee, the tax and gas | Credential-gated weight, or weight from rated rides only |
-| L8 | An account with no ratings passes any `minScore` | New drivers must be able to start | Credential and stake gates carry the weight until the first rating |
-| L9 | A dispute can be raised once per ride, by either party, at no cost | First version | A dispute bond |
-| L10 | Fee-on-transfer, rebasing or hook tokens would break C2 | The escrow assumes plain ERC-20s | Governance must only allow-list plain tokens |
-| L11 | The deployer is all-powerful until `finishBootstrap` | Wiring needs it | `ProtocolDeployer` calls it in the same script. Verify `bootstrapper() == 0` on any deployment |
-| L12 | Rider and driver addresses and fares are public and linkable across rides | Public chain | Fresh accounts per ride with smart accounts; not built |
-| L13 | A tax collector that cannot receive the token (a contract that reverts, or an address a real BRL token blocklists) blocks the settlement of the rides that name it | The escrow pays in the same transaction, as it does the fee vault and the parties | Governance must name a plain account. Because the collector is fixed per ride, naming another one later does not free a ride already open: its only exit is a dispute resolved wholly to the rider. A pull payment (the collector withdraws) would remove the dependency |
-| L14 | `FareGuide.nativeCoinCentavos` is a number governance types in, not a price feed | No oracle | It prices nothing on chain: a stale rate only makes the app's infrastructure-cost line wrong. An oracle if it ever gates anything |
-| L15 | `setTax` accepts any rate under 100% | Same kind of power as the fee in `setToken` | Rides under way are unaffected and the rider never pays more than the fare; a high rate makes `open` revert or drivers stop quoting. A cap in the contract, if the community wants one |
+| #   | Limit                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Why it stands                                                                                                 | What closes it                                                                                                                                                                                                                                                                  |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L1  | `pickupProofHash` and `receiptHash` are recorded, not verified                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Checking needs both phones' signatures and the proof data                                                     | Smart accounts with P-256 keys; later a validity proof from `core/verify`                                                                                                                                                                                                     |
+| L2  | `open` does not check the fare against `FareGuide`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | The escrow never learns the trip's length                                                                     | By design: the phones keep the band ([app security](../../apps/docs/security.md))                                                                                                                                                                                                |
+| L3  | A Started ride with no receipt and no dispute stays locked until a party acts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Nobody else knows what happened                                                                               | Either party can always act: `complete`, `submitReceipt` then `timeout`, or `raise`                                                                                                                                                                                     |
+| L4  | Jurors are not paid and not slashed; one juror alone decides if only one reveals; no reveal means 50/50                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | First version of the court                                                                                    | Juror selection, rewards, slashing, a minimum number of reveals                                                                                                                                                                                                                 |
+| L5  | Stake is a gate, never seized: there is no slashing anywhere                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Not built                                                                                                     | Slashing by court or governance decision                                                                                                                                                                                                                                        |
+| L7  | Completed rides and ratings between two of one's own accounts cost only R$ 1,00 plus the tax each, so reputation can be bought                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Sybil cost is the fee, the tax and gas                                                                        | Credential-gated ratings, or weight from rides with distinct, credentialed counterparts                                                                                                                                                                                         |
+| L8  | An account with no ratings passes any `minScore`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | New drivers must be able to start                                                                             | Credential and stake gates carry the weight until the first rating                                                                                                                                                                                                              |
+| L9  | A dispute can be raised once per ride, by either party, at no cost                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | First version                                                                                                 | A dispute bond                                                                                                                                                                                                                                                                  |
+| L10 | Rebasing or hook tokens would break C2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | The escrow assumes the rest of a plain ERC-20; a token that keeps a share of transfers is refused (C17)       | The guardian must only allow-list plain tokens, and a watcher on each coin's proxy alerts Finanças when its code changes ([accounts-and-pix.md](../../docs/accounts-and-pix.md))                                                                                                |
+| L11 | The deployer is all-powerful until `finishBootstrap`, and is the guardian until the council accepts the seat                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Wiring needs it, and the council's permissions name the protocol's addresses                                  | `TeamDeployer` hands the seat over in the same script, which is many transactions and not one. Verify `bootstrapper() == 0`, `guardian() == TeamCouncil` and `pendingGuardian() == 0`, and the rest of [deployment.md](deployment.md), "Verification", on any deployment |
+| L12 | Rider and driver addresses and fares are public and linkable across rides                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Public chain                                                                                                  | Fresh accounts per ride with smart accounts; not built                                                                                                                                                                                                                          |
+| L14 | `FareGuide.nativeCoinCentavos` is a number the guardian types in, not a price feed, and it prices the gas people pay through the paymaster                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | No oracle                                                                                                     | A rate set too high overcharges everyone's gas in reais; too low, and the paymaster's native deposit pays the difference until Finanças corrects it. An oracle, or a band the rate must stay within                                                                            |
+| L15 | `setTax` accepts any rate under 100%                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Same kind of power as the fee in `setToken`                                                                 | Rides under way are unaffected and the rider never pays more than the fare; a high rate makes `open` revert or drivers stop quoting. A cap in the contract, if Instituto Klippel wants one                                                                                    |
+| L16 | A block follows an address, not a person. A rider needs no credential, so a blocked rider can register another address and ride again                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Riders are pseudonymous by design                                                                             | For drivers the CNH credential carries the weight: the attester refuses the same licence on a new address, and revoking it acts at once. For riders, a policy on `open` that asks for a KYC credential                                                                        |
+| L17 | A blocked account can still `reveal` a vote it committed in a dispute                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Blocking a juror mid-dispute would otherwise change the outcome                                               | By design                                                                                                                                                                                                                                                                       |
+| L19 | Nothing in the protocol contracts bounds the guardian. At once, it can: name any court or escrow for new rides; set a tax up to 99,99% to a collector of its choosing for new rides; set huge bonds; set a completion timeout of zero for new rides; set an unbonding period that keeps stake locked (one near 2^64 makes `requestUnstake` revert); drain `FeeVault` with `payClaim` or redirect it; list a contract in `Reputation` that writes completions and ratings; open any policy (unlicensed drivers, its own jurors, anyone attesting maps, then a map quorum of one); point the governor at another registry; revoke any credential, block anyone; hand the seat on | The guardian is the one authority by design                                                                   | The guardian is the team council: these need the board's three approvals and 72 hours, or Finanças' or Operações' two and a day ([docs/governance.md](../../docs/governance.md)), and every request is public and cancellable. C5 keeps rides under way on their own terms    |
+| L20 | Whoever approves with `klippel-gov` believes the chain node: it serves both an action's calls and the hash they are checked against, so a node that lies consistently shows a member other calls than the ones requested                                                                                                                                                                                                                                                                                                                                                                                                                                                             | The tool has no light client                                                                                  | Use a node Instituto Klippel runs or trusts. The council rechecks the calls' hash itself at `execute`                                                                                                                                                                         |
+| L21 | An attester re-issues a credential the guardian revoked, and a block does not stop a trusted attester from attesting                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Attesters are trusted for what they sign                                                                      | The guardian removes the attester (`setAttester`), which voids everything it issued                                                                                                                                                                                           |
+| L22 | A trusted attester other than the council is one key unless whoever holds it makes it more: the contracts cannot tell a multisig from a single account, and removing an attester voids every credential it issued                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | An attester is an address                                                                                     | An operating rule, which no code enforces: any attester the board adds should be a multisig with a threshold of at least 2. The council itself issues with Credenciamento's two approvals. The local testnet also lists a plain key                                             |
+| L23 | A court with a bug strands every ride that opened with it: the court is fixed per ride and nothing reassigns it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | A court named later must not reach rides already under way (C5, C7)                                           | Audit a court like the escrow before wiring it in. A new court only helps rides opened after it                                                                                                                                                                                 |
+| L24 | Anyone with the rider role and enough of a coin can fill its cap with rides left Open, naming a driver that never accepts, and stop new rides in that coin until they cancel                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | The cap counts what is held, whoever holds it                                                                 | Set caps well above normal use; Finanças raises a cap with its two approvals and its day. A cost or time limit on Open rides would close it                                                                                                                                    |
+| L25 | The `resume-rides` playbook puts back the `open` and `accept` policies as they were when it was stored                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | A playbook is exact calls, so whoever runs it chooses nothing                                                 | After Operações changes either policy, the board stores a new `resume-rides` with `grantPlaybook` and revokes the old one                                                                                                                                                 |
+| L26 | Three directors' keys stolen together can, after 72 hours, do anything the guardian can, including replace the other directors and hand the seat on. Two can, at once, suspend the honest directors (two approvals, no delay), so the board cannot reach its three until directors are replaced; and one director can cancel any role's pending action                                                                                                                                                                                                                                                                                                                                 | The board is the top of the team, and suspending must be fast                                                 | Recuperação (protected) cancels any of their actions and suspends them in one transaction, and replaces directors after 7 days; the watcher pages every member on each request. Recuperação's own keys are the last line: a cold multisig                                   |
+| L27 | A permission's argument rule (`argWord`) reads a fixed word of the calldata. On a dynamic argument that word is an offset the caller chooses, so the rule does not hold there                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | The council does not know the function's argument types                                                       | Set an argument rule only on a static argument (an address, a number, a bool), as every launch permission does. `grant` does not check it                                                                                                                                     |
+| L28 | Each account lets the paymaster take any amount of each launch coin (`initialize` approves it), since its first operation must already pay                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | The approval must exist before the first operation runs                                                       | The paymaster takes only what its own code computes for gas (C21); its code never changes. A new paymaster, or a new coin, needs an operation from each account that approves it (`approvePaymaster`), paid in a coin the old one still takes                                 |
+| L29 | `isValidSignature` answers for a bare hash, with no ERC-7739 wrapping, so a signature the account gave for one hash is good for anything that asks about that hash                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | KlippelGo's only use is the session certificate, whose hash carries its own domain, the chain and the account | The account must never be asked to sign another dapp's hash. ERC-7739's nested typed data, if accounts are ever used elsewhere                                                                                                                                                  |
+| L30 | Operations are simulated and bundled by Instituto Klippel's own bundler with the ERC-7562 rules off: the paymaster reads the escrow and `FareGuide`, and an account's first operation reads the factory's storage and calls the coins, all of which a public mempool would refuse. The bundler is also believed for the gas an operation needs and for the receipt the phone reads a ride's id from; the phones cap the first (apps A15)                                                                                                                                                                                                                                             | The paymaster's price lives in other contracts                                                                | Run the bundler (local: `testnet/bundler`); anyone can run another, with the same rules off. The paymaster is staked so that public bundlers could take it once the reads are allowed for staked entities                                                                     |
+| L31 | On the local testnet the EntryPoint at the canonical address is a copy put there with `anvil_setCode` (`testnet/entrypoint.sh`), not the released bytecode                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Bundlers simulate against that address; the released bytes cannot be reproduced here                          | Local only. On Polygon the EntryPoint is the released one. The local copy is built from the same tagged sources (eth-infinitism v0.9.0)                                                                                                                                         |
+| L32 | A rider who does not act holds up the driver's next ride (C22). One who does not show at the pickup keeps the driver's place until the driver cancels, which pays that rider the driver's bond. One who never confirms arrival keeps the driver's next pickup waiting until the driver's receipt has stood for the ride's `completionTimeout`, or a dispute frees it. A completion timeout set near 2^64 (L19) would hold that place for good                                                                                                                                                                                                                                        | One rider in the car at a time, and the escrow cannot tell a no-show from a late rider                        | A pickup timeout after which the driver may cancel an accepted ride and keep the bond; until then, the driver's choice is to cancel or to wait                                                                                                                                  |
+
+L6 (voting weight without a snapshot), L13 (a collector that cannot receive blocks a settlement) and L18 (a
+block took a vote and a timelock) were closed: there is no voting, a failed payment is kept as owed and anyone
+can send it on (C16), and Segurança blocks at once.
 
 ## How it is tested
 
 `test/Protocol.t.sol` deploys through the real `ProtocolDeployer` and covers each exit of the state machine,
-each `Not…` guard, the dispute flow, governance changing a parameter, and map activation with and without
-quorum. `test/ProofEncoding.t.sol` pins the encodings shared with the verifier. A change to a guard or to a
-payout needs a test that fails without it.
+each `Not…` guard, the dispute flow, the guardian changing a parameter, a block and what it leaves alone, map
+activation with and without quorum, a ride keeping its court and timeout across a change, a frozen payee, a
+coin that charges on transfer, fees owed to a frozen vault, and the cap. `test/TeamCouncil.t.sol` deploys the
+council with the launch numbers through `TeamDeployer` and covers approvals, delays, expiry, cancelling,
+suspension, the separation and lockout rules, the floor and ceiling on delays, the playbooks, recovery and
+handing the seat on. `test/Accounts.t.sol` runs accounts through a real EntryPoint v0.9: an account made by its
+first operation and paying in BRZ, a wrong key, a wrong hash and a high-`s` signature refused, a new key added
+and the old one removed, the last key never removed, nobody but the EntryPoint or the account running its calls,
+the same account created twice being the same one, `isValidSignature`, the paymaster refusing an unlisted coin
+and a zero price, only the governor taking what it holds, the implementation unusable. [`gov/test.sh`](../../gov/test.sh) runs the governance
+tool against a local chain: licences issued and revoked by the council, a block, a setting, the playbooks, a
+second member with two approvals, a suspension, and the multisig path. `test/ProofEncoding.t.sol` pins the
+encodings shared with the verifier. A change to a guard or to a payout needs a test that fails without it.

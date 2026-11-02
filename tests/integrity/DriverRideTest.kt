@@ -56,6 +56,8 @@ class DriverRideTest : Scenario() {
         val before = driver.balanceOf(coin)
         val taxBefore = taxCollected(coin)
         val tax = driver.taxOn(fare)
+        // The driver's own operations pay their gas in this coin too, through the paymaster.
+        val from = mark()
         val id = rider.take(request, offer)
 
         // The rider locked it: the driver sees the ride, what is guaranteed, and the route once it checked out.
@@ -68,7 +70,7 @@ class DriverRideTest : Scenario() {
 
         app.driverRide.accept()
         waitUntil("the ride to be accepted on chain", 60_000) { true.takeIf { rider.ride(id).status == RideStatus.Accepted } }
-        assertEquals(before - driverBond, driver.balanceOf(coin))
+        assertEquals(before - driverBond - gasPaid(appDriver, coin, from), driver.balanceOf(coin))
         app.driverRide.awaitRouteChecked("current")
 
         // On this rider's ride now, the phone tells them where it is. It was placed in the centre of Cascavel.
@@ -87,7 +89,7 @@ class DriverRideTest : Scenario() {
         assertTrue(end.paid)
         assertEquals(coin.shown(tax), end.tax)
         assertTrue(end.infrastructure != null && !end.infrastructure.startsWith("≈"), "infrastructure cost at the end: ${end.infrastructure}")
-        assertEquals(before + fare - fee - tax, driver.balanceOf(coin))
+        assertEquals(before + fare - fee - tax - gasPaid(appDriver, coin, from), driver.balanceOf(coin))
         assertEquals(taxBefore + tax, taxCollected(coin))
         app.rideEnd.stars(5)
         app.rideEnd.rate()
@@ -193,6 +195,7 @@ class DriverRideTest : Scenario() {
         freshDriver()
         app.goOnline.goOnline()
         val before = rider.balance()
+        val from = mark()
 
         val request = rider.ask(rider.route(Places.CATHEDRAL, Places.NORTH))
         app.request.awaitFrom(Peer.short(request.rider))
@@ -202,7 +205,8 @@ class DriverRideTest : Scenario() {
 
         app.driverRide.decline()
         waitUntil("the ride to be cancelled on chain", 60_000) { true.takeIf { rider.ride(id).status == RideStatus.Cancelled } }
-        assertEquals(before, rider.balance())
+        // All of it, but for what the rider's lock cost the network.
+        assertEquals(before - gasPaid(rider.address, rider.coin, from), rider.balance())
         app.driverRide.gone()
     }
 

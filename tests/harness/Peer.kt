@@ -43,10 +43,14 @@ import java.util.concurrent.ConcurrentHashMap
  * It does what the app's view model does for a person, one call per thing a person would do.
  */
 class Peer(private val stack: Stack, val account: DevAccount) : AutoCloseable {
-    val client = KlippelGoClient(stack.rpc, account.privateKey, stack.deployment)
+    val client = KlippelGoClient(stack.rpc, account.key(), stack.deployment)
     val address: String get() = client.address
     private val node = GossipNode.start(GossipConfig(listen = null, bootstrap = listOf(stack.gossip), router = false))
-    val match = Matchmaker(client, node)
+    // As a driver, it hears the whole pilot pack; as a rider, the cells of its own requests whatever this says.
+    val match = Matchmaker(client, node).apply {
+        trace = { println("  ${account.name.lowercase()} peer: $it") }
+        listen(Matchmaker.covering(stack.pack.bounds() ?: error("the pack has no bounds")))
+    }
 
     /** The route and salt behind each request this peer made. Never gossiped, as on a phone. */
     private val routes = ConcurrentHashMap<BigInteger, Pair<MeasuredRoute, ByteArray>>()

@@ -6,7 +6,7 @@ license = "AGPL-3.0-only"
 description = "Shared Rust core for the KlippelGo iOS and Android apps: gossip, map packs, routes and trip proofs, money and chain settings."
 
 [workspace]
-members = ["proofs", "verify"]
+members = ["bench", "proofs", "verify"]
 
 [lib]
 crate-type = ["lib", "cdylib", "staticlib"]

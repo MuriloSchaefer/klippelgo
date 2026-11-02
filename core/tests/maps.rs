@@ -260,6 +260,19 @@ fn a_ride_from_route_to_receipt() {
         (checked.distance_m, checked.line.len()),
         (route.distance_m, 6)
     );
+    // It also says whose ride and at what fare, so a ride that copied the hash can be told from this one.
+    let mut fare = [0u8; 32];
+    fare[29..].copy_from_slice(&234_000u32.to_be_bytes()[1..]);
+    assert_eq!(checked.fare, fare.to_vec());
+    assert_eq!(checked.token, vec![0xb2; 20]);
+    let hex = |b: &[u8]| {
+        format!(
+            "0x{}",
+            b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+        )
+    };
+    assert_eq!(hex(&checked.rider), terms.rider.to_lowercase());
+    assert_eq!(hex(&checked.driver), terms.driver.to_lowercase());
     // The same route, sealed to the key in the driver's offer, is how it reaches the driver.
     let offer_key = klippelgo_core::sealed::new_offer_key().unwrap();
     let sealed =

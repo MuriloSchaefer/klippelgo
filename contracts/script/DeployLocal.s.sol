@@ -3,16 +3,21 @@ pragma solidity ^0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {ProtocolDeployer} from "./ProtocolDeployer.sol";
+import {TeamDeployer} from "./TeamDeployer.sol";
+import {AccountsDeployer} from "./AccountsDeployer.sol";
+import {ERC4337Utils} from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
 import {LocalAccounts} from "./LocalAccounts.sol";
-import {PBACGovernor} from "../src/PBACGovernor.sol";
 import {MockBRL} from "../src/mocks/MockBRL.sol";
+import {TeamCouncil} from "../src/TeamCouncil.sol";
 
-/// @notice Deploys KlippelGo to the local anvil testnet with mock BRLA (18 decimals) and BRZ (4 decimals), seeds
-/// a rider, a driver and three validators, and writes the addresses to deployments/local.json.
+/// @notice Deploys KlippelGo to the local anvil testnet with mock BRLA (18 decimals) and BRZ (4 decimals), seeds a
+/// rider, a driver and three validators, and writes the addresses to deployments/local.json.
+///
+/// The guardian is the team council. Instituto Klippel (account #1) is its only member, in every role, and every
+/// action needs one approval and no delay, so a request runs at once. The real numbers are in TeamDeployer.
 ///
 ///   forge script script/DeployLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
-contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
+contract DeployLocal is Script, TeamDeployer, AccountsDeployer, LocalAccounts {
     function run() external {
         _loadAccounts();
 
@@ -23,6 +28,8 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
         TokenInit[] memory tokens = new TokenInit[](2);
         tokens[0] = TokenInit(IERC20(address(brla)), 18);
         tokens[1] = TokenInit(IERC20(address(brz)), 4);
+        // The council checks driving licences itself (TeamDeployer adds it), next to the mock attester the
+        // seeding uses.
         address[] memory attesters = new address[](1);
         attesters[0] = attester;
 
@@ -31,23 +38,16 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
                 stakeToken: IERC20(address(brla)),
                 stakeDecimals: 18,
                 tokens: tokens,
+                guardian: deployer, // until the council takes the seat, below
                 feeBeneficiary: institutoKlippel,
                 attesters: attesters,
                 unbondingPeriod: 1 days,
                 completionTimeout: 30 minutes,
                 commitPeriod: 10 minutes,
                 revealPeriod: 10 minutes,
-                params: PBACGovernor.Params({
-                    votingPeriod: 2 minutes,
-                    timelockDelay: 1 minutes,
-                    quorum: 3,
-                    rideWeight: 1,
-                    stakeUnit: 100e18
-                }),
                 driverMinStakeBrl: 100,
                 validatorMinStakeBrl: 500,
                 driverMinScore: 450,
-                proposerMinAccountAge: 0,
                 mapRebuildQuorum: 3,
                 mapGracePeriod: 30 days,
                 // 5% of each fare, in the place of a municipal service tax, to a test account.
@@ -55,6 +55,34 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
                 taxCollector: taxCollector,
                 // R$ 2,50 for one native coin. A stand-in: a real network's rate is set by proposal.
                 nativeCoinCentavos: 250
+            })
+        );
+
+        // People's accounts, through the EntryPoint at its canonical address, which testnet/entrypoint.sh puts
+        // there on this chain. After the protocol, so that the protocol's addresses stay what the app was built
+        // with.
+        require(
+            address(ERC4337Utils.ENTRYPOINT_V09).code.length > 0,
+            "No EntryPoint v0.9: run testnet/entrypoint.sh"
+        );
+        IERC20[] memory coins = new IERC20[](2);
+        coins[0] = IERC20(address(brla));
+        coins[1] = IERC20(address(brz));
+        Accounts memory a = _deployAccounts(p, ERC4337Utils.ENTRYPOINT_V09, coins, 100 ether, 1 ether);
+
+        address[] memory instituto = new address[](1);
+        instituto[0] = institutoKlippel;
+        TeamCouncil council = _deployTeam(
+            p,
+            Team({
+                board: instituto,
+                finance: instituto,
+                operations: instituto,
+                credentialing: instituto,
+                security: instituto,
+                recovery: institutoKlippel,
+                local: true,
+                paymaster: address(a.paymaster)
             })
         );
 
@@ -93,9 +121,18 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
 
         string memory k = "deployment";
         vm.serializeUint(k, "chainId", block.chainid);
+        // No earlier block holds any of these contracts' events: phones and klippel-gov start reading events here.
+        vm.serializeUint(k, "deployBlock", block.number);
         vm.serializeAddress(k, "BRLA", address(brla));
         vm.serializeAddress(k, "BRZ", address(brz));
         vm.serializeAddress(k, "PBACGovernor", address(p.governor));
+        vm.serializeAddress(k, "TeamCouncil", address(council));
+        vm.serializeAddress(k, "EntryPoint", address(a.entryPoint));
+        vm.serializeAddress(k, "AccountFactory", address(a.factory));
+        vm.serializeAddress(k, "DeviceKeyVerifier", address(a.verifier));
+        vm.serializeAddress(k, "KlippelGoAccount", address(a.implementation));
+        vm.serializeAddress(k, "WebAuthnVerifier", address(a.webAuthnVerifier));
+        vm.serializeAddress(k, "BrlPaymaster", address(a.paymaster));
         vm.serializeAddress(k, "IdentityRegistry", address(p.registry));
         vm.serializeAddress(k, "Reputation", address(p.reputation));
         vm.serializeAddress(k, "FeeVault", address(p.feeVault));
@@ -111,6 +148,10 @@ contract DeployLocal is Script, ProtocolDeployer, LocalAccounts {
         vm.writeJson(json, "../deployments/local.json");
 
         console2.log("PBACGovernor     ", address(p.governor));
+        console2.log("TeamCouncil      ", address(council));
+        console2.log("EntryPoint       ", address(a.entryPoint));
+        console2.log("AccountFactory   ", address(a.factory));
+        console2.log("BrlPaymaster     ", address(a.paymaster));
         console2.log("IdentityRegistry ", address(p.registry));
         console2.log("Reputation       ", address(p.reputation));
         console2.log("FeeVault         ", address(p.feeVault));

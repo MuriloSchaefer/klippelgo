@@ -36,7 +36,7 @@ class TwoPhonesRideTest {
             println("KLIPPELGO_RPC not set, skipping the two-phone ride test")
             return
         }
-        val riderPhone = KlippelGoClient(rpc, DevAccount.RIDER.privateKey, deployment)
+        val riderPhone = KlippelGoClient(rpc, DevAccount.RIDER.key(), deployment)
         // A map pack governance activated on this chain (`make publish-pack`). The route itself stays on the
         // rider's phone: the request carries its hash, as the phone computes it from the pack, and how long it is.
         val pack = riderPhone.latestPack(TEST_REGION)
@@ -50,7 +50,7 @@ class TwoPhonesRideTest {
             pickupCell = regionCell(PICKUP),
             dropoffCell = regionCell(DROPOFF),
         )
-        val driverPhone = KlippelGoClient(rpc, DevAccount.DRIVER.privateKey, deployment)
+        val driverPhone = KlippelGoClient(rpc, DevAccount.DRIVER.key(), deployment)
         val coin = riderPhone.brz
         val maxFare = coin.toBaseUnits(BigDecimal("25.00"))
         val fare = coin.toBaseUnits(BigDecimal("23.40"))
@@ -66,7 +66,8 @@ class TwoPhonesRideTest {
         val bootstrap = GossipNode.start(GossipConfig(listen = "/ip4/127.0.0.1/tcp/0", bootstrap = emptyList(), router = true))
         fun gossip() = GossipNode.start(GossipConfig(listen = null, bootstrap = bootstrap.listenAddresses(), router = false))
         val riderMatch = Matchmaker(riderPhone, gossip())
-        val driverMatch = Matchmaker(driverPhone, gossip())
+        // The driver hears the cells around them; the request goes to the pickup's.
+        val driverMatch = Matchmaker(driverPhone, gossip()).apply { listen(Matchmaker.around(PICKUP)) }
 
         val pool = Executors.newFixedThreadPool(2)
         val riderSaw = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -159,14 +160,173 @@ class TwoPhonesRideTest {
         // share of the fare read from the escrow (the bond comes back). The tax went to its collector.
         val ride = riderPhone.ride(riderId)
         assertEquals(riderPhone.taxOn(fare), ride.tax)
-        assertEquals(fare - coin.toBaseUnits(BigDecimal("1.00")) - ride.tax, driverPhone.balanceOf(coin) - driverBefore)
-        // Each phone knows what its own transactions cost the network, and what that is in reais.
+        // The driver's own operations (accept, start, the rating) paid the network in the same coin, through the
+        // paymaster: a few centavos at most, and at least what the phone counted its gas at.
+        val driverGas = driverPhone.gasSpent(riderId) ?: error("the driver's phone lost count of its gas")
+        val gasPaid = fare - coin.toBaseUnits(BigDecimal("1.00")) - ride.tax - (driverPhone.balanceOf(coin) - driverBefore)
+        assertTrue(gasPaid.signum() > 0, "the driver paid nothing for the network")
+        assertTrue(gasPaid >= coin.toBaseUnits(driverPhone.infrastructureCost(driverGas)) - BigInteger.ONE, "the driver paid less than the gas: $gasPaid")
+        assertTrue(gasPaid < coin.toBaseUnits(BigDecimal("0.05")), "the driver paid R$ ${coin.toReais(gasPaid)} for the network")
+        // Each phone knows what its own operations cost the network, and what that is in reais.
         val riderGas = riderPhone.gasSpent(riderId) ?: error("the rider's phone lost count of its gas")
-        assertTrue(riderGas.signum() > 0 && (driverPhone.gasSpent(riderId) ?: BigInteger.ZERO).signum() > 0)
+        assertTrue(riderGas.signum() > 0 && driverGas.signum() > 0)
         println(
             "Ride $riderId completed: driver received R$ ${coin.toReais(ride.driverPayout)}, Instituto Klippel R$ 1,00, " +
                 "tax R$ ${coin.toReais(ride.tax)}, network R$ ${riderPhone.infrastructureCost(riderGas)} (rider's side)",
         )
+    }
+
+    /**
+     * What announcing costs, heard by a node that only listens: a phone forgets a closed request and a replay does
+     * not bring it back, the rider answers the replay with the close, and the route stops once the driver's
+     * position shows it arrived.
+     */
+    @Test
+    fun aClosedRequestStaysGoneAndARouteStopsAtTheFirstPosition() {
+        if (rpc.isBlank()) {
+            println("KLIPPELGO_RPC not set, skipping the announcing test")
+            return
+        }
+        val riderPhone = KlippelGoClient(rpc, DevAccount.RIDER_2.key(), deployment)
+        val driverPhone = KlippelGoClient(rpc, DevAccount.DRIVER_2.key(), deployment)
+        val pack = riderPhone.latestPack(TEST_REGION)
+            ?: error("No map pack on this chain. Run: testnet/publish-pack.sh testnet/fixtures/test-pack")
+        val route = RouteSummary(
+            packId = Numeric.toHexString(pack),
+            routeHash = Numeric.toHexString(ByteArray(32).also { SecureRandom().nextBytes(it) }),
+            distanceM = 8_500,
+            durationS = 1_320,
+            pickupCell = regionCell(PICKUP),
+            dropoffCell = regionCell(DROPOFF),
+        )
+        val coin = riderPhone.brz
+        val bootstrap = GossipNode.start(GossipConfig(listen = "/ip4/127.0.0.1/tcp/0", bootstrap = emptyList(), router = true))
+        fun gossip() = GossipNode.start(GossipConfig(listen = null, bootstrap = bootstrap.listenAddresses(), router = false))
+        val rider = Matchmaker(riderPhone, gossip())
+        val driver = Matchmaker(driverPhone, gossip()).apply { listen(Matchmaker.around(PICKUP)) }
+        // A driver who hears it all and quotes nothing, whose list is what forgetting is about.
+        val bystander = Matchmaker(KlippelGoClient(rpc, DevAccount.DRIVER.key(), deployment), gossip()).apply { listen(Matchmaker.around(PICKUP)) }
+        val spy = gossip()
+        val topic = Matchmaker.topicFor(Matchmaker.cellOf(route.pickupCell))
+        spy.subscribe(topic)
+        val json = com.fasterxml.jackson.databind.ObjectMapper()
+        val heard = ArrayList<Pair<String, ByteArray>>()
+        fun tickAll() {
+            rider.tick()
+            driver.tick()
+            bystander.tick()
+            spy.drain().mapTo(heard) { json.readTree(it.data).get("t").asText() to it.data }
+        }
+        fun all(what: String, check: () -> Boolean) = poll(what) { tickAll(); true.takeIf { check() } }
+        fun listed(m: Matchmaker) = m.describe().lines().count { it.startsWith("request ") }
+
+        // Gossip meshes take a moment; a rider announces again anyway.
+        val request = rider.requestRide(coin, coin.toBaseUnits(BigDecimal("25.00")), route)
+        all("both drivers to hear the request") { driver.openRequests().isNotEmpty() && bystander.openRequests().isNotEmpty() }
+        driver.sendOffer(request, coin.toBaseUnits(BigDecimal("23.40")))
+        val offer = poll("the offer") { tickAll(); rider.offers(request).firstOrNull() }
+        val routeJson = "{\"pickup\":[${PICKUP.latE7},${PICKUP.lonE7}],\"dropoff\":[${DROPOFF.latE7},${DROPOFF.lonE7}]}"
+        val id = rider.acceptOffer(request, offer, routeJson)
+
+        // The bystander forgets it at the close. The driver who quoted keeps it, for the route.
+        all("the bystander to forget the closed request") { listed(bystander) == 0 }
+        assertEquals(routeJson, poll("the sealed route") { tickAll(); driver.revealedQuote(offer.quoteHash) })
+        assertTrue(listed(driver) == 1)
+
+        // A stranger replays the request: the bystander does not list it again, and the rider says it is closed.
+        val replay = heard.first { it.first == "request" }.second
+        repeat(36) { tickAll(); Thread.sleep(500) } // past the close's last announcement, at 7.5 s
+        heard.clear()
+        spy.publish(topic, replay)
+        all("the rider to close the replayed request again") { heard.any { it.first == "close" } }
+        assertTrue(bystander.openRequests().isEmpty() && listed(bystander) == 0)
+
+        // A position nobody signed does not say the route arrived: it goes on being announced.
+        val close = json.readTree(heard.first { it.first == "close" }.second)
+        val forged = json.createObjectNode().put("t", "position").put("quote", offer.quoteHash.lowercase())
+            .put("sealed", "AAAA").put("sig", close.get("sig").asText()).set<com.fasterxml.jackson.databind.node.ObjectNode>("cert", close.get("cert"))
+        heard.clear()
+        spy.publish(Matchmaker.rideTopic(offer.quoteHash), json.writeValueAsBytes(forged))
+        all("the route to go out after a forged position") { heard.any { it.first == "route" } }
+
+        // The first position says the route arrived: it is not announced again.
+        val riderKey = driver.riderKey(offer.quoteHash) ?: error("the rider's position key did not arrive")
+        poll("the driver's position") {
+            driver.sharePosition(offer.quoteHash, riderKey, PICKUP.latE7, PICKUP.lonE7)
+            tickAll()
+            rider.driverPosition(offer.quoteHash)
+        }
+
+        // A true position, signed by the ride's driver, counts only on the ride's own topic.
+        val moved = driver.positionMessage(offer.quoteHash, riderKey, PICKUP.latE7 + 9_000, PICKUP.lonE7, System.currentTimeMillis())
+        repeat(4) {
+            spy.publish(Matchmaker.topicFor(Matchmaker.cellOf(regionCell(PICKUP))), moved)
+            Thread.sleep(500)
+            tickAll()
+        }
+        assertEquals(PICKUP.latE7, rider.driverPosition(offer.quoteHash)?.latE7, "a position on the cell's topic was believed")
+        all("the same position on the ride's topic to be believed") {
+            spy.publish(Matchmaker.rideTopic(offer.quoteHash), moved)
+            rider.driverPosition(offer.quoteHash)?.latE7 == PICKUP.latE7 + 9_000
+        }
+
+        heard.clear()
+        repeat(70) { tickAll(); Thread.sleep(1_000) } // past the widest gap a route reaches
+        assertEquals(0, heard.count { it.first == "route" })
+        riderPhone.cancel(id)
+    }
+
+    /** A list of 200 far requests makes room for a near one, however long it has been full, and stays at 200. */
+    @Test
+    fun aFullListKeepsTheNearestRequest() {
+        if (rpc.isBlank()) {
+            println("KLIPPELGO_RPC not set, skipping the full list test")
+            return
+        }
+        val riderPhone = KlippelGoClient(rpc, DevAccount.RIDER_2.key(), deployment)
+        val pack = riderPhone.latestPack(TEST_REGION)
+            ?: error("No map pack on this chain. Run: testnet/publish-pack.sh testnet/fixtures/test-pack")
+        fun route(pickup: Coordinate) = RouteSummary(
+            packId = Numeric.toHexString(pack),
+            routeHash = Numeric.toHexString(ByteArray(32).also { SecureRandom().nextBytes(it) }),
+            distanceM = 8_500,
+            durationS = 1_320,
+            pickupCell = regionCell(pickup),
+            dropoffCell = regionCell(DROPOFF),
+        )
+        val coin = riderPhone.brz
+        val bootstrap = GossipNode.start(GossipConfig(listen = "/ip4/127.0.0.1/tcp/0", bootstrap = emptyList(), router = true))
+        fun gossip() = GossipNode.start(GossipConfig(listen = null, bootstrap = bootstrap.listenAddresses(), router = false))
+        val rider = Matchmaker(riderPhone, gossip())
+        val driver = Matchmaker(KlippelGoClient(rpc, DevAccount.DRIVER_2.key(), deployment), gossip()).apply { listen(Matchmaker.around(PICKUP), PICKUP) }
+        fun listed() = driver.describe().lines().count { it.startsWith("request ") }
+        val fare = coin.toBaseUnits(BigDecimal("25.00"))
+        val far = Coordinate(PICKUP.latE7 + 300_000, PICKUP.lonE7)
+
+        repeat(200) { rider.requestRide(coin, fare, route(far)) }
+        poll("the driver's list to fill", timeoutMs = 120_000) { rider.tick(); driver.tick(); true.takeIf { listed() == 200 } }
+        // A near request nobody signed pushes nothing out: this one's signature is for another request.
+        val listening = gossip()
+        val topic = Matchmaker.topicFor(Matchmaker.cellOf(regionCell(far)))
+        listening.subscribe(topic)
+        val json = com.fasterxml.jackson.databind.ObjectMapper()
+        val sample = poll("a request to copy") { rider.tick(); driver.tick(); listening.drain().firstOrNull()?.data }
+        val before = driver.openRequests().map { it.id }.toSet()
+        val forged = (json.readTree(sample) as com.fasterxml.jackson.databind.node.ObjectNode)
+            .put("nonce", Numeric.toHexString(ByteArray(32).also { SecureRandom().nextBytes(it) }))
+            .put("from", regionCell(PICKUP))
+        listening.publish(Matchmaker.topicFor(Matchmaker.cellOf(regionCell(PICKUP))), json.writeValueAsBytes(forged))
+        repeat(6) { rider.tick(); driver.tick(); Thread.sleep(500) }
+        assertEquals(before, driver.openRequests().map { it.id }.toSet())
+
+        val near = rider.requestRide(coin, fare, route(PICKUP))
+        poll("the near request to get in") { rider.tick(); driver.tick(); true.takeIf { driver.openRequests().any { it.id == near.id } } }
+        assertEquals(200, listed())
+        // A newcomer from far away pushes out another far one, never the near one.
+        rider.requestRide(coin, fare, route(far))
+        repeat(16) { rider.tick(); driver.tick(); Thread.sleep(500) }
+        assertTrue(driver.openRequests().any { it.id == near.id })
+        assertEquals(200, listed())
     }
 
     private companion object {

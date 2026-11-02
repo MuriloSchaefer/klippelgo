@@ -1,7 +1,9 @@
 package org.klippelgo.tests.security
 
 import org.klippelgo.chain.DevAccount
+import org.klippelgo.chain.Matchmaker
 import org.klippelgo.chain.RouteSummary
+import org.klippelgo.core.Coordinate
 import org.klippelgo.tests.Peer
 import org.klippelgo.tests.Places
 import org.klippelgo.tests.Scenario
@@ -48,11 +50,27 @@ class ForgedRequestsTest : Scenario() {
             "for a trip of no length" to stranger.request(victim, coin, fair, route.copy(distanceM = 0)).second,
             "in a coin the escrow does not take" to
                 stranger.request(victim, coin.copy(address = "0x000000000000000000000000000000000000dEaD"), fair, route).second,
+            // The rider's own account must vouch for the key that signed: each of these breaks that one way.
+            "under a certificate another account signed in the rider's name" to
+                stranger.request(victim, coin, fair, route, session = stranger.session(victim.address, signedBy = stranger.newKey())).second,
+            "under a certificate that expired" to
+                stranger.request(victim, coin, fair, route, session = stranger.session(victim.address, signedBy = victim, expiresAt = now - 60)).second,
+            "under a certificate claiming to last a week" to
+                stranger.request(victim, coin, fair, route, session = stranger.session(victim.address, signedBy = victim, expiresAt = now + 7 * 86_400)).second,
+            "signed by another key under the rider's real certificate" to
+                stranger.request(victim, coin, fair, route, session = stranger.underCertificateOf(victim)).second,
         )
         for ((what, message) in forgeries) {
             stranger.say(message, seconds = 4)
             assertTrue(app.goOnline.visible() && !app.request.visible(), "the driver was shown a request $what")
         }
+        // Right in every way but where it is said: in the cell north of the pickup's, which a driver near the
+        // pickup or anywhere without a position hears, and never in the pickup's own cell.
+        val north = Matchmaker.cellAt(Coordinate(Places.CENTRE.latE7 + 440_000, Places.CENTRE.lonE7))
+        check(north != Matchmaker.cellOf(route.pickupCell))
+        stranger.sayIn(north, stranger.request(victim, coin, fair, route).second, seconds = 6)
+        assertTrue(app.goOnline.visible() && !app.request.visible(), "the driver was shown a request said in a cell its pickup is not in")
+
         // Keep saying all of them a while longer: nothing may show late either.
         repeat(3) {
             forgeries.values.forEach(stranger::sayOnce)
@@ -67,6 +85,49 @@ class ForgedRequestsTest : Scenario() {
         val (wellFormed, message) = stranger.request(victim, coin, fair, route)
         val saying = Thread { stranger.say(message, seconds = 20) }.apply { isDaemon = true; start() }
         app.request.awaitFrom(Peer.short(wellFormed.rider))
+        saying.interrupt()
+    }
+
+    /**
+     * The `request` row again: its signer must pass the policy on `RideEscrow.open`, which an account
+     * Instituto Klippel blocked does not, whatever its role. The escrow would refuse the ride, so the driver is not
+     * asked to quote it.
+     */
+    @Test
+    fun `a rider Instituto Klippel blocked is not shown to a driver`() {
+        val stranger = stranger()
+        val honest = peer(DevAccount.RIDER)
+        val blocked = blockedRider()
+        freshDriver()
+        app.goOnline.goOnline()
+
+        val measured = honest.route(Places.CENTRE, Places.LAKE)
+        val route = honest.summary(measured, ByteArray(32).also { SecureRandom().nextBytes(it) })
+        val fair = honest.recommended(measured)
+        // Signed by the blocked rider's own key, and right in everything else.
+        val refused = stranger.request(blocked, blocked.brz, fair, route).second
+        stranger.say(refused, seconds = 8)
+        // Asked of the blocked rider's own request: another rider's, still going round the network from an
+        // earlier test, may be on the screen and says nothing about this check.
+        assertTrue(!app.request.listedFrom(Peer.short(blocked.address)), "the driver was shown the request of a blocked rider")
+
+        // The same trip from a rider in good standing, said alongside the blocked one. It is shown, so the app
+        // is listening while the blocked rider's request keeps arriving, and the blocked one is still not listed.
+        // (Other riders' requests from earlier tests may be listed too: only the blocked rider's is asked about.)
+        val victim = stack.client(DevAccount.RIDER_2)
+        val (wellFormed, message) = stranger.request(victim, victim.brz, fair, route)
+        val saying = Thread {
+            runCatching {
+                repeat(30) {
+                    stranger.sayOnce(refused)
+                    stranger.sayOnce(message)
+                    Thread.sleep(1_000)
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        app.request.awaitFrom(Peer.short(wellFormed.rider))
+        Thread.sleep(4_000)
+        assertTrue(!app.request.listedFrom(Peer.short(blocked.address)), "the blocked rider's request was listed next to the honest one")
         saying.interrupt()
     }
 

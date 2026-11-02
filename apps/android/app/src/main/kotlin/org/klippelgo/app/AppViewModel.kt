@@ -15,6 +15,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -23,6 +25,9 @@ import org.klippelgo.chain.Blocker
 import org.klippelgo.chain.Coin
 import org.klippelgo.chain.Deployment
 import org.klippelgo.chain.DevAccount
+import org.klippelgo.chain.DeviceKey
+import org.klippelgo.chain.SessionCertificate
+import org.klippelgo.chain.SessionKey
 import org.klippelgo.chain.DriverInfo
 import org.klippelgo.chain.KlippelGoClient
 import org.klippelgo.chain.Matchmaker
@@ -77,6 +82,8 @@ data class UiState(
     val rides: List<Ride> = emptyList(),
     val rated: Set<BigInteger> = emptySet(),
     val canAccept: Boolean = false,
+    /** Driver: online, hearing requests. */
+    val online: Boolean = false,
     /** Driver: what the accept policy still asks of this account. Empty while `canAccept`. */
     val blockers: List<Blocker> = emptyList(),
     val fees: Map<Coin, BigInteger> = emptyMap(),
@@ -143,8 +150,10 @@ data class UiState(
 const val DEFAULT_RPC = "http://10.0.2.2:8545"
 
 /**
- * Holds one account's view of the chain and of the gossip network, and refreshes it every two seconds. Rider and
- * driver run this same code on different emulators. They agree a fare over gossip, and everything after that
+ * Holds one account's view of the chain and of the gossip network. Every two seconds it takes in gossip and asks
+ * the chain whether anything this account's screen shows changed; it reads the chain in full only when something
+ * did, after the person did something, and every half minute in any case. Rider and driver run this same code on
+ * different emulators. They agree a fare over gossip, and everything after that
  * reaches the other only through the contracts.
  */
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -179,31 +188,56 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var poller: Job? = null
 
     init {
+        viewModelScope.launch {
+            _state.map(::onDuty).distinctUntilChanged().collect { OnDutyService.keep(getApplication(), it) }
+        }
         _state.value.role?.let { connect(it, _state.value.rpcUrl) }
+    }
+
+    /**
+     * In a debug build, makes this phone use the local testnet's seeded accounts instead of a key of its own, as
+     * scripted launches and the end-to-end tests ask for. Release builds ignore it.
+     */
+    fun useDevAccounts(on: Boolean) {
+        prefs.edit().putBoolean("devAccounts", on && BuildConfig.DEBUG).apply()
     }
 
     /**
      * Pick the role for this device.
      *
      * A phone is one person with one account, whichever mode it is in: switching between passenger and driver
-     * changes what the phone does, not who it is. The account is one of four seeded test accounts. It is chosen
-     * the first time, from the role the phone starts in and `pair` (1 or 2, so that four phones can play two
-     * riders and two drivers), and kept from then on. A launch that names a `pair` chooses again.
+     * changes what the phone does, not who it is. The account is owned by a key the phone makes in its chip the
+     * first time ([KeystoreDeviceKey]); its address follows from that key.
+     *
+     * In a debug build that was asked to ([useDevAccounts], or a scripted launch naming a `pair`), the account is
+     * instead one of four seeded test accounts, chosen the first time from the role the phone starts in and the
+     * pair (1 or 2, so that four phones can play two riders and two drivers), and kept from then on.
      */
     fun connect(role: Role, rpcUrl: String, pair: Int? = null) {
-        val kept = prefs.getString("account", null)?.let { name -> DevAccount.entries.firstOrNull { it.name == name } }
-        // A phone set up before accounts were tied to phones remembers only its pair.
-        val second = (pair ?: prefs.getInt("pair", 1)) == 2
-        val key = if (pair == null && kept != null) kept else when (role) {
-            Role.RIDER -> if (second) DevAccount.RIDER_2 else DevAccount.RIDER
-            Role.DRIVER -> if (second) DevAccount.DRIVER_2 else DevAccount.DRIVER
+        val dev = BuildConfig.DEBUG && (pair != null || prefs.getBoolean("devAccounts", false))
+        val (key: DeviceKey, name) = if (dev) {
+            val kept = prefs.getString("account", null)?.let { n -> DevAccount.entries.firstOrNull { it.name == n } }
+            // A phone set up before accounts were tied to phones remembers only its pair.
+            val second = (pair ?: prefs.getInt("pair", 1)) == 2
+            val account = if (pair == null && kept != null) kept else when (role) {
+                Role.RIDER -> if (second) DevAccount.RIDER_2 else DevAccount.RIDER
+                Role.DRIVER -> if (second) DevAccount.DRIVER_2 else DevAccount.DRIVER
+            }
+            account.key() to account.name
+        } else {
+            KeystoreDeviceKey.forThisPhone(getApplication()) to DEVICE_ACCOUNT
         }
-        prefs.edit().putString("role", role.name).putString("rpc", rpcUrl).putString("account", key.name).apply()
-        val c = KlippelGoClient(rpcUrl.trim(), key.privateKey, deployment)
+        prefs.edit().putString("role", role.name).putString("rpc", rpcUrl).putString("account", name).apply()
+        val c = KlippelGoClient(rpcUrl.trim(), key, deployment)
+        restoreSession(c)
+        c.restoreScans(prefs.getString(scansKey(c), "") ?: "")
+        savedScans = null
+        seenBlock = null
+        c.onNewSession = ::saveSession
         client = c
         _state.value = _state.value.let {
             // Where the phone is does not change with the role: it is told again only when it moves.
-            UiState(role = role, rpcUrl = rpcUrl, address = c.address, name = it.name, minPerKm = it.minPerKm, maxBelowPercent = it.maxBelowPercent, location = it.location)
+            UiState(role = role, rpcUrl = rpcUrl, address = c.address, name = it.name, minPerKm = it.minPerKm, maxBelowPercent = it.maxBelowPercent, location = it.location, online = it.online && it.role == role)
         }
         pinByHand = false
         leaveGossip()
@@ -211,10 +245,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         prepareMap()
         val mySession = session
         poller = viewModelScope.launch(Dispatchers.IO) {
-            runCatching { c.ensureRegistered(if (role == Role.RIDER) KlippelGoClient.ROLE_RIDER else KlippelGoClient.ROLE_DRIVER) }
+            val roleBits = if (role == Role.RIDER) KlippelGoClient.ROLE_RIDER else KlippelGoClient.ROLE_DRIVER
+            var registered = register(c, roleBits)
             // This loop owns its gossip node and stops it when the role or node address changes.
             val node = joinGossip(rpcUrl)
-            val m = node?.let { Matchmaker(c, it) }
+            val m = node?.let { Matchmaker(c, it) }?.also { it.trace = ::trace.takeIf { BuildConfig.DEBUG } }
             try {
                 // A newer connect may have replaced this loop while its node was starting.
                 synchronized(matchLock) { if (session == mySession) match = m }
@@ -226,7 +261,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 while (isActive) {
-                    refresh(c, m, role)
+                    // A new account registers with its first operation, which it pays for in reais: once money is in.
+                    if (!registered) registered = register(c, roleBits)
+                    if (chainDue(c, m)) refresh(c, m, role) else refreshGossip(c, m, role)
                     delay(2_000)
                 }
             } finally {
@@ -262,6 +299,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun fundingDone() = _state.update { it.copy(showFunding = false) }
+
+    /**
+     * Whether the app is on screen. Off screen it reads nothing from the chain unless a ride is under way, which
+     * still needs its state confirmed for the driver's position to go out (A10), or the driver is online, for a
+     * ride opened naming them; back on screen it reads in full.
+     */
+    fun foreground(on: Boolean) {
+        if (on && !inForeground) seenBlock = null
+        inForeground = on
+        // A service can start only from the foreground: one refused off screen starts here.
+        if (on) OnDutyService.keep(getApplication(), onDuty(_state.value))
+    }
+
+    /** Driver: whether they are online, which only their screen knows. */
+    fun setOnline(on: Boolean) = _state.update { it.copy(online = on) }
+
+    /**
+     * Whether Android must keep this phone working off screen. Anyone can open a ride naming a driver, so for a
+     * driver a ride counts once they accepted it (P12). A dispute waits on jurors, with no position to send.
+     */
+    private fun onDuty(s: UiState) = when (s.role) {
+        null -> false
+        Role.DRIVER -> s.online || s.rides.any { it.status == RideStatus.Accepted || it.status == RideStatus.Started }
+        Role.RIDER -> s.rides.any { it.status.isActive && it.status != RideStatus.Disputed }
+    }
+
+    @Volatile private var inForeground = true
 
     /** Back to the welcome screen. */
     fun signOut() {
@@ -589,7 +653,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         match?.sendOffer(request, it.coinFor(request.token).toBaseUnits(fareReais))
     }
 
-    fun accept(id: BigInteger) = act { it.accept(id) }
+    /**
+     * Takes a ride a rider locked. Every other quote this phone has out was given while the driver had this ride
+     * still to take, so none of them is the next ride: a rider who locks one now is given it back ([declineVoid]).
+     */
+    fun accept(id: BigInteger) = act {
+        it.accept(id)
+        val rides = _state.value.rides
+        val taken = rides.firstOrNull { r -> r.id == id }?.quoteHash?.lowercase()
+        val others = rides.filter { r -> r.status == RideStatus.Open && r.id != id }.associate { r -> r.quoteHash.lowercase() to r.rider.lowercase() }
+        voidQuotes((match?.sentQuotes().orEmpty() + others) - setOfNotNull(taken))
+    }
 
     fun start(id: BigInteger) = act { it.start(id, Hash.sha3("pickup:$id:${System.currentTimeMillis()}".toByteArray())) }
 
@@ -613,11 +687,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (providers.isEmpty()) return
         locating = true
         providers.mapNotNull { runCatching { manager.getLastKnownLocation(it) }.getOrNull() }.maxByOrNull { it.time }?.let(locationListener::onLocationChanged)
-        // A fix a second while the car moves: on a ride the rider watches it, and the route behind it is taken
-        // off the map. None while it stands still.
-        for (provider in providers) manager.requestLocationUpdates(provider, 1_000L, 3f, locationListener, Looper.getMainLooper())
+        locationProviders = providers
+        requestFixes()
     }
 
+    /**
+     * A fix a second while the car moves on a started ride: the rider watches it, and the route behind it is taken
+     * off the map. Otherwise as often as a position goes out to a pickup. None while it stands still.
+     */
+    @SuppressLint("MissingPermission")
+    private fun requestFixes() {
+        val manager = getApplication<Application>().getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val every = if (fastFixes) 1_000L else 4_000L
+        for (provider in locationProviders) runCatching { manager.requestLocationUpdates(provider, every, 3f, locationListener, Looper.getMainLooper()) }
+    }
+
+    private fun fixesFor(started: Boolean) {
+        if (started == fastFixes) return
+        fastFixes = started
+        if (locating) requestFixes()
+    }
+
+    private var locationProviders = emptyList<String>()
+    @Volatile private var fastFixes = false
     private var locating = false
     private val locationListener = LocationListener { fix ->
         _state.update { it.copy(location = Coordinate((fix.latitude * 1e7).toInt(), (fix.longitude * 1e7).toInt())) }
@@ -649,10 +741,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val quote = m?.revealedQuote(ride.quoteHash) ?: file.takeIf { it.exists() }?.readText() ?: return@mapNotNull null
             val checked = runCatching { open.checkQuote(escrow, quote) }.getOrNull() ?: return@mapNotNull null
             if (!checked.quoteHash.contentEquals(Numeric.hexStringToByteArray(ride.quoteHash))) return@mapNotNull null
+            // The hash is public once quoted, and the escrow keeps whatever hash a ride is opened with. The route
+            // is this ride's only if the ride has the quote's own fare, coin, rider and driver; else it copied it.
+            if (!sameTerms(checked, ride)) return@mapNotNull null
             if (!file.exists()) file.writeText(quote)
             ride.id to checked
         }.toMap()
     }
+
+    private fun sameTerms(checked: CheckedQuote, ride: Ride): Boolean =
+        BigInteger(1, checked.fare) == ride.fare &&
+            Numeric.toHexString(checked.token).equals(ride.token, ignoreCase = true) &&
+            Numeric.toHexString(checked.rider).equals(ride.rider, ignoreCase = true) &&
+            Numeric.toHexString(checked.driver).equals(ride.driver, ignoreCase = true)
 
     /**
      * Rider: the route of each ride under way, read back from the quote this phone saved when it locked the fare,
@@ -702,15 +803,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val RIDE_BELIEVED_MS = 6_000L
 
     /**
-     * Once a second, between refreshes, while a ride has started: the driver's phone tells the rider where it
-     * is, and the rider's phone takes in what arrived and moves the car on its map. Nothing here reads the
-     * chain; which ride it is about was settled by the last refresh.
+     * Once a second, between refreshes, while a ride is under way: the driver's phone tells the rider where it
+     * is (the matchmaker sends at most every few seconds before the pickup, every second after), and the rider's
+     * phone takes in what arrived and moves the car on its map. Nothing here reads the chain; which ride it is
+     * about was settled by the last full read, and is believed while the checks of new blocks find nothing new.
      */
     private fun positions(m: Matchmaker?, role: Role) {
         m ?: return
         if (android.os.SystemClock.elapsedRealtime() - rideConfirmedAt > RIDE_BELIEVED_MS) return
         if (role == Role.DRIVER) {
-            sharingFor?.takeIf { it.status == RideStatus.Started }?.let { sharePosition(m, it) }
+            sharingFor?.let { sharePosition(m, it) }
             return
         }
         val quote = watchingQuote ?: return
@@ -751,10 +853,61 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         it.cancel(id)
     }
 
+    /** Driver: turns down a ride a rider locked. Changes nothing if it was accepted meanwhile. */
+    fun decline(id: BigInteger) = act {
+        cancelledHere += id
+        _state.value.rides.firstOrNull { r -> r.id == id }?.let { r -> refused[r.rider] = System.currentTimeMillis() }
+        it.decline(id)
+    }
+
     // ---------------------------------------------------------------- driver's rules
 
     /** Riders whose ride this driver just gave up, and when. Their requests are skipped for a short while. */
     private val refused = HashMap<String, Long>()
+
+    /**
+     * Driver: quotes this phone gave before it took a ride, by hash, with the rider each was for, newest last. A
+     * rider can lock a quote until it expires, after a restart too, so they are kept on the phone; the oldest go
+     * past [MAX_VOID_QUOTES].
+     */
+    private val voided: LinkedHashMap<String, String> = LinkedHashMap<String, String>().apply {
+        prefs.getString("voidQuotes", "")!!.split(',').mapNotNull { e -> e.split(':').takeIf { it.size == 2 } }.forEach { (h, r) -> put(h, r) }
+    }
+
+    private fun keepVoided() = prefs.edit().putString("voidQuotes", voided.entries.joinToString(",") { "${it.key}:${it.value}" }).apply()
+
+    /** Driver: rides this phone is giving back because they were locked on a void quote. */
+    private val declining = HashSet<BigInteger>()
+
+    private fun voidQuotes(quotes: Map<String, String>) = synchronized(voided) {
+        quotes.keys.forEach(voided::remove)
+        voided.putAll(quotes)
+        while (voided.size > MAX_VOID_QUOTES) voided.remove(voided.keys.first())
+        keepVoided()
+    }
+
+    /**
+     * Driver: gives back each ride locked on a void quote by the rider it was for: they locked a driver who was
+     * free when they quoted and has taken another ride since. Quotes go out in the clear, so a ride anyone else
+     * opens with the same hash is left for its rider to withdraw (P12), and so is a second one by the same rider:
+     * each decline costs this driver gas. `decline` reverts once a ride is accepted, so one that lands after the
+     * driver took the ride after all changes nothing. Runs on its own, so a slow decline does not hold up the
+     * refresh and the position it sends.
+     */
+    private fun declineVoid(c: KlippelGoClient, rides: List<Ride>) {
+        val void = synchronized(voided) { HashMap(voided) }
+        val due = rides.filter { r -> r.status == RideStatus.Open && r.driver == c.address && void[r.quoteHash.lowercase()] == r.rider.lowercase() }
+            .distinctBy { it.quoteHash.lowercase() }
+            .filter { synchronized(declining) { declining.add(it.id) } }
+        if (due.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            for (r in due) {
+                runCatching { c.decline(r.id) }
+                    .onSuccess { synchronized(voided) { voided.remove(r.quoteHash.lowercase()); keepVoided() } }
+                synchronized(declining) { declining.remove(r.id) }
+            }
+        }
+    }
 
     /** Skip requests under this many reais per km. Zero switches the rule off. */
     fun setMinPerKm(reais: BigDecimal) {
@@ -822,14 +975,126 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Registers the account in its role if it is not yet. Only once it holds reais: its first operation pays the
+     * network in them, and creates the account on chain. Gives whether it is registered.
+     */
+    private fun register(c: KlippelGoClient, roles: Int): Boolean = runCatching {
+        if (c.rolesOf() and roles == roles) return@runCatching true
+        if (c.coins.all { c.balanceOf(it).signum() == 0 }) return@runCatching false
+        c.ensureRegistered(roles)
+        true
+    }.getOrDefault(false)
+
+    /**
+     * The session key gossip is signed with, kept in app-private storage so that a restart does not ask the
+     * account's key (and so the person) for a new certificate. It moves no money: see [SessionKey].
+     */
+    private fun restoreSession(c: KlippelGoClient) {
+        val key = prefs.getString("session.key", null) ?: return
+        runCatching {
+            val cert = SessionCertificate(
+                account = prefs.getString("session.account", null)!!,
+                session = prefs.getString("session.address", null)!!,
+                expiresAt = prefs.getLong("session.expiresAt", 0),
+                signature = org.web3j.utils.Numeric.hexStringToByteArray(prefs.getString("session.signature", null)!!),
+            )
+            c.resumeSession(SessionKey.restore(key, cert))
+        }
+    }
+
+    private fun saveSession(s: SessionKey) {
+        prefs.edit()
+            .putString("session.key", org.web3j.utils.Numeric.toHexStringWithPrefixZeroPadded(s.keyPair.privateKey, 64))
+            .putString("session.account", s.certificate.account)
+            .putString("session.address", s.certificate.session)
+            .putLong("session.expiresAt", s.certificate.expiresAt)
+            .putString("session.signature", org.web3j.utils.Numeric.toHexString(s.certificate.signature))
+            .apply()
+    }
+
+    /**
+     * The newest block the screen reflects, the rides and accounts whose events would change it, and when the
+     * chain was last read in full. Set by each full read ([refresh]).
+     */
+    @Volatile private var seenBlock: Long? = null
+    @Volatile private var watchRides: Set<BigInteger> = emptySet()
+    @Volatile private var watchAccounts: Set<String> = emptySet()
+    @Volatile private var fullReadAt = 0L
+
+    /**
+     * Whether the chain should be read in full now: never read yet, read half a minute ago, or something about
+     * this account happened in the blocks since ([KlippelGoClient.changedSince]: one query for the newest block,
+     * and one batch of log queries when there is a new one). When nothing did, what the last read said about the
+     * ride under way still holds, and the time it is believed from moves to now (A10).
+     */
+    private fun chainDue(c: KlippelGoClient, m: Matchmaker?): Boolean {
+        if (!inForeground && !onDuty(_state.value)) return false
+        val seen = seenBlock ?: return true
+        val checkedAt = android.os.SystemClock.elapsedRealtime()
+        if (checkedAt - fullReadAt > FULL_READ_EVERY_MS) return true
+        val (head, changed) = runCatching { c.changedSince(seen, watchRides, watchAccounts) }
+            .getOrElse { trace("the change check failed: ${it.message}"); return true }
+        if (changed) {
+            trace("a change in blocks $seen to $head")
+            return true
+        }
+        synchronized(matchLock) {
+            if (client !== c || match !== m) return false
+            seenBlock = head
+            if (m != null) rideConfirmedAt = checkedAt
+        }
+        return false
+    }
+
+    /**
+     * The cells whose requests this phone hears. A driver hears those around them while their position is inside
+     * the map pack, and the whole pack's otherwise, or the pack's middle when the pack is large. A rider hears only
+     * the cells of their own requests, which the matchmaker follows by itself.
+     */
+    private fun area(role: Role): Set<String> {
+        if (role != Role.DRIVER) return emptySet()
+        val b = packBounds ?: return emptySet()
+        val here = _state.value.location
+        if (here != null && here.latE7 in b.southWest.latE7..b.northEast.latE7 && here.lonE7 in b.southWest.lonE7..b.northEast.lonE7) {
+            return Matchmaker.around(here)
+        }
+        val large = b.northEast.latE7 - b.southWest.latE7 > 4 * Matchmaker.AROUND_E7 || b.northEast.lonE7 - b.southWest.lonE7 > 4 * Matchmaker.AROUND_E7
+        if (!large) return Matchmaker.covering(b)
+        return Matchmaker.around(Coordinate((b.southWest.latE7 + b.northEast.latE7) / 2, (b.southWest.lonE7 + b.northEast.lonE7) / 2))
+    }
+
+    /** What the scans last saved to the phone, so they are written again only when they changed. */
+    private var savedScans: String? = null
+
+    private fun scansKey(c: KlippelGoClient) = "scans.${c.address}"
+
+    /** Reads the chain in full, after taking in gossip. */
     private fun refresh(c: KlippelGoClient, m: Matchmaker?, role: Role) {
+        refreshGossip(c, m, role)
+        refreshChain(c, m, role)
+    }
+
+    /** Takes in gossip and shows it. Reads the chain only for the tariff, at most every half minute. */
+    private fun refreshGossip(c: KlippelGoClient, m: Matchmaker?, role: Role) {
         // Gossip first and on its own: matching must keep running while the chain node is unreachable.
-        runCatching { m?.tick() }
+        runCatching {
+            m?.listen(area(role), _state.value.location.takeIf { role == Role.DRIVER })
+            m?.tick()
+        }
         val open = m?.openRequests().orEmpty()
         val request = if (role == Role.RIDER) open.firstOrNull { it.rider == c.address } else null
         val offers = request?.let { m?.offers(it) }.orEmpty()
-        // The tariff comes from the chain once; until it has, only the rules that need no tariff apply.
-        val tariff = _state.value.tariff ?: runCatching { c.tariff }.getOrNull()
+        if (BuildConfig.DEBUG) {
+            // The screen shows an offer only from a driver the last full read said may accept rides.
+            val may = _state.value.drivers.filter { it.canAccept }.mapTo(HashSet()) { it.address }
+            val hidden = offers.map { it.driver }.filterNot { it in may }.toSet()
+            if (hidden != hiddenOffers) trace("offers hidden, their drivers not among the ${may.size} who may accept: $hidden")
+            hiddenOffers = hidden
+        }
+        // The tariff as the client last read it, which is at most half a minute old; until a first read
+        // succeeds, only the rules that need no tariff apply, and a failed read keeps the one already shown.
+        val tariff = runCatching { c.tariff }.getOrNull() ?: _state.value.tariff
         val asked = if (role == Role.DRIVER) open else emptyList()
         val requests = asked.filter { wanted(c, tariff, it) }
         val myOffers = requests.mapNotNull { r -> m?.offers(r, c.address)?.firstOrNull()?.let { r.id to it } }.toMap()
@@ -841,8 +1106,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 gossipConnected = m?.let { g -> g.peers() > 0 },
             )
         }
+    }
+
+    private fun refreshChain(c: KlippelGoClient, m: Matchmaker?, role: Role) {
         val result = runCatching {
-            c.chainId()
+            // The block this read starts at: events after it are looked for by the next check.
+            val head = c.blockNumber().toLong()
+            val startedAt = android.os.SystemClock.elapsedRealtime()
             val balances = c.coins.associateWith { c.balanceOf(it) }
             val configs = c.coins.associateWith { c.tokenConfig(it) }
             val fees = configs.mapValues { it.value.first }
@@ -857,9 +1127,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val underWay = if (role == Role.DRIVER) c.underWay() else emptyList()
             val recent = (if (role == Role.RIDER) c.ridesAsRider() else c.ridesAsDriver()).take(MAX_RIDES)
             val ids = (recent + underWay.map { it.id }).distinct().sortedDescending()
-            val rides = ids.map { c.ride(it) }
-            val rated = rides.filter { it.status == RideStatus.Completed && c.hasRated(it.id) }
-                .map { it.id }.toSet()
+            // One batch of reads; after a reorganisation of the chain an id found earlier can be someone else's.
+            val rides = c.rides(ids).filter { if (role == Role.RIDER) it.rider == c.address else it.driver == c.address }
+            if (role == Role.DRIVER) declineVoid(c, rides)
+            val rated = c.rated(rides.filter { it.status == RideStatus.Completed }.map { it.id })
             val drivers = if (role == Role.RIDER) c.drivers() else emptyList()
             val me = if (role == Role.DRIVER) c.driverInfo() else null
             val canAccept = me?.canAccept == true
@@ -869,26 +1140,51 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val before = _state.value.rides.firstOrNull { it.status.isActive }
                 rides.firstOrNull { it.id == before?.id && it.status == RideStatus.Cancelled }?.let { afterCancelled(m, it) }
             }
+            // Not while a ride on the same quote goes on: nothing stops a rider from opening one twice (P12).
+            if (role == Role.RIDER) {
+                val going = rides.filterNot { it.status.isFinal }.mapTo(HashSet()) { it.quoteHash }
+                rides.filter { it.status.isFinal && it.quoteHash !in going }.forEach { m?.forgetRide(it.quoteHash) }
+            }
             val rideRoutes = if (role == Role.DRIVER) rideRoutes(c, m, rides) else ownRoutes(c, rides)
             // Rider: is the driver still busy with someone else, and if not, where are they.
             val mine = rides.firstOrNull { it.status.isActive }.takeIf { role == Role.RIDER }
             // A read that failed says nothing: keep what was known, never "nobody ahead".
             val ridesAhead = mine?.let { runCatching { c.ridesAhead(it) }.getOrDefault(_state.value.ridesAhead) } ?: 0
             val driverAt = mine?.takeIf { ridesAhead == 0 }?.let { m?.driverPosition(it.quoteHash) }?.let { Coordinate(it.latE7, it.lonE7) }
-            if (role == Role.DRIVER) sharePosition(m, underWay.firstOrNull())
             // Only for the session this refresh belongs to: one left behind by a change of account must not
             // hand its ride to the next.
             synchronized(matchLock) {
                 if (m != null && match === m) {
                     sharingFor = underWay.firstOrNull()
+                    fixesFor(role == Role.DRIVER && underWay.any { it.status == RideStatus.Started })
                     rideConfirmedAt = readAt
-                    // Only once the ride has started is the driver heard every second; before, each refresh is enough.
-                    watchingQuote = mine?.takeIf { ridesAhead == 0 && it.status == RideStatus.Started }?.quoteHash
+                    watchingQuote = mine?.takeIf { ridesAhead == 0 }?.quoteHash
                 }
+            }
+            // What would change this screen: the rides on it that can still change, and for a waiting rider the
+            // other rides of their driver, any of which can come before theirs; and rides opened naming either.
+            val unfinished = rides.filter { !it.status.isFinal }.map { it.id }.toSet() + underWay.map { it.id } +
+                (mine?.let { runCatching { c.unfinished(it.driver) }.getOrNull() }.orEmpty())
+            val accounts = setOfNotNull(c.address, mine?.driver)
+            // Only for the session this read belongs to: a read left running by a change of account must not
+            // tell the next one that it is up to date.
+            synchronized(matchLock) {
+                if (client === c && match === m) {
+                    watchRides = unfinished
+                    watchAccounts = accounts
+                    seenBlock = head
+                    fullReadAt = startedAt
+                }
+            }
+            c.keepScansOf(accounts)
+            c.savedScans().takeIf { it != savedScans }?.let {
+                prefs.edit().putString(scansKey(c), it).apply()
+                savedScans = it
             }
             val links = if (role == Role.DRIVER) links(rides, rideRoutes) else emptyList()
             _state.update {
-                if (it.role != role) it else it.copy(
+                // A read left running by a change of account does not put that account's rides on the new screen.
+                if (it.role != role || client !== c) it else it.copy(
                     connected = true, balances = balances, fees = fees, bonds = bonds, rides = rides, rated = rated,
                     taxBps = taxBps, infrastructure = infrastructure,
                     // Only for rides this phone paid for from their first transaction: a part is not shown as the whole.
@@ -900,9 +1196,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // A ride that just ended leaves the rider where it took them.
             pinWhereThePhoneIs()
         }
+        trace(result.fold({ "full read at block $seenBlock: ${_state.value.rides.size} rides, ${_state.value.drivers.count { it.canAccept }} drivers who may accept" }, { "full read failed: ${it.message}" }))
         if (result.isFailure) {
             sharingFor = null
             watchingQuote = null
+            seenBlock = null
             _state.update { if (it.role != role) it else it.copy(connected = false) }
         }
     }
@@ -928,7 +1226,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun message(t: Throwable): String = t.message ?: t.javaClass.simpleName
 
+    /** Drivers of the offers last hidden from the rider, so each change is traced once. */
+    private var hiddenOffers: Set<String> = emptySet()
+
+    /**
+     * A line for finding out why something did not show, in debug builds only, under the tag the end-to-end
+     * tests collect when one fails. Only what gossip and the chain show anyone goes here (A12).
+     */
+    private fun trace(what: String) {
+        if (BuildConfig.DEBUG) android.util.Log.d(TRACE_TAG, what)
+    }
+
     override fun onCleared() {
+        OnDutyService.keep(getApplication(), false)
         stopLocation()
         leaveGossip()
         pack?.close()
@@ -936,6 +1246,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val MAX_RIDES = 10
+
+        /** The log tag of [trace]. */
+        const val TRACE_TAG = "KlippelGo"
+
+        /** How often the chain is read in full even when no event said anything changed. */
+        private const val FULL_READ_EVERY_MS = 30_000L
+
+        /** Void quotes kept: far more than a driver sends in the life of a quote. */
+        private const val MAX_VOID_QUOTES = 200
+
+        /** What the preferences call the account owned by this phone's own key, as against a seeded test account. */
+        private const val DEVICE_ACCOUNT = "device"
 
         /** How often the network's gas price is asked for again. */
         private const val GAS_PRICE_EVERY_MS = 30_000L

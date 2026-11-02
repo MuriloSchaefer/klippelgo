@@ -12,7 +12,7 @@ import {MapRegistry} from "../src/MapRegistry.sol";
 import {FareGuide} from "../src/FareGuide.sol";
 
 /// @notice Deploys and wires the eight protocol contracts, sets the first policies and the BRL allow-list, then
-/// ends the bootstrap so only governance can change anything. Shared by the deploy script and the tests.
+/// ends the bootstrap so only the guardian can change anything. Shared by the deploy script and the tests.
 abstract contract ProtocolDeployer {
     bytes32 public constant CREDENTIAL_CNH = keccak256("klippelgo.credential.CNH");
     bytes32 public constant CREDENTIAL_KYC = keccak256("klippelgo.credential.KYC");
@@ -26,17 +26,16 @@ abstract contract ProtocolDeployer {
         IERC20 stakeToken; // stake is held in this BRL token
         uint8 stakeDecimals;
         TokenInit[] tokens; // BRL allow-list
+        address guardian; // Instituto Klippel: the one authority once the bootstrap ends
         address feeBeneficiary; // Instituto Klippel
         address[] attesters;
         uint64 unbondingPeriod;
         uint64 completionTimeout;
         uint64 commitPeriod;
         uint64 revealPeriod;
-        PBACGovernor.Params params;
         uint256 driverMinStakeBrl; // whole reais
         uint256 validatorMinStakeBrl;
         uint16 driverMinScore; // x100
-        uint32 proposerMinAccountAge;
         uint32 mapRebuildQuorum; // validators that must rebuild a map pack to the same proof root
         uint64 mapGracePeriod; // how long a pack outlives its replacement
         uint16 taxBps; // the government's share of each fare, in basis points; zero for none
@@ -56,7 +55,7 @@ abstract contract ProtocolDeployer {
     }
 
     function _deployProtocol(Config memory c) internal returns (Protocol memory p) {
-        p.governor = new PBACGovernor(c.params);
+        p.governor = new PBACGovernor(c.guardian);
         p.registry = new IdentityRegistry(p.governor, c.stakeToken, c.unbondingPeriod);
         p.reputation = new Reputation(p.governor);
         p.feeVault = new FeeVault(p.governor, c.feeBeneficiary);
@@ -67,7 +66,9 @@ abstract contract ProtocolDeployer {
 
         PBACGovernor g = p.governor;
         g.bootstrapCall(address(g), abi.encodeCall(g.setModules, (p.registry, p.reputation)));
-        g.bootstrapCall(address(p.reputation), abi.encodeCall(p.reputation.setEscrow, (address(p.escrow))));
+        g.bootstrapCall(
+            address(p.reputation), abi.encodeCall(p.reputation.setEscrow, (address(p.escrow), true))
+        );
         g.bootstrapCall(
             address(p.escrow),
             abi.encodeCall(p.escrow.setModules, (p.reputation, address(p.feeVault), address(p.court)))
@@ -90,7 +91,6 @@ abstract contract ProtocolDeployer {
         }
 
         uint256 stakeOne = 10 ** c.stakeDecimals;
-        uint8 anyRole = p.registry.ROLE_RIDER() | p.registry.ROLE_DRIVER() | p.registry.ROLE_VALIDATOR();
 
         _policy(
             g, address(p.escrow), RideEscrow.open.selector, _p(p.registry.ROLE_RIDER(), 0, 0, 0, bytes32(0))
@@ -113,13 +113,6 @@ abstract contract ProtocolDeployer {
             MapRegistry.attest.selector,
             _p(p.registry.ROLE_VALIDATOR(), 0, 0, c.validatorMinStakeBrl * stakeOne, bytes32(0))
         );
-        _policy(
-            g,
-            address(g),
-            PBACGovernor.propose.selector,
-            _p(anyRole, 0, c.proposerMinAccountAge, 0, bytes32(0))
-        );
-
         g.finishBootstrap();
     }
 

@@ -58,6 +58,47 @@ class OnboardingTest : Scenario() {
         app.welcome.shown()
     }
 
+    /**
+     * A phone as a real person's: no seeded account, so the app makes a key of its own in the phone's chip, and its
+     * account exists on chain only once it does something. Money arrives first (the Pix stand-in), then the
+     * account's first operation creates it and registers it as a rider, paid for in reais, not in the chain's coin.
+     */
+    @Test
+    fun `a new phone makes its own key, and its account pays its own way`() {
+        val from = mark()
+        phone.launch(fresh = true, ownKey = true)
+        app.welcome.start()
+        app.createAccount.fill("Clara", "rider", stack.rpcFromPhone)
+        app.createAccount.submit()
+        app.funding.shown()
+        app.funding.add()
+        app.whereTo.shown()
+
+        app.tabs.open("profile")
+        val shown = app.profile.address().lowercase()
+        assertTrue(org.klippelgo.chain.DevAccount.entries.none { Peer.short(stack.client(it).address) == shown }, "the phone took a seeded account")
+
+        // The account is the one the factory made since this test began, for this phone's key, and it registered.
+        val account = waitUntil("the phone's account to be created and registered as a rider", 120_000) {
+            createdSince(from).firstOrNull { Peer.short(it) == shown }
+                ?.takeIf { chain.rolesOf(it) and org.klippelgo.chain.KlippelGoClient.ROLE_RIDER != 0 }
+        }
+        // R$ 50 came in; the first operation paid the network from it, a few centavos, and nothing else left.
+        val brz = chain.brz
+        val gas = gasPaid(account, brz, from)
+        assertTrue(gas.signum() > 0 && gas < brz.toBaseUnits(BigDecimal("0.10")), "the first operation cost R$ ${brz.toReais(gas)}")
+        assertEquals(brz.toBaseUnits(BigDecimal(50)) - gas, chain.balanceOf(brz, account))
+    }
+
+    /** The accounts the factory created since block `from`. */
+    private fun createdSince(from: java.math.BigInteger): List<String> {
+        val logs = stack.script(
+            "cast", "logs", "--json", "--rpc-url", stack.rpc, "--from-block", from.toString(),
+            "--address", stack.deployment.accountFactory, "AccountCreated(address indexed,bytes)",
+        )
+        return com.fasterxml.jackson.databind.ObjectMapper().readTree(logs).map { "0x" + it.get("topics")[1].asText().takeLast(40) }
+    }
+
     @Test
     fun `the app comes back as it was left, with its map`() {
         freshRider()

@@ -10,6 +10,8 @@ import {DisputeCourt} from "../src/DisputeCourt.sol";
 import {MapRegistry} from "../src/MapRegistry.sol";
 import {FareGuide} from "../src/FareGuide.sol";
 import {Governed} from "../src/Governed.sol";
+import {Reputation} from "../src/Reputation.sol";
+import {IdentityRegistry} from "../src/IdentityRegistry.sol";
 import {MockBRL} from "../src/mocks/MockBRL.sol";
 
 contract ProtocolTest is Test, ProtocolDeployer {
@@ -42,23 +44,16 @@ contract ProtocolTest is Test, ProtocolDeployer {
                 stakeToken: IERC20(address(brla)),
                 stakeDecimals: 18,
                 tokens: tokens,
+                guardian: institute,
                 feeBeneficiary: institute,
                 attesters: attesters,
                 unbondingPeriod: 1 days,
                 completionTimeout: 30 minutes,
                 commitPeriod: 10 minutes,
                 revealPeriod: 10 minutes,
-                params: PBACGovernor.Params({
-                    votingPeriod: 2 minutes,
-                    timelockDelay: 1 minutes,
-                    quorum: 3,
-                    rideWeight: 1,
-                    stakeUnit: 100e18
-                }),
                 driverMinStakeBrl: 100,
                 validatorMinStakeBrl: 500,
                 driverMinScore: 450,
-                proposerMinAccountAge: 0,
                 mapRebuildQuorum: 3,
                 mapGracePeriod: 30 days,
                 // No tax to begin with: the tests that are about it switch it on.
@@ -381,6 +376,138 @@ contract ProtocolTest is Test, ProtocolDeployer {
         assertEq(uint8(p.escrow.ride(id).status), uint8(RideEscrow.Status.Cancelled));
     }
 
+    function _rider(string memory name) internal returns (address who) {
+        who = makeAddr(name);
+        _fund(who);
+        vm.prank(who);
+        p.registry.register(1);
+    }
+
+    function _openFor(address who, bytes32 quote) internal returns (uint256 id) {
+        vm.prank(who);
+        id = p.escrow.open(driver, brz, FARE, quote);
+    }
+
+    function test_ADriverTakesTheNextRideOnlyOnceTheFirstRiderIsIn() public {
+        address bia = _rider("bia");
+        address caio = _rider("caio");
+        uint256 a = _openFor(rider, keccak256("a"));
+        uint256 b = _openFor(bia, keccak256("b"));
+        uint256 c = _openFor(caio, keccak256("c"));
+
+        // Anyone may lock a ride naming the driver; the driver takes one at a time to its pickup.
+        vm.startPrank(driver);
+        p.escrow.accept(a);
+        vm.expectRevert(abi.encodeWithSelector(RideEscrow.DriverBusy.selector, a));
+        p.escrow.accept(b);
+
+        // Ana is in the car: Bia's ride is the next one.
+        p.escrow.start(a, keccak256("pickup a"));
+        p.escrow.accept(b);
+        assertEq(p.escrow.onTripOf(driver), a);
+        assertEq(p.escrow.pickupOf(driver), b);
+
+        // Two in hand: no third, and Bia is picked up only once Ana is out.
+        vm.expectRevert(abi.encodeWithSelector(RideEscrow.DriverBusy.selector, b));
+        p.escrow.accept(c);
+        vm.expectRevert(abi.encodeWithSelector(RideEscrow.DriverBusy.selector, a));
+        p.escrow.start(b, keccak256("pickup b"));
+        vm.stopPrank();
+
+        vm.prank(rider);
+        p.escrow.complete(a, RECEIPT);
+        assertEq(p.escrow.onTripOf(driver), 0);
+        vm.startPrank(driver);
+        p.escrow.start(b, keccak256("pickup b"));
+        p.escrow.accept(c);
+        vm.stopPrank();
+        assertEq(uint8(p.escrow.ride(c).status), uint8(RideEscrow.Status.Accepted));
+    }
+
+    function test_ARideThatLeavesTheDriversHandsFreesItsPlace() public {
+        address bia = _rider("bia");
+
+        // The rider waiting for pickup withdraws.
+        uint256 a = _openFor(rider, keccak256("a"));
+        uint256 b = _openFor(bia, keccak256("b"));
+        vm.prank(driver);
+        p.escrow.accept(a);
+        vm.prank(rider);
+        p.escrow.cancel(a);
+        assertEq(p.escrow.pickupOf(driver), 0);
+
+        // The driver gives up the one they were on the way to.
+        vm.startPrank(driver);
+        p.escrow.accept(b);
+        p.escrow.cancel(b);
+        vm.stopPrank();
+        assertEq(p.escrow.pickupOf(driver), 0);
+
+        // A ride in dispute is frozen, whether waiting for pickup or under way, and takes no place.
+        uint256 c = _openFor(rider, keccak256("c"));
+        vm.prank(driver);
+        p.escrow.accept(c);
+        vm.prank(rider);
+        p.court.raise(c, keccak256("evidence"));
+        assertEq(p.escrow.pickupOf(driver), 0);
+        uint256 d = _openAndStart();
+        vm.prank(rider);
+        p.court.raise(d, keccak256("evidence"));
+        assertEq(p.escrow.onTripOf(driver), 0);
+
+        // A driver's receipt that stood for the timeout ends the ride under way too.
+        uint256 e = _openAndStart();
+        vm.prank(driver);
+        p.escrow.submitReceipt(e, RECEIPT);
+        skip(30 minutes);
+        p.escrow.timeout(e);
+        assertEq(p.escrow.onTripOf(driver), 0);
+        _openAndStart();
+    }
+
+    function test_RidesNamingABusyDriverWaitAndAreGivenBackWhole() public {
+        uint256 a = _openAndStart();
+        uint256 b = _openFor(rider, keccak256("b"));
+        vm.prank(driver);
+        p.escrow.accept(b);
+
+        // More riders lock this driver while both places are taken: nothing stops them, and nothing is lost.
+        uint256 before = brz.balanceOf(rider);
+        uint256 c = _openFor(rider, keccak256("c"));
+        vm.prank(driver);
+        vm.expectRevert(abi.encodeWithSelector(RideEscrow.DriverBusy.selector, b));
+        p.escrow.accept(c);
+        vm.prank(driver);
+        p.escrow.cancel(c);
+        assertEq(brz.balanceOf(rider), before);
+        assertEq(p.escrow.onTripOf(driver), a);
+        assertEq(p.escrow.pickupOf(driver), b);
+    }
+
+    function test_ADeclineThatArrivesAfterTheAcceptChangesNothing() public {
+        uint256 riderBefore = brz.balanceOf(rider);
+        uint256 id = _openFor(rider, keccak256("a"));
+        vm.prank(jurors[0]);
+        vm.expectRevert(RideEscrow.NotDriver.selector);
+        p.escrow.decline(id);
+
+        // The phone's decline was sent, then the driver tapped accept, and the accept landed first.
+        vm.startPrank(driver);
+        p.escrow.accept(id);
+        vm.expectRevert(abi.encodeWithSelector(RideEscrow.WrongStatus.selector, RideEscrow.Status.Accepted));
+        p.escrow.decline(id);
+        vm.stopPrank();
+        assertEq(uint8(p.escrow.ride(id).status), uint8(RideEscrow.Status.Accepted));
+        assertEq(p.escrow.pickupOf(driver), id);
+
+        // Declined in time, the rider has it all back.
+        uint256 other = _openFor(rider, keccak256("b"));
+        vm.prank(driver);
+        p.escrow.decline(other);
+        assertEq(uint8(p.escrow.ride(other).status), uint8(RideEscrow.Status.Cancelled));
+        assertEq(brz.balanceOf(rider), riderBefore - FARE - 2_0000);
+    }
+
     function test_RejectsTokenNotOnAllowList() public {
         MockBRL other = new MockBRL("X", "X", 18);
         vm.prank(rider);
@@ -393,13 +520,13 @@ contract ProtocolTest is Test, ProtocolDeployer {
         vm.prank(rider);
         p.escrow.complete(id, RECEIPT);
         vm.prank(rider);
-        p.reputation.rate(id, 4);
+        p.reputation.rate(address(p.escrow), id, 4);
         vm.prank(rider);
         vm.expectRevert();
-        p.reputation.rate(id, 5);
+        p.reputation.rate(address(p.escrow), id, 5);
         vm.prank(jurors[0]);
         vm.expectRevert();
-        p.reputation.rate(id, 1);
+        p.reputation.rate(address(p.escrow), id, 1);
         assertEq(p.reputation.scoreOf(driver), 400);
     }
 
@@ -417,6 +544,28 @@ contract ProtocolTest is Test, ProtocolDeployer {
         p.escrow.accept(id);
     }
 
+    function test_AnAttesterCannotTakeOverAnothersValidCredential() public {
+        address second = makeAddr("secondAttester");
+        vm.prank(address(p.governor));
+        p.registry.setAttester(second, true);
+
+        vm.prank(second);
+        vm.expectRevert(IdentityRegistry.NotIssuer.selector);
+        p.registry.attest(driver, CREDENTIAL_CNH, keccak256("other"), 0);
+        vm.prank(second);
+        vm.expectRevert(IdentityRegistry.NotIssuer.selector);
+        p.registry.revoke(driver, CREDENTIAL_CNH);
+
+        // The issuer renews its own, and once it is revoked anyone trusted may issue a new one.
+        vm.startPrank(attester);
+        p.registry.attest(driver, CREDENTIAL_CNH, keccak256("renewed"), 0);
+        p.registry.revoke(driver, CREDENTIAL_CNH);
+        vm.stopPrank();
+        vm.prank(second);
+        p.registry.attest(driver, CREDENTIAL_CNH, keccak256("other"), 0);
+        assertTrue(p.registry.hasCredential(driver, CREDENTIAL_CNH));
+    }
+
     function test_DriverNeedsStakeToAccept() public {
         vm.prank(driver);
         p.registry.requestUnstake(1e18);
@@ -428,8 +577,70 @@ contract ProtocolTest is Test, ProtocolDeployer {
         vm.prank(rider);
         p.escrow.complete(id, RECEIPT);
         vm.prank(rider);
-        p.reputation.rate(id, 3);
+        p.reputation.rate(address(p.escrow), id, 3);
         assertFalse(p.governor.hasPermission(driver, address(p.escrow), RideEscrow.accept.selector));
+    }
+
+    function test_ABlockedAccountPassesNoPolicy() public {
+        vm.expectRevert(Governed.NotGovernor.selector);
+        p.registry.setBlocked(rider, true);
+
+        _govern(address(p.registry), abi.encodeCall(p.registry.setBlocked, (rider, true)));
+        assertTrue(p.registry.blocked(rider));
+        vm.prank(rider);
+        vm.expectRevert(
+            abi.encodeWithSelector(Governed.NotPermitted.selector, rider, RideEscrow.open.selector)
+        );
+        p.escrow.open(driver, brz, FARE, keccak256("quote"));
+
+        // A blocked driver with stake, score and CNH in order cannot accept.
+        _govern(address(p.registry), abi.encodeCall(p.registry.setBlocked, (driver, true)));
+        assertFalse(p.governor.hasPermission(driver, address(p.escrow), RideEscrow.accept.selector));
+
+        _govern(address(p.registry), abi.encodeCall(p.registry.setBlocked, (rider, false)));
+        vm.prank(rider);
+        p.escrow.open(driver, brz, FARE, keccak256("quote"));
+    }
+
+    function test_BlockingLeavesRidesUnderWayAndStakeAlone() public {
+        uint256 id = _openAndStart();
+        // The next ride, accepted while the first rider is in the car.
+        uint256 second = _openFor(rider, keccak256("second"));
+        vm.prank(driver);
+        p.escrow.accept(second);
+        vm.prank(rider);
+        uint256 third = p.escrow.open(driver, brz, FARE, keccak256("quote"));
+        _govern(address(p.registry), abi.encodeCall(p.registry.setBlocked, (rider, true)));
+        _govern(address(p.registry), abi.encodeCall(p.registry.setBlocked, (driver, true)));
+
+        // Both blocked, and the ride still settles: the driver is paid the fare less the fee, and the bond.
+        uint256 driverBefore = brz.balanceOf(driver);
+        vm.prank(rider);
+        p.escrow.complete(id, RECEIPT);
+        assertEq(brz.balanceOf(driver), driverBefore + 22_4000 + 5_0000);
+
+        // The chosen driver, who can no longer accept, declines, and the rider is refunded.
+        vm.prank(driver);
+        p.escrow.cancel(third);
+        assertEq(uint8(p.escrow.ride(third).status), uint8(RideEscrow.Status.Cancelled));
+
+        // The next ride is still theirs to drive, and a receipt and a dispute still theirs to file.
+        vm.startPrank(driver);
+        p.escrow.start(second, keccak256("pickup"));
+        p.escrow.submitReceipt(second, RECEIPT);
+        vm.stopPrank();
+        vm.prank(rider);
+        p.court.raise(second, keccak256("evidence"));
+        assertEq(uint8(p.escrow.ride(second).status), uint8(RideEscrow.Status.Disputed));
+
+        // The stake leaves the usual way.
+        uint256 brlaBefore = brla.balanceOf(driver);
+        vm.startPrank(driver);
+        p.registry.requestUnstake(100e18);
+        skip(1 days);
+        p.registry.withdrawStake();
+        vm.stopPrank();
+        assertEq(brla.balanceOf(driver), brlaBefore + 100e18);
     }
 
     function test_NonRiderCannotOpen() public {
@@ -451,45 +662,344 @@ contract ProtocolTest is Test, ProtocolDeployer {
 
     // ---------------------------------------------------------------- governance
 
-    function test_GovernanceChangesFeeBeneficiary() public {
+    function test_OnlyTheGuardianGoverns() public {
         address newBeneficiary = makeAddr("newBeneficiary");
-        address[] memory targets = new address[](1);
-        uint256[] memory values = new uint256[](1);
-        bytes[] memory calls = new bytes[](1);
+        address[] memory targets = new address[](2);
+        bytes[] memory calls = new bytes[](2);
         targets[0] = address(p.feeVault);
         calls[0] = abi.encodeCall(p.feeVault.setBeneficiary, (newBeneficiary));
+        targets[1] = address(p.escrow);
+        calls[1] = abi.encodeCall(p.escrow.setCompletionTimeout, (45 minutes));
 
+        // Not the deployer, not a validator with stake, not a contract of the protocol.
+        vm.expectRevert(PBACGovernor.NotGuardian.selector);
+        p.governor.execute(targets, calls);
         vm.prank(jurors[0]);
-        uint256 id = p.governor.propose(targets, values, calls, "Move fees");
-        for (uint256 i; i < 3; ++i) {
-            vm.prank(jurors[i]);
-            p.governor.vote(id, true); // 5 votes each from R$ 500 stake
-        }
-        vm.expectRevert(PBACGovernor.VotingOpen.selector);
-        p.governor.queue(id);
-        skip(2 minutes);
-        p.governor.queue(id);
-        vm.expectRevert(PBACGovernor.TimelockActive.selector);
-        p.governor.execute(id, targets, values, calls);
-        skip(1 minutes);
-        p.governor.execute(id, targets, values, calls);
+        vm.expectRevert(PBACGovernor.NotGuardian.selector);
+        p.governor.execute(targets, calls);
+
+        // The guardian, at once, and both calls or neither.
+        vm.prank(institute);
+        p.governor.execute(targets, calls);
         assertEq(p.feeVault.beneficiary(), newBeneficiary);
+        assertEq(p.escrow.completionTimeout(), 45 minutes);
+
+        calls[1] = abi.encodeCall(p.escrow.setTax, (10_000, taxman)); // refused by the escrow
+        calls[0] = abi.encodeCall(p.feeVault.setBeneficiary, (institute));
+        vm.prank(institute);
+        vm.expectRevert();
+        p.governor.execute(targets, calls);
+        assertEq(p.feeVault.beneficiary(), newBeneficiary);
+
+        vm.prank(institute);
+        vm.expectRevert(PBACGovernor.InvalidCalls.selector);
+        p.governor.execute(new address[](0), new bytes[](0));
     }
 
-    function test_ProposalWithoutQuorumIsDefeated() public {
-        address[] memory targets = new address[](1);
-        uint256[] memory values = new uint256[](1);
-        bytes[] memory calls = new bytes[](1);
-        targets[0] = address(p.feeVault);
-        calls[0] = abi.encodeCall(p.feeVault.setBeneficiary, (rider));
+    function test_TheGuardianIsHandedOverOnlyByTheGuardianAndOnlyOnceAccepted() public {
+        address next = makeAddr("nextGuardian");
+        vm.prank(jurors[0]);
+        vm.expectRevert(PBACGovernor.NotGuardian.selector);
+        p.governor.proposeGuardian(jurors[0]);
 
+        vm.prank(institute);
+        p.governor.proposeGuardian(next);
+        // Naming a successor changes nothing yet, and nobody else can accept in their place.
+        assertEq(p.governor.guardian(), institute);
+        vm.prank(jurors[0]);
+        vm.expectRevert(PBACGovernor.NotPendingGuardian.selector);
+        p.governor.acceptGuardian();
+
+        vm.prank(next);
+        p.governor.acceptGuardian();
+        assertEq(p.governor.guardian(), next);
+        assertEq(p.governor.pendingGuardian(), address(0));
+
+        // The old guardian governs nothing, and the offer cannot be accepted twice.
+        address[] memory targets = new address[](1);
+        bytes[] memory calls = new bytes[](1);
+        targets[0] = address(p.registry);
+        calls[0] = abi.encodeCall(p.registry.setBlocked, (rider, true));
+        vm.prank(institute);
+        vm.expectRevert(PBACGovernor.NotGuardian.selector);
+        p.governor.execute(targets, calls);
+        vm.prank(next);
+        vm.expectRevert(PBACGovernor.NotPendingGuardian.selector);
+        p.governor.acceptGuardian();
+    }
+
+    function test_AGovernorNeedsAGuardian() public {
+        vm.expectRevert(PBACGovernor.NoGuardian.selector);
+        new PBACGovernor(address(0));
+    }
+
+    function test_TheGovernorCannotBeItsOwnGuardian() public {
+        // It could accept through execute, and then nobody could execute again.
+        vm.prank(institute);
+        vm.expectRevert(PBACGovernor.NoGuardian.selector);
+        p.governor.proposeGuardian(address(p.governor));
+    }
+
+    // ---------------------------------------------------------------- patches
+
+    /// @dev What a hotfix of the escrow is: a new escrow and its court, wired in by the guardian in one go,
+    /// with new rides stopped on the old one.
+    function _patchEscrow() internal returns (RideEscrow next, DisputeCourt nextCourt) {
+        next = new RideEscrow(p.governor, 30 minutes);
+        nextCourt = new DisputeCourt(p.governor, next, 10 minutes, 10 minutes);
+        PBACGovernor g = p.governor;
+        address[] memory t = new address[](9);
+        bytes[] memory c = new bytes[](9);
+        t[0] = address(next);
+        c[0] = abi.encodeCall(next.setModules, (p.reputation, address(p.feeVault), address(nextCourt)));
+        t[1] = address(next);
+        c[1] = abi.encodeCall(next.setToken, (IERC20(address(brz)), 1_0000, 2_0000, 5_0000));
+        t[2] = address(p.reputation);
+        c[2] = abi.encodeCall(p.reputation.setEscrow, (address(next), true));
+        t[3] = address(g);
+        c[3] = abi.encodeCall(
+            g.setPolicy,
+            (address(next), RideEscrow.open.selector, g.policy(address(p.escrow), RideEscrow.open.selector))
+        );
+        t[4] = address(g);
+        c[4] = abi.encodeCall(
+            g.setPolicy,
+            (
+                address(next),
+                RideEscrow.accept.selector,
+                g.policy(address(p.escrow), RideEscrow.accept.selector)
+            )
+        );
+        t[5] = address(g);
+        c[5] = abi.encodeCall(
+            g.setPolicy,
+            (
+                address(nextCourt),
+                DisputeCourt.commit.selector,
+                g.policy(address(p.court), DisputeCourt.commit.selector)
+            )
+        );
+        // The old escrow takes no new ride. What it holds is untouched.
+        PBACGovernor.Policy memory closed;
+        t[6] = address(g);
+        c[6] = abi.encodeCall(g.setPolicy, (address(p.escrow), RideEscrow.open.selector, closed));
+        t[7] = address(p.escrow);
+        c[7] = abi.encodeCall(p.escrow.setToken, (IERC20(address(brz)), 0, 0, 0));
+        t[8] = address(p.escrow);
+        c[8] = abi.encodeCall(p.escrow.setToken, (IERC20(address(brla)), 0, 0, 0));
+        vm.prank(institute);
+        g.execute(t, c);
+    }
+
+    function test_APatchedEscrowKeepsStakeLicencesAndReputationAndTheOldOneSettles() public {
+        // A ride completed and rated before the patch, and one under way across it.
+        uint256 before = _openAndStart();
         vm.prank(rider);
-        uint256 id = p.governor.propose(targets, values, calls, "Pay me");
+        p.escrow.complete(before, RECEIPT);
+        vm.prank(rider);
+        p.reputation.rate(address(p.escrow), before, 5);
+        uint256 across = _openAndStart();
+
+        (RideEscrow next,) = _patchEscrow();
+
+        // Nobody opens on the old escrow any more.
+        vm.prank(rider);
+        vm.expectRevert();
+        p.escrow.open(driver, brz, FARE, keccak256("quote"));
+
+        // The driver's stake, licence and score are where they were, and let them accept on the new one.
+        assertEq(p.registry.stakeOf(driver), 100e18);
+        assertTrue(p.registry.hasCredential(driver, CREDENTIAL_CNH));
+        assertEq(p.reputation.scoreOf(driver), 500);
+        vm.startPrank(rider);
+        brz.approve(address(next), type(uint256).max);
+        uint256 id = next.open(driver, brz, FARE, keccak256("quote"));
+        vm.stopPrank();
+        assertEq(id, 1); // the new escrow counts from one, as the old one did
+        vm.startPrank(driver);
+        brz.approve(address(next), type(uint256).max);
+        next.accept(id);
+        next.start(id, keccak256("pickup"));
+        vm.stopPrank();
+        vm.prank(rider);
+        next.complete(id, RECEIPT);
+
+        // The ride under way on the old escrow settles there, and counts.
+        uint256 driverBefore = brz.balanceOf(driver);
+        vm.prank(rider);
+        p.escrow.complete(across, RECEIPT);
+        assertEq(brz.balanceOf(driver), driverBefore + 22_4000 + 5_0000);
+        assertEq(p.reputation.completedRides(driver), 3);
+
+        // Ride 1 of each escrow is its own ride: rating one leaves the other to be rated.
+        vm.prank(rider);
+        vm.expectRevert(Reputation.AlreadyRated.selector);
+        p.reputation.rate(address(p.escrow), 1, 4);
+        vm.prank(rider);
+        p.reputation.rate(address(next), 1, 4);
+        assertEq(p.reputation.scoreOf(driver), 450);
+    }
+
+    function test_AnEscrowTheLedgerNoLongerListensToStillPaysEveryone() public {
+        uint256 id = _openAndStart();
+        _govern(address(p.reputation), abi.encodeCall(p.reputation.setEscrow, (address(p.escrow), false)));
+        uint256 driverBefore = brz.balanceOf(driver);
+        vm.prank(rider);
+        p.escrow.complete(id, RECEIPT);
+        assertEq(brz.balanceOf(driver), driverBefore + 22_4000 + 5_0000);
+        assertEq(uint8(p.escrow.ride(id).status), uint8(RideEscrow.Status.Completed));
+        // Paid, but it earned no reputation and cannot be rated.
+        assertEq(p.reputation.completedRides(driver), 0);
+        vm.prank(rider);
+        vm.expectRevert(Reputation.NotParty.selector);
+        p.reputation.rate(address(p.escrow), id, 5);
+    }
+
+    function test_OnlyAListedEscrowRecordsRides() public {
+        vm.expectRevert(Reputation.NotEscrow.selector);
+        p.reputation.recordCompletion(1, rider, driver);
+        vm.expectRevert(Governed.NotGovernor.selector);
+        p.reputation.setEscrow(address(this), true);
+    }
+
+    function test_ARideKeepsTheCourtAndTimeoutItOpenedWith() public {
+        uint256 before = _openAndStart();
+
+        // The escrow is given another court and a zero timeout while the ride is under way.
+        DisputeCourt nextCourt = new DisputeCourt(p.governor, p.escrow, 10 minutes, 10 minutes);
+        _govern(
+            address(p.escrow),
+            abi.encodeCall(p.escrow.setModules, (p.reputation, address(p.feeVault), address(nextCourt)))
+        );
+        _govern(address(p.escrow), abi.encodeCall(p.escrow.setCompletionTimeout, (0)));
+
+        // The new court cannot reach it, and the driver cannot settle it before its own 30 minutes.
+        vm.prank(address(nextCourt));
+        vm.expectRevert(RideEscrow.NotCourt.selector);
+        p.escrow.freeze(before);
         vm.prank(driver);
-        p.governor.vote(id, true); // 1 vote from R$ 100 stake
-        skip(2 minutes);
-        vm.expectRevert(PBACGovernor.Defeated.selector);
-        p.governor.queue(id);
+        p.escrow.submitReceipt(before, RECEIPT);
+        vm.expectRevert(RideEscrow.TooEarly.selector);
+        p.escrow.timeout(before);
+
+        // Its own court still hears it, and settles it.
+        vm.prank(rider);
+        p.court.raise(before, keccak256("evidence"));
+        uint256 riderBefore = brz.balanceOf(rider);
+        skip(20 minutes);
+        p.court.settle(before);
+        assertEq(uint8(p.escrow.ride(before).status), uint8(RideEscrow.Status.Resolved));
+        assertEq(brz.balanceOf(rider), riderBefore + FARE / 2 + 2_0000);
+
+        // A ride opened afterwards goes to the new court only.
+        uint256 later = _openAndStart();
+        assertEq(p.escrow.ride(later).court, address(nextCourt));
+        assertEq(p.escrow.ride(later).completionTimeout, 0);
+        vm.prank(rider);
+        vm.expectRevert(RideEscrow.NotCourt.selector);
+        p.court.raise(later, keccak256("evidence"));
+        vm.prank(rider);
+        nextCourt.raise(later, keccak256("evidence"));
+    }
+
+    // ---------------------------------------------------------------- the coins' issuers
+
+    function _issuerCoin() internal returns (IssuerBRL coin) {
+        coin = new IssuerBRL();
+        _govern(address(p.escrow), abi.encodeCall(p.escrow.setToken, (IERC20(address(coin)), 1_0000, 0, 0)));
+        for (uint256 i; i < 2; ++i) {
+            address who = i == 0 ? rider : driver;
+            coin.mint(who, 1_000e4);
+            vm.prank(who);
+            coin.approve(address(p.escrow), type(uint256).max);
+        }
+    }
+
+    function test_AFrozenDriverHoldsUpOnlyTheirOwnPay() public {
+        IssuerBRL coin = _issuerCoin();
+        vm.prank(rider);
+        uint256 id = p.escrow.open(driver, coin, FARE, keccak256("quote"));
+        vm.startPrank(driver);
+        p.escrow.accept(id);
+        p.escrow.start(id, keccak256("pickup"));
+        vm.stopPrank();
+
+        coin.freeze(driver, true);
+        vm.prank(rider);
+        p.escrow.complete(id, RECEIPT);
+
+        // The ride settles: the fee is paid, and the driver's share waits for them in the escrow.
+        assertEq(uint8(p.escrow.ride(id).status), uint8(RideEscrow.Status.Completed));
+        assertEq(coin.balanceOf(address(p.feeVault)), 1_0000);
+        assertEq(p.escrow.owed(coin, driver), 22_4000);
+        assertEq(p.escrow.held(coin), 22_4000);
+
+        vm.prank(driver);
+        vm.expectRevert();
+        p.escrow.withdraw(coin, driver);
+        coin.freeze(driver, false);
+        uint256 driverBefore = coin.balanceOf(driver);
+        vm.prank(driver);
+        p.escrow.withdraw(coin, driver);
+        assertEq(coin.balanceOf(driver), driverBefore + 22_4000);
+        assertEq(p.escrow.held(coin), 0);
+        vm.prank(driver);
+        vm.expectRevert(RideEscrow.NothingOwed.selector);
+        p.escrow.withdraw(coin, driver);
+    }
+
+    function test_FeesTheVaultCouldNotReceiveReachItOnceItCan() public {
+        IssuerBRL coin = _issuerCoin();
+        vm.prank(rider);
+        uint256 id = p.escrow.open(driver, coin, FARE, keccak256("quote"));
+        vm.startPrank(driver);
+        p.escrow.accept(id);
+        p.escrow.start(id, keccak256("pickup"));
+        vm.stopPrank();
+
+        coin.freeze(address(p.feeVault), true);
+        vm.prank(rider);
+        p.escrow.complete(id, RECEIPT);
+        assertEq(p.escrow.owed(coin, address(p.feeVault)), 1_0000);
+
+        // The vault cannot call the escrow itself: anyone sends it what it is owed, and only to it.
+        coin.freeze(address(p.feeVault), false);
+        vm.prank(makeAddr("anyone"));
+        p.escrow.withdraw(coin, address(p.feeVault));
+        assertEq(coin.balanceOf(address(p.feeVault)), 1_0000);
+        assertEq(p.escrow.owed(coin, address(p.feeVault)), 0);
+        assertEq(p.escrow.held(coin), 0);
+    }
+
+    function test_ACoinThatChargesOnTransferIsRefused() public {
+        IssuerBRL coin = _issuerCoin();
+        coin.setTransferFeeBps(100); // the issuer upgrades the coin into one that keeps 1%
+        vm.prank(rider);
+        vm.expectRevert(RideEscrow.NotPlainToken.selector);
+        p.escrow.open(driver, coin, FARE, keccak256("quote"));
+    }
+
+    function test_TheEscrowHoldsNoMoreOfACoinThanItsCap() public {
+        _govern(address(p.escrow), abi.encodeCall(p.escrow.setCap, (IERC20(address(brz)), 30_0000)));
+        vm.prank(rider);
+        uint256 id = p.escrow.open(driver, brz, FARE, keccak256("quote")); // R$ 25,40 held
+        assertEq(p.escrow.held(brz), 25_4000);
+
+        // The driver's R$ 5,00 bond would take it to R$ 30,40.
+        vm.prank(driver);
+        vm.expectRevert(RideEscrow.CapReached.selector);
+        p.escrow.accept(id);
+
+        // Once the ride is out of the escrow there is room again.
+        vm.prank(rider);
+        p.escrow.cancel(id);
+        assertEq(p.escrow.held(brz), 0);
+        _govern(address(p.escrow), abi.encodeCall(p.escrow.setCap, (IERC20(address(brz)), 30_4000)));
+        _openAndStart(); // exactly the cap
+        assertEq(p.escrow.held(brz), FARE + 2_0000 + 5_0000);
+
+        vm.expectRevert(Governed.NotGovernor.selector);
+        p.escrow.setCap(brz, 0);
     }
 
     // ---------------------------------------------------------------- disputes
@@ -548,23 +1058,14 @@ contract ProtocolTest is Test, ProtocolDeployer {
         });
     }
 
-    /// @dev Runs one call through a proposal, the vote of the three validators and the timelock.
+    /// @dev Runs one call the way Instituto Klippel does: as guardian, through the governor.
     function _govern(address target, bytes memory call) internal {
         address[] memory targets = new address[](1);
-        uint256[] memory values = new uint256[](1);
         bytes[] memory calls = new bytes[](1);
         targets[0] = target;
         calls[0] = call;
-        vm.prank(jurors[0]);
-        uint256 id = p.governor.propose(targets, values, calls, "Map pack");
-        for (uint256 i; i < 3; ++i) {
-            vm.prank(jurors[i]);
-            p.governor.vote(id, true);
-        }
-        skip(2 minutes);
-        p.governor.queue(id);
-        skip(1 minutes);
-        p.governor.execute(id, targets, values, calls);
+        vm.prank(institute);
+        p.governor.execute(targets, calls);
     }
 
     function test_PackActivatesOnceAQuorumRebuiltTheSameRoot() public {
@@ -572,24 +1073,15 @@ contract ProtocolTest is Test, ProtocolDeployer {
             vm.prank(jurors[i]);
             p.maps.attest(MANIFEST, PROOF_ROOT);
         }
-        // Two rebuilds agree and governance votes yes, but the quorum is three: the proposal cannot execute.
+        // Two rebuilds agree, but the quorum is three: not even the guardian can activate the pack.
         bytes memory activation = abi.encodeCall(p.maps.activate, (MANIFEST, _pack(PROOF_ROOT)));
         address[] memory targets = new address[](1);
-        uint256[] memory values = new uint256[](1);
         bytes[] memory calls = new bytes[](1);
         targets[0] = address(p.maps);
         calls[0] = activation;
-        vm.prank(jurors[0]);
-        uint256 id = p.governor.propose(targets, values, calls, "Too early");
-        for (uint256 i; i < 3; ++i) {
-            vm.prank(jurors[i]);
-            p.governor.vote(id, true);
-        }
-        skip(2 minutes);
-        p.governor.queue(id);
-        skip(1 minutes);
+        vm.prank(institute);
         vm.expectRevert();
-        p.governor.execute(id, targets, values, calls);
+        p.governor.execute(targets, calls);
         assertEq(p.maps.proofRootOf(MANIFEST), bytes32(0));
 
         vm.prank(jurors[2]);
@@ -697,5 +1189,32 @@ contract ProtocolTest is Test, ProtocolDeployer {
         vm.prank(address(p.governor));
         vm.expectRevert(FareGuide.InvalidTariff.selector);
         p.fares.setTariff(dearer);
+    }
+}
+
+/// @dev A BRL coin as its issuer controls it: it can freeze an address, and be upgraded into one that keeps a
+/// share of each transfer.
+contract IssuerBRL is MockBRL {
+    mapping(address => bool) public frozen;
+    uint256 public transferFeeBps;
+
+    error Frozen(address account);
+
+    constructor() MockBRL("Issuer BRL", "IBRL", 4) {}
+
+    function freeze(address account, bool frozen_) external {
+        frozen[account] = frozen_;
+    }
+
+    function setTransferFeeBps(uint256 bps) external {
+        transferFeeBps = bps;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        if (frozen[from]) revert Frozen(from);
+        if (frozen[to]) revert Frozen(to);
+        uint256 fee = from == address(0) ? 0 : value * transferFeeBps / 10_000;
+        if (fee > 0) super._update(from, address(0), fee);
+        super._update(from, to, value - fee);
     }
 }

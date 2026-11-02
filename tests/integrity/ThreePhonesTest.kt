@@ -87,6 +87,8 @@ class ThreePhonesTest : Scenario() {
         val riderBefore = riderAccount.balanceOf(coin)
         val firstBefore = firstAccount.balanceOf(coin)
         val secondBefore = secondAccount.balanceOf(coin)
+        // Each account pays its own operations' gas in this coin too, through the paymaster.
+        val from = mark()
 
         val price = riderAsks()
         // Both drivers' phones show the request: the same rider, the same price.
@@ -139,9 +141,10 @@ class ThreePhonesTest : Scenario() {
         val fare = coin.toBaseUnits(price)
         // The rider paid the fare and has the bond back; the driver nets the fare minus the fee and has theirs
         // back; the driver who only looked on is where they started.
-        assertEquals(riderBefore - fare, riderAccount.balanceOf(coin))
-        assertEquals(firstBefore + fare - fee - tax, firstAccount.balanceOf(coin))
+        assertEquals(riderBefore - fare - gasPaid(riderAccount.address, coin, from), riderAccount.balanceOf(coin))
+        assertEquals(firstBefore + fare - fee - tax - gasPaid(firstAccount.address, coin, from), firstAccount.balanceOf(coin))
         assertEquals(secondBefore, secondAccount.balanceOf(coin))
+        assertEquals(java.math.BigInteger.ZERO, gasPaid(secondAccount.address, coin, from), "the driver who only looked on paid the network")
         assertTrue(driverBond.signum() >= 0)
 
         rider.whereTo.shown()
@@ -153,6 +156,7 @@ class ThreePhonesTest : Scenario() {
         val coin = riderAccount.brz
         everyoneReady()
         val riderBefore = riderAccount.balanceOf(coin)
+        val from = mark()
 
         val price = riderAsks()
         for (driver in listOf(firstDriver, secondDriver)) driver.request.awaitFrom(Peer.short(appRider))
@@ -204,6 +208,7 @@ class ThreePhonesTest : Scenario() {
         rider.whereTo.shown()
         secondDriver.driverRide.gone()
         assertEquals(RideStatus.Cancelled, riderAccount.ride(ride.id).status)
-        assertEquals(riderBefore, riderAccount.balanceOf(coin))
+        // All of it, but for what the lock and the cancellation cost the network.
+        assertEquals(riderBefore - gasPaid(riderAccount.address, coin, from), riderAccount.balanceOf(coin))
     }
 }

@@ -8,10 +8,13 @@
 //! which listens for phones and forwards every KlippelGo topic they subscribe to.
 
 use futures::StreamExt;
-use libp2p::gossipsub::{self, IdentTopic, MessageAuthenticity, ValidationMode};
+use libp2p::gossipsub::{
+    self, DataTransform, IdentTopic, IdentityTransform, MaxCountSubscriptionFilter, Message,
+    MessageAuthenticity, RawMessage, TopicHash, TopicSubscriptionFilter, ValidationMode,
+};
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{noise, ping, tcp, yamux, Multiaddr, Swarm, SwarmBuilder};
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -20,8 +23,11 @@ use tokio::sync::mpsc;
 /// Port the bootstrap node listens on by default.
 pub const DEFAULT_PORT: u16 = 4001;
 
-/// Every KlippelGo topic starts with this. Routers forward nothing else.
-pub const TOPIC_PREFIX: &str = "/klippelgo/";
+/// A cell's topic is this and five geohash characters.
+const MATCH_TOPIC_PREFIX: &str = "/klippelgo/match/1/";
+
+/// A ride's topic is this and its quote hash in lowercase hex.
+const RIDE_TOPIC_PREFIX: &str = "/klippelgo/ride/1/0x";
 
 /// Largest message a peer accepts. Matching messages are a few hundred bytes; a route sealed for the chosen
 /// driver is a few kilobytes, and tens for a trip across a large city.
@@ -31,6 +37,22 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_INBOX: usize = 4096;
 
 const REDIAL_EVERY: Duration = Duration::from_secs(3);
+
+/// Topics a router joins, all told, and so topics a phone believes it is on. More than the 17 000 rides the busiest
+/// hour has under way at the target. Whoever connects can take up to 100 of them (K12).
+const MAX_ROUTER_TOPICS: usize = 1 << 15;
+
+/// Topics one peer may make a router join between two sweeps. Without it a peer could leave each hundred it joined
+/// and ask for another, and fill the router, and every phone's data, over a single connection. What a phone is really
+/// on still gets joined, at the sweep.
+const MAX_JOINS_PER_SWEEP: u32 = 100;
+
+/// What a phone accepts in one exchange with its router, which says every topic it is on when the phone connects, in
+/// one go. A topic there takes 84 bytes and a few of framing.
+const MAX_HELLO_BYTES: usize = MAX_ROUTER_TOPICS * 96;
+
+/// How often a router leaves the topics nobody is on. A ride has a topic of its own, so they come and go all day.
+const SWEEP_EVERY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct GossipConfig {
@@ -58,7 +80,7 @@ pub enum GossipError {
     Start(String),
     #[error("message is larger than {MAX_MESSAGE_BYTES} bytes")]
     TooLarge,
-    #[error("topic must start with {TOPIC_PREFIX}")]
+    #[error("topic is neither a cell's nor a ride's")]
     InvalidTopic,
     #[error("the node has stopped")]
     Stopped,
@@ -73,7 +95,7 @@ enum Command {
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
-    gossipsub: gossipsub::Behaviour,
+    gossipsub: gossipsub::Behaviour<BoundedMessages, MaxCountSubscriptionFilter<KlippelGoTopics>>,
     ping: ping::Behaviour,
 }
 
@@ -81,6 +103,7 @@ struct Behaviour {
 struct Shared {
     inbox: Mutex<VecDeque<GossipMessage>>,
     peers: AtomicU32,
+    topics: AtomicU32,
 }
 
 #[derive(uniffi::Object)]
@@ -153,6 +176,11 @@ impl GossipNode {
         self.shared.peers.load(Ordering::Relaxed)
     }
 
+    /// Topics a router holds.
+    pub fn router_topics(&self) -> u32 {
+        self.shared.topics.load(Ordering::Relaxed)
+    }
+
     pub fn subscribe(&self, topic: String) -> Result<(), GossipError> {
         check_topic(&topic)?;
         self.send(Command::Subscribe(topic))
@@ -196,20 +224,74 @@ impl Drop for GossipNode {
     }
 }
 
+/// [SWEEP_EVERY], or what `KLIPPELGO_SWEEP_MS` says, for the tests.
+fn sweep_every() -> Duration {
+    std::env::var("KLIPPELGO_SWEEP_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(SWEEP_EVERY)
+}
+
 fn parse_addr(addr: &str) -> Result<Multiaddr, GossipError> {
     addr.parse()
         .map_err(|_| GossipError::InvalidAddress(addr.to_string()))
 }
 
 fn check_topic(topic: &str) -> Result<(), GossipError> {
-    if topic.starts_with(TOPIC_PREFIX) {
+    if is_topic(topic) {
         Ok(())
     } else {
         Err(GossipError::InvalidTopic)
     }
 }
 
-fn build_swarm() -> Result<Swarm<Behaviour>, Box<dyn std::error::Error + Send + Sync>> {
+/// Whether this is a topic KlippelGo uses. The shapes are exact, so a stranger cannot pick how long a name every
+/// phone keeps in memory is.
+fn is_topic(topic: &str) -> bool {
+    if let Some(cell) = topic.strip_prefix(MATCH_TOPIC_PREFIX) {
+        return cell.len() == 5
+            && cell
+                .chars()
+                .all(|c| "0123456789bcdefghjkmnpqrstuvwxyz".contains(c));
+    }
+    topic.strip_prefix(RIDE_TOPIC_PREFIX).is_some_and(|hash| {
+        hash.len() == 64 && hash.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+    })
+}
+
+#[derive(Default, Clone)]
+struct KlippelGoTopics;
+
+impl TopicSubscriptionFilter for KlippelGoTopics {
+    fn can_subscribe(&mut self, topic: &TopicHash) -> bool {
+        is_topic(topic.as_str())
+    }
+}
+
+/// Drops a message over [MAX_MESSAGE_BYTES] before it is believed or forwarded. A phone's transport limit has to be
+/// as large as the hello, so it cannot be what bounds a message.
+#[derive(Default, Clone)]
+struct BoundedMessages;
+
+impl DataTransform for BoundedMessages {
+    fn inbound_transform(&self, raw: RawMessage) -> Result<Message, std::io::Error> {
+        if raw.data.len() > MAX_MESSAGE_BYTES {
+            return Err(std::io::ErrorKind::InvalidData.into());
+        }
+        IdentityTransform.inbound_transform(raw)
+    }
+
+    fn outbound_transform(
+        &self,
+        topic: &TopicHash,
+        data: Vec<u8>,
+    ) -> Result<Vec<u8>, std::io::Error> {
+        IdentityTransform.outbound_transform(topic, data)
+    }
+}
+
+fn build_swarm(router: bool) -> Result<Swarm<Behaviour>, Box<dyn std::error::Error + Send + Sync>> {
     let swarm = SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_tcp(
@@ -220,15 +302,33 @@ fn build_swarm() -> Result<Swarm<Behaviour>, Box<dyn std::error::Error + Send + 
         .with_behaviour(|key| {
             // Strict mode: every message carries its publisher's peer signature and a sequence number, and
             // peers drop anything unsigned or oversized before it reaches the caller.
-            let config = gossipsub::ConfigBuilder::default()
+            let mut config = gossipsub::ConfigBuilder::default();
+            config
                 .heartbeat_interval(Duration::from_secs(1))
                 .validation_mode(ValidationMode::Strict)
-                .max_transmit_size(MAX_MESSAGE_BYTES + 512)
-                .build()?;
+                .max_transmit_size(MAX_MESSAGE_BYTES + 512);
+            // How many topics a peer may say it is on. A router is on every ride's topic, so a phone believes it up
+            // to all a router can hold, and reads it all in one go: past either limit it would hear nothing from
+            // the router, and show no sign of it. A router holds a phone to the default, 100.
+            let mut filter = MaxCountSubscriptionFilter {
+                filter: KlippelGoTopics,
+                max_subscribed_topics: 100,
+                max_subscriptions_per_request: 100,
+            };
+            if !router {
+                config
+                    .max_transmit_size(MAX_HELLO_BYTES)
+                    .max_control_message_size(MAX_HELLO_BYTES);
+                filter.max_subscribed_topics = MAX_ROUTER_TOPICS;
+                filter.max_subscriptions_per_request = MAX_ROUTER_TOPICS;
+            }
+            let config = config.build()?;
             Ok(Behaviour {
-                gossipsub: gossipsub::Behaviour::new(
+                gossipsub: gossipsub::Behaviour::new_with_subscription_filter_and_transform(
                     MessageAuthenticity::Signed(key.clone()),
                     config,
+                    filter,
+                    BoundedMessages,
                 )?,
                 ping: ping::Behaviour::new(
                     ping::Config::new().with_interval(Duration::from_secs(10)),
@@ -250,7 +350,7 @@ async fn run(
     shared: Arc<Shared>,
     ready: Ready,
 ) {
-    let mut swarm = match build_swarm() {
+    let mut swarm = match build_swarm(router) {
         Ok(swarm) => swarm,
         Err(e) => {
             let _ = ready.send(Err(GossipError::Start(e.to_string())));
@@ -275,6 +375,9 @@ async fn run(
     }
 
     let mut redial = tokio::time::interval(REDIAL_EVERY);
+    let mut sweep = tokio::time::interval(sweep_every());
+    let mut joined = 0;
+    let mut joins: HashMap<libp2p::PeerId, u32> = HashMap::new();
     loop {
         tokio::select! {
             command = commands.recv() => match command {
@@ -298,6 +401,22 @@ async fn run(
                     }
                 }
             }
+            _ = sweep.tick(), if router => {
+                let gossipsub = &mut swarm.behaviour_mut().gossipsub;
+                let held: HashSet<_> = gossipsub.topics().cloned().collect();
+                let wanted: HashSet<_> = gossipsub.all_peers().flat_map(|(_, topics)| topics).cloned().collect();
+                for topic in held.iter().filter(|t| !wanted.contains(t)) {
+                    let _ = gossipsub.unsubscribe(&IdentTopic::new(topic.as_str()));
+                }
+                // The topics it had no room for when a phone asked: nobody asks twice.
+                let room = MAX_ROUTER_TOPICS.saturating_sub(gossipsub.topics().count());
+                for topic in wanted.iter().filter(|t| !held.contains(t)).take(room) {
+                    let _ = gossipsub.subscribe(&IdentTopic::new(topic.as_str()));
+                }
+                joined = gossipsub.topics().count();
+                joins.clear();
+                shared.topics.store(joined as u32, Ordering::Relaxed);
+            }
             event = swarm.select_next_some() => match event {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     if let Some(ready) = ready.take() {
@@ -307,9 +426,15 @@ async fn run(
                 SwarmEvent::ConnectionEstablished { .. } | SwarmEvent::ConnectionClosed { .. } => {
                     shared.peers.store(swarm.connected_peers().count() as u32, Ordering::Relaxed);
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { topic, .. })) => {
-                    if router && topic.as_str().starts_with(TOPIC_PREFIX) {
-                        let _ = swarm.behaviour_mut().gossipsub.subscribe(&IdentTopic::new(topic.as_str()));
+                SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
+                    let asked = joins.entry(peer_id).or_default();
+                    if router && joined < MAX_ROUTER_TOPICS && *asked < MAX_JOINS_PER_SWEEP {
+                        *asked += 1;
+                        let topic = IdentTopic::new(topic.as_str());
+                        if matches!(swarm.behaviour_mut().gossipsub.subscribe(&topic), Ok(true)) {
+                            joined += 1;
+                            shared.topics.store(joined as u32, Ordering::Relaxed);
+                        }
                     }
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
@@ -326,5 +451,48 @@ async fn run(
                 _ => {}
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ride(i: usize) -> TopicHash {
+        TopicHash::from_raw(format!("{RIDE_TOPIC_PREFIX}{i:064x}"))
+    }
+
+    fn message(size: usize) -> RawMessage {
+        RawMessage {
+            source: None,
+            data: vec![0; size],
+            sequence_number: None,
+            topic: ride(0),
+            signature: None,
+            key: None,
+            validated: false,
+        }
+    }
+
+    #[test]
+    fn a_message_over_the_limit_is_dropped_on_arrival() {
+        assert!(BoundedMessages
+            .inbound_transform(message(MAX_MESSAGE_BYTES))
+            .is_ok());
+        assert!(BoundedMessages
+            .inbound_transform(message(MAX_MESSAGE_BYTES + 1))
+            .is_err());
+    }
+
+    #[test]
+    fn a_peer_can_be_on_klippelgo_topics_only() {
+        let mut filter = KlippelGoTopics;
+        assert!(filter.can_subscribe(&ride(1)));
+        assert!(filter.can_subscribe(&TopicHash::from_raw("/klippelgo/match/1/6g9fp")));
+        assert!(!filter.can_subscribe(&TopicHash::from_raw("/klippelgo/other")));
+        assert!(!filter.can_subscribe(&TopicHash::from_raw(format!(
+            "/klippelgo/match/1/{}",
+            "b".repeat(15_000)
+        ))));
     }
 }

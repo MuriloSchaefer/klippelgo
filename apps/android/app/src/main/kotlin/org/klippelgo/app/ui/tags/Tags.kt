@@ -214,6 +214,13 @@ object Tags {
     /** Why the policy will not let this driver accept rides. */
     const val BLOCKED = "blocked"
 
+    /**
+     * One reason in that notice, by its kind: `score`, `stake`, `cnh`, `credential`, `role`, `age`, `disabled`
+     * (nobody may accept: the policy is switched off, as by the `stop-rides` playbook) or `account` (this
+     * account is blocked).
+     */
+    fun blocker(kind: String) = "blocked.$kind"
+
     const val AUTO_SKIP = "auto-skip"
     const val AUTO_SKIP_PER_KM = "auto-skip.per-km"
     const val AUTO_SKIP_PER_KM_LOWER = "auto-skip.per-km.lower"
@@ -246,12 +253,10 @@ object Tags {
     const val DRIVER_RIDE_GUARANTEED = "driver-ride.guaranteed"
     const val DRIVER_RIDE_START = "driver-ride.start"
     const val DRIVER_RIDE_CANCEL = "driver-ride.cancel"
-    const val DRIVER_RIDE_ACCEPT = "driver-ride.accept"
-    const val DRIVER_RIDE_DECLINE = "driver-ride.decline"
     const val DRIVER_RIDE_NEXT_REQUEST = "driver-ride.next-request"
     const val DRIVER_RIDE_QUOTE = "driver-ride.quote"
 
-    /** `slot` is `current` for the ride being driven and `chosen` for the one waiting for the driver's answer. */
+    /** `slot` is `current` for the ride being driven and `chosen.<ride id>` for each one waiting for the driver's answer. */
     fun rideTitle(slot: String) = "driver-ride.$slot.title"
     fun rideRider(slot: String) = "driver-ride.$slot.rider"
     fun rideNumber(slot: String) = "driver-ride.$slot.ride"
@@ -261,6 +266,13 @@ object Tags {
 
     const val SLOT_CURRENT = "current"
     const val SLOT_CHOSEN = "chosen"
+
+    /** A ride a rider locked and the driver has not answered: one slot per ride, `chosen.<ride id>`. */
+    fun chosenSlot(rideId: String) = "$SLOT_CHOSEN.$rideId"
+    fun rideAccept(slot: String) = "driver-ride.$slot.accept"
+    fun rideDecline(slot: String) = "driver-ride.$slot.decline"
+    /** Says the ride can be taken once the rider of the ride in hand is in the car. */
+    fun rideAfterPickup(slot: String) = "driver-ride.$slot.after-pickup"
 
     const val ROUTE_CHECKED = "checked"
     const val ROUTE_WAITING = "waiting"

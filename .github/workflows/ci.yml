@@ -13,6 +13,10 @@ jobs:
         with:
           submodules: recursive
       - uses: foundry-rs/foundry-toolchain@v1
+      - name: The security-review hook keeps the shared settings file curated
+        run: |
+          git config --global init.defaultBranch main
+          .claude/hooks/test-security-review.sh
       - name: Build and test
         working-directory: contracts
         run: |
@@ -24,6 +28,8 @@ jobs:
           for i in $(seq 1 30); do cast chain-id 2>/dev/null && break; sleep 1; done
           testnet/deploy.sh
           testnet/demo-ride.sh
+      - name: Instituto Klippel's governance tool approves a licence and passes proposals
+        run: gov/test.sh
 
   core:
     runs-on: ubuntu-latest

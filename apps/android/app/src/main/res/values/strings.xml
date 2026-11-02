@@ -107,7 +107,7 @@
     <string name="stat_today">Hoje</string>
     <string name="stat_score">Nota</string>
     <string name="stat_rides">Corridas</string>
-    <string name="go_online_body">Mantenha o KlippelGo aberto enquanto estiver online para os passageiros te encontrarem.</string>
+    <string name="go_online_body">Com você online, os passageiros te encontram mesmo com a tela desligada.</string>
     <string name="waiting_rides">Aguardando pedidos de corrida…</string>
     <string name="cannot_accept">Aceitar corridas está bloqueado pela política da rede.</string>
     <string name="blocked_score">Sua nota é %1$s. O mínimo para aceitar corridas é %2$s.</string>
@@ -116,6 +116,7 @@
     <string name="blocked_credential">Falta uma credencial exigida pela política.</string>
     <string name="blocked_role">Esta conta não está registrada como motorista.</string>
     <string name="blocked_age">Sua conta é nova demais para aceitar corridas.</string>
+    <string name="blocked_account">Esta conta foi bloqueada pelo Instituto Klippel.</string>
     <string name="new_request">Nova solicitação</string>
     <string name="pays_at_most">Passageiro propõe</string>
     <string name="lower_offer">Diminuir oferta</string>
@@ -179,6 +180,8 @@
     <string name="route_needs_map">Baixe o mapa para ver a rota desta corrida.</string>
     <string name="map_needed_driver">Baixe o mapa da região para ver as ruas e a rota de cada corrida. Sem ele você ainda recebe solicitações e faz ofertas.</string>
     <string name="decline_ride">Recusar corrida</string>
+    <string name="accept_after_pickup">Você aceita esta corrida quando o passageiro atual estiver no carro.</string>
+    <string name="accept_declines_others">Ao aceitar uma, as outras que você cotou antes são devolvidas aos passageiros.</string>
     <string name="decline_hint">Recusar não custa nada: o passageiro recebe tudo de volta.</string>
     <string name="asked_again">O motorista desistiu da corrida e você recebeu tudo de volta. O mesmo pedido foi enviado de novo aos outros motoristas.</string>
 
@@ -232,4 +235,6 @@
         <item quantity="one">mais %d solicitação</item>
         <item quantity="other">mais %d solicitações</item>
     </plurals>
+    <string name="on_duty_channel">Em serviço</string>
+    <string name="on_duty_text">Conectado enquanto você está online ou em uma corrida</string>
 </resources>

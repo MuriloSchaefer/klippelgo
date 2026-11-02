@@ -5,6 +5,10 @@ import {Governed} from "./Governed.sol";
 import {IPBACGovernor} from "./interfaces/IPBACGovernor.sol";
 
 /// @notice Ratings for completed rides. Only the two parties of a ride can rate each other, once each.
+///
+/// This is a ledger: it keeps what people earned, and outlives the escrow that reported it. Several escrows
+/// may report at once, so a new escrow can open rides while the one it replaces finishes its own. A ride is
+/// known by its escrow and its id there, since each escrow counts its rides from one.
 contract Reputation is Governed {
     struct RideParties {
         address rider;
@@ -13,16 +17,19 @@ contract Reputation is Governed {
         bool driverRated;
     }
 
-    address public escrow;
+    /// @notice The escrows whose completed rides count.
+    mapping(address escrow => bool) public isEscrow;
 
-    mapping(uint256 rideId => RideParties) public rides;
+    mapping(address escrow => mapping(uint256 rideId => RideParties)) public rides;
     mapping(address => uint256) public completedRides;
     mapping(address => uint256) public ratingSum;
     mapping(address => uint256) public ratingCount;
 
-    event RideRecorded(uint256 indexed rideId, address indexed rider, address indexed driver);
-    event Rated(uint256 indexed rideId, address indexed from, address indexed to, uint8 stars);
-    event EscrowSet(address escrow);
+    event RideRecorded(address indexed escrow, uint256 indexed rideId, address indexed rider, address driver);
+    event Rated(
+        address indexed escrow, uint256 indexed rideId, address from, address indexed to, uint8 stars
+    );
+    event EscrowSet(address indexed escrow, bool allowed);
 
     error NotEscrow();
     error NotParty();
@@ -32,16 +39,16 @@ contract Reputation is Governed {
     constructor(IPBACGovernor governor_) Governed(governor_) {}
 
     function recordCompletion(uint256 rideId, address rider, address driver) external {
-        if (msg.sender != escrow) revert NotEscrow();
-        rides[rideId] = RideParties(rider, driver, false, false);
+        if (!isEscrow[msg.sender]) revert NotEscrow();
+        rides[msg.sender][rideId] = RideParties(rider, driver, false, false);
         completedRides[rider]++;
         completedRides[driver]++;
-        emit RideRecorded(rideId, rider, driver);
+        emit RideRecorded(msg.sender, rideId, rider, driver);
     }
 
-    function rate(uint256 rideId, uint8 stars) external {
+    function rate(address escrow, uint256 rideId, uint8 stars) external {
         if (stars < 1 || stars > 5) revert InvalidStars();
-        RideParties storage r = rides[rideId];
+        RideParties storage r = rides[escrow][rideId];
         address to;
         if (msg.sender == r.rider) {
             if (r.riderRated) revert AlreadyRated();
@@ -56,7 +63,7 @@ contract Reputation is Governed {
         }
         ratingSum[to] += stars;
         ratingCount[to]++;
-        emit Rated(rideId, msg.sender, to, stars);
+        emit Rated(escrow, rideId, msg.sender, to, stars);
     }
 
     /// @notice Average stars times 100 (450 = 4.50). Zero when the address has no ratings yet.
@@ -65,8 +72,10 @@ contract Reputation is Governed {
         return n == 0 ? 0 : ratingSum[subject] * 100 / n;
     }
 
-    function setEscrow(address escrow_) external onlyGovernor {
-        escrow = escrow_;
-        emit EscrowSet(escrow_);
+    /// @notice Lets an escrow report completed rides, or stops it. An escrow being replaced is left allowed
+    /// until its last ride settled, so the rides it holds still count.
+    function setEscrow(address escrow_, bool allowed) external onlyGovernor {
+        isEscrow[escrow_] = allowed;
+        emit EscrowSet(escrow_, allowed);
     }
 }

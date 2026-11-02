@@ -1,7 +1,9 @@
 # The local network's services: `docker compose -f testnet/docker-compose.yml up`
 #
-#   anvil   the chain, an alternative to testnet/anvil.sh for people without Foundry installed
-#   gossip  bootstrap node of the gossip network phones match through (`make gossip-node` runs only this one)
+#   anvil    the chain, an alternative to testnet/anvil.sh for people without Foundry installed
+#   gossip   bootstrap node of the gossip network phones match through (`make gossip-node` runs only this one)
+#   bundler  the ERC-4337 bundler people's operations go through (`make bundler` runs only this one). It waits
+#            for the chain and for `make deploy` to put the EntryPoint in place
 services:
   anvil:
     image: ghcr.io/foundry-rs/foundry:stable
@@ -11,6 +13,7 @@ services:
       - --chain-id=31337
       - --hardfork=osaka
       - --block-time=2
+      - --accounts=15
       - --state=/state/anvil.json
     ports:
       - "8545:8545"
@@ -21,4 +24,13 @@ services:
     build: ../core
     ports:
       - "4001:4001"
+    restart: unless-stopped
+
+  bundler:
+    build: ./bundler
+    # On this computer's network, so it reaches the chain on 127.0.0.1:8545 whether anvil runs here or in the
+    # service above, and phones reach it on port 4337 next to the chain.
+    network_mode: host
+    environment:
+      RPC_URL: http://127.0.0.1:8545
     restart: unless-stopped

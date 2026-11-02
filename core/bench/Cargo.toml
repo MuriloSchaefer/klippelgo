@@ -1,0 +1,12 @@
+[package]
+name = "klippelgo-bench"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Scalability benchmark for KlippelGo: a capacity model of the shared services at a target number of drivers and riders, and a gossip load test against the real router."
+publish = false
+
+[dependencies]
+klippelgo-core = { path = ".." }
+serde_json = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
