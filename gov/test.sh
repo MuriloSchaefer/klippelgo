@@ -36,6 +36,8 @@ fresh() {
 action_id() { sed -n 's/^\(Done: action\|Action\) \([0-9]*\).*/\2/p' <<<"$1"; }
 
 REGISTRY=$(jq -er '.IdentityRegistry' "$DEPLOYMENT")
+IDENTITIES=$(jq -er '.IdentityStore' "$DEPLOYMENT")
+RELEASES=$(jq -er '.ReleaseRegistry' "$DEPLOYMENT")
 GOVERNOR=$(jq -er '.PBACGovernor' "$DEPLOYMENT")
 ESCROW=$(jq -er '.RideEscrow' "$DEPLOYMENT")
 COUNCIL=$(jq -er '.TeamCouncil' "$DEPLOYMENT")
@@ -58,21 +60,21 @@ DOCUMENT=$(mktemp)
 echo "a stand-in for the scan of a licence" >"$DOCUMENT"
 SALT=0x00000000000000000000000000000000000000000000000000000000000000aa
 gov cnh approve "$WHO" "$DOCUMENT" --expires 2099-01-01 --salt "$SALT" >/dev/null
-expect "licence after approval" "$(call "$REGISTRY" 'hasCredential(address,bytes32)(bool)' "$WHO" "$CNH")" true
+expect "licence after approval" "$(call "$IDENTITIES" 'hasCredential(address,bytes32)(bool)' "$WHO" "$CNH")" true
 # The same document with the same salt gives the same hash, and not the bare hash of the document.
-STORED=$(cast call --rpc-url "$RPC_URL" "$REGISTRY" 'credentials(address,bytes32)(bytes32,address,uint64,bool)' "$WHO" "$CNH")
+STORED=$(cast call --rpc-url "$RPC_URL" "$IDENTITIES" 'credentials(address,bytes32)(bytes32,address,uint64,bool)' "$WHO" "$CNH")
 BARE=$(cast keccak "0x$(od -An -tx1 -v "$DOCUMENT" | tr -d ' \n')")
 expect "credential hash" "$(sed -n 1p <<<"$STORED")" "$(cast keccak "$(cast concat-hex "$SALT" "$BARE")")"
 expect "its issuer" "$(sed -n 2p <<<"$STORED")" "$COUNCIL"
 SHOWN=$(gov account "$WHO")
 grep -q 'CNH *valid' <<<"$SHOWN" || fail "account does not show the licence"
 gov cnh revoke "$WHO" >/dev/null
-expect "licence after revocation" "$(call "$REGISTRY" 'hasCredential(address,bytes32)(bool)' "$WHO" "$CNH")" false
+expect "licence after revocation" "$(call "$IDENTITIES" 'hasCredential(address,bytes32)(bool)' "$WHO" "$CNH")" false
 refuses "already revoked" gov cnh revoke "$WHO"
 # A scan is larger than one command-line argument may be. It must still be the file that is hashed.
 head -c 300000 /dev/urandom >"$DOCUMENT"
 gov cnh approve "$WHO" "$DOCUMENT" --salt "$SALT" >/dev/null
-STORED=$(cast call --rpc-url "$RPC_URL" "$REGISTRY" 'credentials(address,bytes32)(bytes32,address,uint64,bool)' "$WHO" "$CNH" | sed -n 1p)
+STORED=$(cast call --rpc-url "$RPC_URL" "$IDENTITIES" 'credentials(address,bytes32)(bytes32,address,uint64,bool)' "$WHO" "$CNH" | sed -n 1p)
 BARE=$({ printf 0x; od -An -tx1 -v "$DOCUMENT" | tr -d ' \n'; } | cast keccak)
 expect "credential hash of a large file" "$STORED" "$(cast keccak "$(cast concat-hex "$SALT" "$BARE")")"
 gov cnh revoke "$WHO" >/dev/null
@@ -86,7 +88,7 @@ rm -f "$DOCUMENT"
 echo "a block and an unblock"
 expect "may open before" "$(call "$GOVERNOR" 'hasPermission(address,address,bytes4)(bool)' "$WHO" "$ESCROW" "$OPEN")" true
 gov block "$WHO" >/dev/null
-expect "blocked" "$(call "$REGISTRY" 'blocked(address)(bool)' "$WHO")" true
+expect "blocked" "$(call "$IDENTITIES" 'blocked(address)(bool)' "$WHO")" true
 expect "may open while blocked" "$(call "$GOVERNOR" 'hasPermission(address,address,bytes4)(bool)' "$WHO" "$ESCROW" "$OPEN")" false
 refuses "already blocked" gov block "$WHO"
 refuses "not a member" env KLIPPEL_GOV_WALLET="--private-key $KEY" gov/klippel-gov unblock "$WHO"
@@ -154,6 +156,35 @@ gov team set "$TAX_PERMISSION" approvals=1 >/dev/null
 gov team remove "$MATE" finance >/dev/null
 expect "the colleague has left" "$(call "$COUNCIL" 'hasRole(address,uint8)(bool)' "$MATE" 1)" false
 
+echo "a release, published with its APKs, deprecated, revoked and put back"
+APK=$(mktemp)
+echo "a stand-in for an APK" >"$APK"
+NEXT=$(( $(call "$RELEASES" 'latest()(uint48)') + 1 ))
+NEXT_TEXT="$((NEXT >> 32)).$(((NEXT >> 16) & 65535)).$((NEXT & 65535))"
+refuses "published already" gov request release publish "$(jq -r .version "$DEPLOYMENT")"
+refuses "not a version" gov request release publish 1.2
+OUT=$(gov request release publish "$NEXT_TEXT" "$APK")
+grep -q "APK sha-256 *0x$(sha256sum "$APK" | cut -d' ' -f1)" <<<"$OUT" || fail "the request does not show the APK's hash"
+# What a director reads before approving: the version as text, the contracts hash against the deployment file.
+SHOWN=$(gov action "$(action_id "$OUT")")
+grep -q "release $NEXT_TEXT" <<<"$SHOWN" || fail "the action does not show the release's version"
+grep -q "contracts hash matches" <<<"$SHOWN" || fail "the action does not compare the contracts hash with the deployment file"
+expect "the APK is the release's" "$(call "$RELEASES" 'isApk(uint48,bytes32)(bool)' "$NEXT" "0x$(sha256sum "$APK" | cut -d' ' -f1)")" true
+expect "the latest release" "$(call "$RELEASES" 'latest()(uint48)')" "$NEXT"
+grep -q "are this release" <<<"$(gov release "$NEXT_TEXT")" || fail "the release's code contracts are not the deployment file's"
+gov request release deprecate "$NEXT_TEXT" >/dev/null
+expect "deprecated" "$(call "$RELEASES" 'statusOf(uint48)(uint8)' "$NEXT")" 2
+refuses "not active" gov request release deprecate "$NEXT_TEXT"
+gov request release revoke "$NEXT_TEXT" >/dev/null
+expect "revoked" "$(call "$RELEASES" 'statusOf(uint48)(uint8)' "$NEXT")" 3
+gov request release reinstate "$NEXT_TEXT" >/dev/null
+expect "back" "$(call "$RELEASES" 'statusOf(uint48)(uint8)' "$NEXT")" 1
+# A release cannot be unpublished. Revoked, this stand-in is never offered to the phones on this chain as an update.
+gov request release revoke "$NEXT_TEXT" >/dev/null
+# The release this deployment file is stays what the app on it reads.
+expect "the deployment's release" "$(call "$RELEASES" 'statusOf(uint48)(uint8)' "$(( $(jq -r .version "$DEPLOYMENT" | awk -F. '{print ($1 * 4294967296) + ($2 * 65536) + $3}') ))")" 1
+rm -f "$APK"
+
 echo "a call no permission covers is refused before anything is sent"
 refuses "no permission" gov request call IdentityRegistry 'register(uint8)' 1
 
@@ -209,9 +240,9 @@ expect "to in the file" "$(jq -r '.transactions[0].to' "$FIRST")" "$COUNCIL"
 expect "value in the file" "$(jq -r '.transactions[0].value' "$FIRST")" 0
 rm -f "$OUT_DIR"/*.json
 as_multisig block "$WHO" >/dev/null 2>&1
-expect "blocked before the owners act" "$(call "$REGISTRY" 'blocked(address)(bool)' "$WHO")" false
+expect "blocked before the owners act" "$(call "$IDENTITIES" 'blocked(address)(bool)' "$WHO")" false
 owners_execute
-expect "blocked once they did" "$(call "$REGISTRY" 'blocked(address)(bool)' "$WHO")" true
+expect "blocked once they did" "$(call "$IDENTITIES" 'blocked(address)(bool)' "$WHO")" true
 gov unblock "$WHO" >/dev/null
 gov team remove "$MULTISIG" security >/dev/null
 cast rpc --rpc-url "$RPC_URL" anvil_stopImpersonatingAccount "$MULTISIG" >/dev/null

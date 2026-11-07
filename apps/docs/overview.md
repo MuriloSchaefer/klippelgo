@@ -57,6 +57,8 @@ flowchart TB
 | UI | [`app/…/ui/`](../android/app/src/main/kotlin/org/klippelgo/app/ui) | Composables that draw a `UiState` and call the view model. No chain, gossip or file access |
 | `AppViewModel` | [`AppViewModel.kt`](../android/app/src/main/kotlin/org/klippelgo/app/AppViewModel.kt) | The only holder of state. Runs the refresh loop, owns the gossip node's lifetime, turns user actions into calls |
 | `MapStore` | [`Maps.kt`](../android/app/src/main/kotlin/org/klippelgo/app/Maps.kt) | Finds the region's active pack on chain, downloads it, verifies it, opens it |
+| `Updater` | [`Updater.kt`](../android/app/src/main/kotlin/org/klippelgo/app/Updater.kt) | Downloads the latest release's APK from a mirror, keeps it only if the release registry names its SHA-256, and hands it to Android's installer |
+| `AppData` | [`AppData.kt`](../android/app/src/main/kotlin/org/klippelgo/app/AppData.kt) | The schema of what the app keeps, and the steps that bring older data up to it, run at start before anything reads it |
 | `Matchmaker` | [`Matchmaker.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/Matchmaker.kt) | Every gossip message: building, signing, validating, expiring. Which cells to subscribe to: a request's messages go to its pickup's cell, a driver hears the cells around them |
 | `KlippelGoClient` | [`KlippelGoClient.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/KlippelGoClient.kt) | Every contract read and write, the session key and the check of others' certificates, the fare band rules. Writes are the account's operations (`sendCalls`): built, hashed and signed here, sent through a bundler |
 | Accounts | [`SmartAccount.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/SmartAccount.kt), [`DeviceKey.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/DeviceKey.kt), [`SessionKey.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/SessionKey.kt), [`Bundler.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/Bundler.kt) | The account's address and encodings, the user operation and its EIP-712 hash, the device key interface and its software form, session keys and certificates, the bundler's JSON-RPC |
@@ -94,6 +96,23 @@ every 30 s; off screen with no ride under way and not online it is not read at a
 ([scalability.md](scalability.md), "Reading the chain"). An action that changes the chain does the call, then lets the next refresh
 show the result.
 
+**The release.** Each full read also asks `ReleaseRegistry` for the status of the release this build is (its
+`/VERSION` and the hash of its code contracts) and of the latest one (`KlippelGoClient.releaseCheck`), and asks
+the escrows of earlier releases in the deployment file for this account's unfinished rides and owed payments.
+An action that starts a ride reads the release first if no read has yet. What the app does with each status:
+
+| Status | The app |
+| --- | --- |
+| Active | Works |
+| Deprecated, or a higher active release published | Works, and a notice offers the update (`Updater`), held back while a ride of the account is unfinished |
+| Revoked | Refuses to ask for a ride, change its price, take an offer, quote or accept; a ride under way finishes, and money owed can be withdrawn. The notice offers the update |
+| Unknown: not published, published with other code contracts, or the chain cannot be read | Works as without the registry, so the RPC cannot switch the app off |
+
+The build is pinned: `-Pklippelgo.network=<name>` picks `deployments/<name>.json` (default `local`), copied into
+the APK as `deployment.json`. Only a local build falls back to the addresses a fresh local testnet gets; any
+other fails without its file, or when the file's `version` is not `/VERSION`
+([apps/android/README.md](../android/README.md)).
+
 ## A ride, end to end
 
 ```mermaid
@@ -125,7 +144,7 @@ sequenceDiagram
     Note over R,D: both rate the ride
 ```
 
-Every message about a request goes to the gossip cell (geohash 5, about 5 km) its pickup is in. The driver's
+Every message about a request goes to the gossip cell (geohash 5, about 5 km) its pickup is in, on the topic of this build's release (`/klippelgo/match/<release>/<cell>`, `Deployment.gossipRelease`): phones built against other code contracts never hear it. The driver's
 position for a ride goes to a topic of that ride's own, which only its rider's phone listens to. A driver hears the cell their phone is in and the eight around it, while
 the phone is inside the map pack; without a position there, the whole pack, or its middle when the pack is large. A
 driver keeps hearing the cell of a request they quoted after driving out of it, and a rider hears only the cells
@@ -162,6 +181,8 @@ to it, and a ride locked on one waits Open for the driver to decline it by hand.
 | What | Where | Notes |
 | --- | --- | --- |
 | Where this account's event scans stopped and what they found (its rides, the registered drivers), with a block and its hash to recognise the chain | `SharedPreferences("klippelgo")`, `scans.<account>` | Thrown away and read again when that block's hash is not the chain's: a local testnet started again |
+| The shape of all of the above (`AppData.SCHEMA`, now 1) | `SharedPreferences("klippelgo")`, `schema` | Brought up to date at start, one step per shape, so an update never needs a fresh install. Data a newer release wrote is left alone |
+| A downloaded update, while it waits for the installer | `cacheDir/updates/` | Emptied before each download; a file the registry does not name is deleted at once. The FileProvider shares this folder only |
 | Role, RPC address, name, account choice, auto-skip settings | `SharedPreferences("klippelgo")` | The account choice is `device` (the chip's key) or a seeded account's name; `devAccounts` asks for the seeded ones and `e2eAccounts` for the end-to-end tests' set of them; only a debug build sets either |
 | Driver: the quotes made void by accepting a ride, with the rider each was for | `SharedPreferences("klippelgo")`, `voidQuotes` | The newest 200. Kept so a ride locked on one after a restart is still declined |
 | The account's key | The phone's chip: Android Keystore, in StrongBox when there is one (`KeystoreDeviceKey`) | Never leaves it. Debug builds asked for `devAccounts` use the local testnet's seeded keys instead |

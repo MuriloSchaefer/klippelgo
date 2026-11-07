@@ -236,4 +236,18 @@
     </plurals>
     <string name="on_duty_channel">On duty</string>
     <string name="on_duty_text">Connected while you are online or on a ride</string>
+    <!-- Releases (docs/releases-and-data.md) -->
+    <string name="release_revoked">This version of the app was revoked for a security flaw. Rides under way finish as usual and your money can be withdrawn, but no new ride starts on it.</string>
+    <string name="release_revoked_refused">This version of the app was revoked. Update to ask for or accept new rides.</string>
+    <string name="release_deprecated">This version of the app will be switched off soon. Update when you can.</string>
+    <string name="release_update_available">Version %1$s of the app is available.</string>
+    <string name="update_after_ride">Finish the ride under way before updating: only this version can complete it.</string>
+    <string name="update_install">Update</string>
+    <string name="update_downloading">Downloading the update…</string>
+    <string name="update_refused">The downloaded update is not one published on the network. It was deleted and will not be installed.</string>
+    <string name="update_missing">No mirror has this update for your phone yet.</string>
+    <string name="update_failed">Could not download the update: %1$s</string>
+    <string name="previous_rides">You have %1$d ride(s) to finish on an earlier version of the app. They finish on the contract they started on.</string>
+    <string name="previous_owed">An earlier version of the app holds %1$s for you.</string>
+    <string name="previous_withdraw">Withdraw</string>
 </resources>

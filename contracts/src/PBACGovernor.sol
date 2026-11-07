@@ -2,19 +2,21 @@
 pragma solidity ^0.8.28;
 
 import {IPBACGovernor} from "./interfaces/IPBACGovernor.sol";
-import {IdentityRegistry} from "./IdentityRegistry.sol";
+import {IdentityStore} from "./IdentityStore.sol";
+import {StakeVault} from "./StakeVault.sol";
 import {Reputation} from "./Reputation.sol";
 
 /// @notice Policy-based access control, and the one authority over the protocol: the guardian.
 ///
 /// A policy is a rule evaluated against the caller's on-chain attributes, keyed by (target contract, function
 /// selector): roles, stake, reputation score, account age and a required credential kind. An account blocked
-/// in the registry satisfies no policy.
+/// in the identity store satisfies no policy.
 ///
 /// The guardian is Instituto Klippel. It governs who may use the network and every parameter of it: whatever
 /// a contract guards with `onlyGovernor`, the guardian does through `execute`, at once. Nobody else can, and
-/// nobody but the guardian can name its successor. The contracts' code never changes: a fix is a new contract
-/// the guardian wires in, next to the ledgers that keep everyone's stake, credentials and reputation.
+/// nobody but the guardian can name its successor. The contracts' code never changes: a fix is a release, whose
+/// code contracts the guardian wires in next to the data contracts that keep everyone's credentials and
+/// reputation, and the vault that keeps their stake (docs/releases-and-data.md).
 ///
 /// Deployment needs a short bootstrap: the deployer wires the contracts together through `bootstrapCall`, then
 /// calls `finishBootstrap`, after which the guardian alone holds any privilege.
@@ -28,7 +30,8 @@ contract PBACGovernor is IPBACGovernor {
         bytes32 credential; // required credential kind, 0 = none
     }
 
-    IdentityRegistry public registry;
+    IdentityStore public identities;
+    StakeVault public stakes;
     Reputation public reputation;
     address public bootstrapper;
     address public guardian;
@@ -38,7 +41,7 @@ contract PBACGovernor is IPBACGovernor {
     mapping(address target => mapping(bytes4 action => Policy)) internal _policies;
 
     event PolicySet(address indexed target, bytes4 indexed action, Policy policy);
-    event ModulesSet(address registry, address reputation);
+    event ModulesSet(address identities, address stakes, address reputation);
     event BootstrapFinished();
     event Executed(address indexed target, bytes data);
     event GuardianProposed(address indexed guardian, address indexed proposed);
@@ -74,13 +77,13 @@ contract PBACGovernor is IPBACGovernor {
     function hasPermission(address subject, address target, bytes4 action) public view returns (bool) {
         Policy memory p = _policies[target][action];
         if (!p.enabled) return false;
-        if (registry.blocked(subject)) return false;
+        if (identities.blocked(subject)) return false;
 
         if (p.roles != 0 || p.minStake != 0 || p.minAccountAge != 0) {
-            IdentityRegistry.Identity memory id = registry.identity(subject);
+            IdentityStore.Identity memory id = identities.identity(subject);
             if (id.registeredAt == 0) return false;
             if (p.roles != 0 && id.roles & p.roles == 0) return false;
-            if (id.stake < p.minStake) return false;
+            if (p.minStake != 0 && stakes.stakeOf(subject) < p.minStake) return false;
             if (block.timestamp - id.registeredAt < p.minAccountAge) return false;
         }
         if (
@@ -88,7 +91,7 @@ contract PBACGovernor is IPBACGovernor {
         ) {
             return false;
         }
-        if (p.credential != bytes32(0) && !registry.hasCredential(subject, p.credential)) return false;
+        if (p.credential != bytes32(0) && !identities.hasCredential(subject, p.credential)) return false;
         return true;
     }
 
@@ -132,10 +135,16 @@ contract PBACGovernor is IPBACGovernor {
         emit PolicySet(target, action, p);
     }
 
-    function setModules(IdentityRegistry registry_, Reputation reputation_) external onlySelf {
-        registry = registry_;
+    /// @notice The data the policies read. These outlive releases: changing one is moving a data contract, not
+    /// shipping a release.
+    function setModules(IdentityStore identities_, StakeVault stakes_, Reputation reputation_)
+        external
+        onlySelf
+    {
+        identities = identities_;
+        stakes = stakes_;
         reputation = reputation_;
-        emit ModulesSet(address(registry_), address(reputation_));
+        emit ModulesSet(address(identities_), address(stakes_), address(reputation_));
     }
 
     // ---------------------------------------------------------------- bootstrap

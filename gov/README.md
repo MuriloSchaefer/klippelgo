@@ -14,7 +14,7 @@ flowchart LR
     tool -- "request, approve, cancel, execute" --> council[TeamCouncil<br/>the guardian]
     council -- "after enough approvals and the delay" --> gov[PBACGovernor]
     gov --> setters[Every setter:<br/>block, tax, fee, tariff, policy, ...]
-    council -- "attest, revoke" --> reg[IdentityRegistry]
+    council -- "attest, revoke" --> reg[IdentityStore]
 ```
 
 ## Setting up
@@ -43,11 +43,11 @@ At launch the council has six roles ([docs/governance.md](../docs/governance.md)
 
 | Role | Actions | Approvals and delay |
 | --- | --- | --- |
-| Diretoria (board) | Members and roles, the guardian, the contracts wired in, the fee beneficiary, `resume-rides` | Three, 72 hours; suspending a member takes two, at once |
+| Diretoria (board) | Members and roles, the guardian, the contracts wired in and which of them write the data, the fee beneficiary, publishing and deprecating releases, `resume-rides` | Three, 72 hours; suspending a member, or putting a release back, takes two, at once |
 | Finanças | Fees, tax, caps, tariff, the native coin's price, fee claims | Two, a day |
 | Operações | Policies, timeouts, unbonding, dispute periods, map packs | Two, a day |
 | Credenciamento | Approve a licence (two) or revoke one (one) | At once |
-| Segurança | Block (one) or unblock (two) an account; `stop-rides` (one) | At once |
+| Segurança | Block (one) or unblock (two) an account; `stop-rides`, revoke a release, `revoke-release-<version>` (one) | At once |
 | Recuperação | Cancel anything, suspend anyone at once, add directors after 7 days. Protected: nobody else changes it | One: it is a cold multisig |
 
 Each member's key is their own hardware wallet: a shared key makes the approvals on chain say nothing about
@@ -128,6 +128,31 @@ klippel-gov playbooks                 # every list of calls written in advance, 
 
 `resume-rides` puts back the `open` and `accept` policies as they were when it was stored (limit L25).
 
+### Releases
+
+A release is the code contracts and the app built at one tag ([docs/releases-and-data.md](../docs/releases-and-data.md)).
+The board publishes it once each director has built the tag and compared what the tool shows:
+
+```sh
+klippel-gov release                                   # every published release and its status
+klippel-gov release 1.2.0                             # once published: its contracts hash, the deployment file's
+                                                      # code contracts beside it (and whether they match), its APKs
+klippel-gov request release publish 1.2.0 out/*.apk   # the board: the file's code contracts and each APK's sha-256
+klippel-gov request release deprecate 1.1.0           # the board: apps on 1.1.0 ask their users to update
+klippel-gov run revoke-release-1.1.0                  # Segurança, at once: revoke 1.1.0 and close its escrow
+klippel-gov request release reinstate 1.1.0           # two directors: put it back
+```
+
+`request release revoke` revokes in the registry only, which stops honest apps; the release's escrow stays
+open to any other app (limit L33). Prefer the release's `revoke-release-<version>` playbook, which does both.
+It names one release's escrow, so the board stores one for each release it publishes, with new `stop-rides`
+and `resume-rides` for that escrow. `run` refuses a name two active playbooks share: run one by its number
+then. After a plain `revoke`, the playbook reverts (the release is revoked already): use `stop-rides`.
+
+Before approving a `publish`, `klippel-gov action <id>` shows the version as text, whether its contracts hash
+is the one of the deployment file's code contracts, and each APK hash to compare with `sha256sum` of the APKs
+you built from the tag.
+
 ## The team
 
 The board's actions, each a request like any other:
@@ -205,9 +230,11 @@ One owner loads the file in the Safe app and proposes it; the others approve; th
 | A tax of 100% or more, a tax with no collector, a zero beneficiary, a map quorum of zero, the governor as its own guardian | The contract refuses the first two and the last; the others burn fees or unguard the maps |
 | `propose`, `vote`, `queue`, `register` | There is no voting: governance is the team council |
 
-It warns, and still sends if confirmed, for a tax collector that is a contract, a new coin on the allow-list
-(L10), removing an attester, an unbonding period over 30 days, handing the guardian's seat on, and a new
-member (check the address with its owner).
+It refuses an unbonding period over 30 days (the stake vault would), a release version that is published
+already, and a release status change its current status does not allow. It warns, and still sends if
+confirmed, for a tax collector that is a contract, a new coin on the allow-list (L10), removing an attester,
+handing the guardian's seat on, a new member (check the address with its owner), a release that names no APK
+or an APK of the latest release, and a revoke that leaves the escrow open.
 
 These checks protect the team from its own mistakes. They protect nobody from an action requested with another
 tool: the council accepts any calls a permission covers, which is why members read the calls.
@@ -218,7 +245,7 @@ tool: the council accepts any calls a permission covers, which is why members re
 make testnet && make deploy
 gov/klippel-gov request tax 4            # runs at once: account #1 is the only member, in every role
 make test-gov                            # gov/test.sh: licences, a block, a setting, the playbooks, a second
-                                         # member with two approvals, a suspension, a multisig
+                                         # member with two approvals, a suspension, a release, a multisig
 ```
 
 ## Changing this tool

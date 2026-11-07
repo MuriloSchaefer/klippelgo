@@ -74,7 +74,7 @@ path with a bounded look-ahead window, so it does not compare every fix with eve
 
 ## Gossip: sharded by geography
 
-Topics are per geohash-5 cell (`/klippelgo/match/1/<cell>`, about 5 km). A phone subscribes only to the cells
+Topics are per release and geohash-5 cell (`/klippelgo/match/<release>/<cell>`, about 5 km; the release is 16 hex characters of its contracts hash, so phones of two releases with other code contracts are on separate topics). A phone subscribes only to the cells
 around it, so the traffic it receives depends on how busy its neighbourhood is, not on how many users exist.
 
 What one cell carries, from the constants in the code:

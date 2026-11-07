@@ -207,7 +207,7 @@ class TwoPhonesRideTest {
         // A driver who hears it all and quotes nothing, whose list is what forgetting is about.
         val bystander = Matchmaker(KlippelGoClient(rpc, DevAccount.DRIVER.key(), deployment), gossip()).apply { listen(Matchmaker.around(PICKUP)) }
         val spy = gossip()
-        val topic = Matchmaker.topicFor(Matchmaker.cellOf(route.pickupCell))
+        val topic = Matchmaker.topicFor(deployment.gossipRelease, Matchmaker.cellOf(route.pickupCell))
         spy.subscribe(topic)
         val json = com.fasterxml.jackson.databind.ObjectMapper()
         val heard = ArrayList<Pair<String, ByteArray>>()
@@ -260,7 +260,7 @@ class TwoPhonesRideTest {
         // A true position, signed by the ride's driver, counts only on the ride's own topic.
         val moved = driver.positionMessage(offer.quoteHash, riderKey, PICKUP.latE7 + 9_000, PICKUP.lonE7, System.currentTimeMillis())
         repeat(4) {
-            spy.publish(Matchmaker.topicFor(Matchmaker.cellOf(regionCell(PICKUP))), moved)
+            spy.publish(Matchmaker.topicFor(deployment.gossipRelease, Matchmaker.cellOf(regionCell(PICKUP))), moved)
             Thread.sleep(500)
             tickAll()
         }
@@ -307,7 +307,7 @@ class TwoPhonesRideTest {
         poll("the driver's list to fill", timeoutMs = 120_000) { rider.tick(); driver.tick(); true.takeIf { listed() == 200 } }
         // A near request nobody signed pushes nothing out: this one's signature is for another request.
         val listening = gossip()
-        val topic = Matchmaker.topicFor(Matchmaker.cellOf(regionCell(far)))
+        val topic = Matchmaker.topicFor(deployment.gossipRelease, Matchmaker.cellOf(regionCell(far)))
         listening.subscribe(topic)
         val json = com.fasterxml.jackson.databind.ObjectMapper()
         val sample = poll("a request to copy") { rider.tick(); driver.tick(); listening.drain().firstOrNull()?.data }
@@ -315,7 +315,7 @@ class TwoPhonesRideTest {
         val forged = (json.readTree(sample) as com.fasterxml.jackson.databind.node.ObjectNode)
             .put("nonce", Numeric.toHexString(ByteArray(32).also { SecureRandom().nextBytes(it) }))
             .put("from", regionCell(PICKUP))
-        listening.publish(Matchmaker.topicFor(Matchmaker.cellOf(regionCell(PICKUP))), json.writeValueAsBytes(forged))
+        listening.publish(Matchmaker.topicFor(deployment.gossipRelease, Matchmaker.cellOf(regionCell(PICKUP))), json.writeValueAsBytes(forged))
         repeat(6) { rider.tick(); driver.tick(); Thread.sleep(500) }
         assertEquals(before, driver.openRequests().map { it.id }.toSet())
 

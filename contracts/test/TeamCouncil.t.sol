@@ -6,9 +6,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {TeamDeployer} from "../script/TeamDeployer.sol";
 import {TeamCouncil} from "../src/TeamCouncil.sol";
 import {PBACGovernor} from "../src/PBACGovernor.sol";
-import {IdentityRegistry} from "../src/IdentityRegistry.sol";
 import {RideEscrow} from "../src/RideEscrow.sol";
 import {Governed} from "../src/Governed.sol";
+import {ReleaseRegistry} from "../src/ReleaseRegistry.sol";
+import {IdentityRegistry} from "../src/IdentityRegistry.sol";
 import {MockBRL} from "../src/mocks/MockBRL.sol";
 
 /// @notice The team council with the launch numbers of docs/governance.md: three of five directors and 72 hours
@@ -28,11 +29,18 @@ contract TeamCouncilTest is Test, TeamDeployer {
     uint32 constant REVOKE_CREDENTIAL = 29;
     uint32 constant BLOCK = 30;
     uint32 constant UNBLOCK = 31;
-    uint32 constant STOP_RIDES = 35;
-    uint32 constant RESUME_RIDES = 36;
+    uint32 constant STOP_RIDES = 40;
+    uint32 constant RESUME_RIDES = 41;
     uint32 constant RECOVERY_SUSPEND = 32;
     uint32 constant RECOVERY_SET_BOARD = 33;
     uint32 constant GRANT_PLAYBOOK = 34;
+    uint32 constant SET_IDENTITY_WRITER = 35;
+    uint32 constant PUBLISH_RELEASE = 36;
+    uint32 constant DEPRECATE_RELEASE = 37;
+    uint32 constant REINSTATE_RELEASE = 38;
+    uint32 constant REVOKE_RELEASE = 39;
+    uint32 constant REVOKE_RELEASE_PLAYBOOK = 42;
+    uint48 constant RELEASE = (1 << 32) | (2 << 16) | 3; // 1.2.3
 
     MockBRL brl;
     Protocol p;
@@ -86,6 +94,7 @@ contract TeamCouncilTest is Test, TeamDeployer {
                 nativeCoinCentavos: 250
             })
         );
+        _publishRelease(p, RELEASE, makeAddr("factory"), makeAddr("paymaster"));
         council = _deployTeam(
             p,
             Team({
@@ -96,7 +105,8 @@ contract TeamCouncilTest is Test, TeamDeployer {
                 security: security,
                 recovery: recovery,
                 local: false,
-                paymaster: address(0)
+                paymaster: address(0),
+                release: RELEASE
             })
         );
         TeamCouncil.Call[] memory s = _stopRides(p, false);
@@ -151,7 +161,7 @@ contract TeamCouncilTest is Test, TeamDeployer {
     function test_TheCouncilHoldsTheSeatAndTheDeployerNothing() public {
         assertEq(p.governor.guardian(), address(council));
         assertEq(p.governor.pendingGuardian(), address(0));
-        assertTrue(p.registry.trustedAttester(address(council)));
+        assertTrue(p.identities.trustedAttester(address(council)));
 
         vm.expectRevert(PBACGovernor.NotGuardian.selector);
         _guardianCall(p, address(p.escrow), abi.encodeCall(p.escrow.setTax, (500, taxman)));
@@ -257,12 +267,12 @@ contract TeamCouncilTest is Test, TeamDeployer {
 
     function test_OneMemberBlocksAtOnceAndUnblockingTakesTwo() public {
         TeamCouncil.Call[] memory blockIt =
-            _one(address(p.registry), abi.encodeCall(p.registry.setBlocked, (rider, true)));
+            _one(address(p.identities), abi.encodeCall(p.identities.setBlocked, (rider, true)));
         TeamCouncil.Call[] memory unblock =
-            _one(address(p.registry), abi.encodeCall(p.registry.setBlocked, (rider, false)));
+            _one(address(p.identities), abi.encodeCall(p.identities.setBlocked, (rider, false)));
 
         _request(security[0], BLOCK, blockIt);
-        assertTrue(p.registry.blocked(rider));
+        assertTrue(p.identities.blocked(rider));
 
         // The permission to block cannot be used to unblock.
         vm.prank(security[0]);
@@ -270,10 +280,81 @@ contract TeamCouncilTest is Test, TeamDeployer {
         council.request(BLOCK, unblock);
 
         uint256 id = _request(security[0], UNBLOCK, unblock);
-        assertTrue(p.registry.blocked(rider));
+        assertTrue(p.identities.blocked(rider));
         _approve(security[1], id, unblock); // the second approval, with no delay, runs it
 
-        assertFalse(p.registry.blocked(rider));
+        assertFalse(p.identities.blocked(rider));
+    }
+
+    // ---------------------------------------------------------------- releases
+
+    function test_SecurityRevokesAReleaseAtOnceAndTheBoardPutsItBack() public {
+        TeamCouncil.Call[] memory revoke =
+            _one(address(p.releases), abi.encodeCall(p.releases.revoke, (RELEASE)));
+        // Not Finanças' to do.
+        vm.prank(finance[0]);
+        vm.expectRevert(TeamCouncil.NotInRole.selector);
+        council.request(REVOKE_RELEASE, revoke);
+
+        _request(security[0], REVOKE_RELEASE, revoke);
+        assertEq(uint8(p.releases.statusOf(RELEASE)), uint8(ReleaseRegistry.Status.Revoked));
+
+        TeamCouncil.Call[] memory back =
+            _one(address(p.releases), abi.encodeCall(p.releases.reinstate, (RELEASE)));
+        uint256 id = _request(board[0], REINSTATE_RELEASE, back);
+        assertEq(uint8(p.releases.statusOf(RELEASE)), uint8(ReleaseRegistry.Status.Revoked));
+        _approve(board[1], id, back);
+        assertEq(uint8(p.releases.statusOf(RELEASE)), uint8(ReleaseRegistry.Status.Active));
+    }
+
+    function test_TheRevokeReleasePlaybookAlsoClosesTheEscrow() public {
+        TeamCouncil.Call[] memory calls = _revokeRelease(p, RELEASE);
+        _request(security[1], REVOKE_RELEASE_PLAYBOOK, calls);
+        assertEq(uint8(p.releases.statusOf(RELEASE)), uint8(ReleaseRegistry.Status.Revoked));
+        // Whatever app the rider runs, the release's escrow takes no new ride.
+        vm.prank(rider);
+        vm.expectRevert(
+            abi.encodeWithSelector(Governed.NotPermitted.selector, rider, RideEscrow.open.selector)
+        );
+        p.escrow.open(makeAddr("driver"), brl, 20_0000, keccak256("quote"));
+    }
+
+    function test_TheBoardPublishesAndDeprecatesAfterItsDelay() public {
+        uint48 next = RELEASE + 1;
+        TeamCouncil.Call[] memory publish = _one(
+            address(p.releases),
+            abi.encodeCall(p.releases.publish, (next, keccak256("code"), new bytes32[](0)))
+        );
+        uint256 id = _request(board[0], PUBLISH_RELEASE, publish);
+        _approve(board[1], id, publish);
+        _approve(board[2], id, publish);
+        vm.expectRevert();
+        council.execute(id, publish);
+        skip(72 hours);
+        council.execute(id, publish);
+        assertEq(p.releases.latest(), next);
+
+        _boardDoes(
+            _one(address(p.releases), abi.encodeCall(p.releases.deprecate, (RELEASE))), DEPRECATE_RELEASE
+        );
+        assertEq(uint8(p.releases.statusOf(RELEASE)), uint8(ReleaseRegistry.Status.Deprecated));
+    }
+
+    /// @dev Wiring code into the data is what can change what an account has: only the board, after 72 hours.
+    function test_OnlyTheBoardWiresARegistryIntoTheIdentities() public {
+        IdentityRegistry nextRegistry = new IdentityRegistry(p.governor, p.identities);
+        TeamCouncil.Call[] memory wire = _one(
+            address(p.identities), abi.encodeCall(p.identities.setWriter, (address(nextRegistry), true))
+        );
+        vm.prank(operations[0]);
+        vm.expectRevert(TeamCouncil.NotInRole.selector);
+        council.request(SET_IDENTITY_WRITER, wire);
+
+        _boardDoes(wire, SET_IDENTITY_WRITER);
+        address someone = makeAddr("someone");
+        vm.prank(someone);
+        nextRegistry.register(2);
+        assertEq(p.identities.rolesOf(someone), 2);
     }
 
     function test_SecurityStopsNewRidesAtOnceAndTheBoardResumesThem() public {
@@ -308,22 +389,23 @@ contract TeamCouncilTest is Test, TeamDeployer {
         vm.prank(driver);
         p.registry.register(2);
         bytes32 cnh = keccak256("klippelgo.credential.CNH");
-        TeamCouncil.Call[] memory approveCnh =
-            _one(address(p.registry), abi.encodeCall(p.registry.attest, (driver, cnh, keccak256("doc"), 0)));
+        TeamCouncil.Call[] memory approveCnh = _one(
+            address(p.identities), abi.encodeCall(p.identities.attest, (driver, cnh, keccak256("doc"), 0))
+        );
         uint256 id = _request(credentialing[0], ATTEST, approveCnh);
-        assertFalse(p.registry.hasCredential(driver, cnh));
+        assertFalse(p.identities.hasCredential(driver, cnh));
         _approve(credentialing[1], id, approveCnh);
 
-        assertTrue(p.registry.hasCredential(driver, cnh));
-        (, address issuer,,) = p.registry.credentials(driver, cnh);
+        assertTrue(p.identities.hasCredential(driver, cnh));
+        (, address issuer,,) = p.identities.credentials(driver, cnh);
         assertEq(issuer, address(council));
 
         _request(
             credentialing[2],
             REVOKE_CREDENTIAL,
-            _one(address(p.registry), abi.encodeCall(p.registry.revoke, (driver, cnh)))
+            _one(address(p.identities), abi.encodeCall(p.identities.revoke, (driver, cnh)))
         );
-        assertFalse(p.registry.hasCredential(driver, cnh));
+        assertFalse(p.identities.hasCredential(driver, cnh));
     }
 
     // ---------------------------------------------------------------- members

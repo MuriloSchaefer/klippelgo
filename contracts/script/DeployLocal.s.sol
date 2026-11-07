@@ -70,6 +70,11 @@ contract DeployLocal is Script, TeamDeployer, AccountsDeployer, LocalAccounts {
         coins[1] = IERC20(address(brz));
         Accounts memory a = _deployAccounts(p, ERC4337Utils.ENTRYPOINT_V09, coins, 100 ether, 1 ether);
 
+        // The release these code contracts and the app built with them make, at the version in /VERSION, which
+        // the app's build reads too.
+        (string memory versionText, uint48 version) = _releaseVersion();
+        _publishRelease(p, version, address(a.factory), address(a.paymaster));
+
         address[] memory instituto = new address[](1);
         instituto[0] = institutoKlippel;
         TeamCouncil council = _deployTeam(
@@ -82,7 +87,8 @@ contract DeployLocal is Script, TeamDeployer, AccountsDeployer, LocalAccounts {
                 security: instituto,
                 recovery: institutoKlippel,
                 local: true,
-                paymaster: address(a.paymaster)
+                paymaster: address(a.paymaster),
+                release: version
             })
         );
 
@@ -96,31 +102,32 @@ contract DeployLocal is Script, TeamDeployer, AccountsDeployer, LocalAccounts {
 
         // Rider registers.
         vm.startBroadcast(riderKey);
-        p.registry.register(p.registry.ROLE_RIDER());
+        p.registry.register(p.identities.ROLE_RIDER());
         vm.stopBroadcast();
 
         // Driver registers, stakes R$ 100 and receives a CNH credential hash from the attester.
         vm.startBroadcast(driverKey);
-        p.registry.register(p.registry.ROLE_DRIVER());
-        brla.approve(address(p.registry), 100e18);
-        p.registry.addStake(100e18);
+        p.registry.register(p.identities.ROLE_DRIVER());
+        brla.approve(address(p.stakes), 100e18);
+        p.stakes.addStake(100e18);
         vm.stopBroadcast();
 
         vm.startBroadcast(attesterKey);
-        p.registry.attest(driver, CREDENTIAL_CNH, keccak256("local test CNH credential"), 0);
+        p.identities.attest(driver, CREDENTIAL_CNH, keccak256("local test CNH credential"), 0);
         vm.stopBroadcast();
 
         // Validators register and stake R$ 500 each so they can sit on disputes.
         for (uint256 i; i < validators.length; ++i) {
             vm.startBroadcast(validatorKeys[i]);
-            p.registry.register(p.registry.ROLE_VALIDATOR());
-            brla.approve(address(p.registry), 500e18);
-            p.registry.addStake(500e18);
+            p.registry.register(p.identities.ROLE_VALIDATOR());
+            brla.approve(address(p.stakes), 500e18);
+            p.stakes.addStake(500e18);
             vm.stopBroadcast();
         }
 
         string memory k = "deployment";
         vm.serializeUint(k, "chainId", block.chainid);
+        vm.serializeString(k, "version", versionText);
         // No earlier block holds any of these contracts' events: phones and klippel-gov start reading events here.
         vm.serializeUint(k, "deployBlock", block.number);
         vm.serializeAddress(k, "BRLA", address(brla));
@@ -133,6 +140,9 @@ contract DeployLocal is Script, TeamDeployer, AccountsDeployer, LocalAccounts {
         vm.serializeAddress(k, "KlippelGoAccount", address(a.implementation));
         vm.serializeAddress(k, "WebAuthnVerifier", address(a.webAuthnVerifier));
         vm.serializeAddress(k, "BrlPaymaster", address(a.paymaster));
+        vm.serializeAddress(k, "ReleaseRegistry", address(p.releases));
+        vm.serializeAddress(k, "IdentityStore", address(p.identities));
+        vm.serializeAddress(k, "StakeVault", address(p.stakes));
         vm.serializeAddress(k, "IdentityRegistry", address(p.registry));
         vm.serializeAddress(k, "Reputation", address(p.reputation));
         vm.serializeAddress(k, "FeeVault", address(p.feeVault));
@@ -152,6 +162,9 @@ contract DeployLocal is Script, TeamDeployer, AccountsDeployer, LocalAccounts {
         console2.log("EntryPoint       ", address(a.entryPoint));
         console2.log("AccountFactory   ", address(a.factory));
         console2.log("BrlPaymaster     ", address(a.paymaster));
+        console2.log("ReleaseRegistry  ", address(p.releases));
+        console2.log("IdentityStore    ", address(p.identities));
+        console2.log("StakeVault       ", address(p.stakes));
         console2.log("IdentityRegistry ", address(p.registry));
         console2.log("Reputation       ", address(p.reputation));
         console2.log("FeeVault         ", address(p.feeVault));
@@ -161,6 +174,20 @@ contract DeployLocal is Script, TeamDeployer, AccountsDeployer, LocalAccounts {
         console2.log("FareGuide        ", address(p.fares));
         console2.log("BRLA (mock)      ", address(brla));
         console2.log("BRZ (mock)       ", address(brz));
+        console2.log("Release          ", versionText);
         console2.log("Written to deployments/local.json");
+    }
+
+    /// @dev /VERSION, MAJOR.MINOR.PATCH, as text and packed the way ReleaseRegistry keys releases.
+    function _releaseVersion() internal view returns (string memory text, uint48 packed) {
+        text = vm.trim(vm.readFile("../VERSION"));
+        string[] memory parts = vm.split(text, ".");
+        require(parts.length == 3, "VERSION is MAJOR.MINOR.PATCH");
+        uint256[3] memory n;
+        for (uint256 i; i < 3; ++i) {
+            n[i] = vm.parseUint(parts[i]);
+            require(n[i] <= type(uint16).max, "VERSION part too large");
+        }
+        packed = (uint48(n[0]) << 32) | (uint48(n[1]) << 16) | uint48(n[2]);
     }
 }

@@ -10,6 +10,7 @@ The design is in the [KlippelGo Architecture Plan](https://claude.ai/code/artifa
 How maps, routes and trip proofs are computed on the phone is in [docs/maps-and-routing.md](docs/maps-and-routing.md).
 How users get an account without a password, and top it up with Pix, is in [docs/accounts-and-pix.md](docs/accounts-and-pix.md).
 How Instituto Klippel's team governs, by roles and members, is in [docs/governance.md](docs/governance.md).
+How a release replaces the app and its code contracts while people's data stays is in [docs/releases-and-data.md](docs/releases-and-data.md).
 
 ## Documentation
 
@@ -27,7 +28,7 @@ skills and the security reviewer in `.claude/` use them.
 
 | Path | What it is |
 | --- | --- |
-| `contracts/` | Solidity contracts (Foundry): `PBACGovernor`, `TeamCouncil`, `IdentityRegistry`, `RideEscrow`, `FeeVault`, `Reputation`, `DisputeCourt`, `MapRegistry`, `FareGuide`, plus mock BRLA and BRZ for local use |
+| `contracts/` | Solidity contracts (Foundry): governance (`PBACGovernor`, `TeamCouncil`, `ReleaseRegistry`), data that outlives releases (`IdentityStore`, `StakeVault`, `Reputation`, `MapRegistry`, `FareGuide`), each release's code (`IdentityRegistry`, `RideEscrow`, `DisputeCourt`, `FeeVault`), plus mock BRLA and BRZ for local use |
 | `testnet/` | Scripts to run a local chain, deploy, run a demo ride and activate a map pack |
 | `gov/` | `klippel-gov`, the command-line tool Instituto Klippel's team governs with: each member requests, approves and executes the council's actions, licences among them. See [its README](gov/README.md) |
 | `deployments/` | Contract addresses per network (`local.json` is written by the deploy script) |

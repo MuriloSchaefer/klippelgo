@@ -4,7 +4,7 @@ use klippelgo_core::gossip::{GossipConfig, GossipError, GossipMessage, GossipNod
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const TOPIC: &str = "/klippelgo/match/1/6g9fp";
+const TOPIC: &str = "/klippelgo/match/9206bc18e70d7a15/6g9fp";
 
 /// A ride's topic: the length of a real one, which is what counts when a router holds many.
 fn ride_topic(ride: u32) -> String {
@@ -70,9 +70,11 @@ fn rejects_foreign_topics_and_oversized_messages() {
         Err(GossipError::InvalidTopic)
     ));
     for bad in [
-        "/klippelgo/match/1/6g9f",
-        "/klippelgo/match/1/6g9fa",
-        "/klippelgo/match/2/6g9fp",
+        "/klippelgo/match/9206bc18e70d7a15/6g9f",
+        "/klippelgo/match/9206bc18e70d7a15/6g9fa",
+        // The topic of before releases, and a release of the wrong length.
+        "/klippelgo/match/1/6g9fp",
+        "/klippelgo/match/9206bc18e70d7a/6g9fp",
         "/klippelgo/ride/1/0xabc",
         "/klippelgo/ride/1/0xABCDEF0000000000000000000000000000000000000000000000000000000000",
         &format!("/klippelgo/{}", "x".repeat(15_000)),

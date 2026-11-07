@@ -1,24 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity ^0.8.28;
 
-import {Governed} from "./Governed.sol";
+import {DataContract} from "./DataContract.sol";
 import {IPBACGovernor} from "./interfaces/IPBACGovernor.sol";
 
 /// @notice Ratings for completed rides. Only the two parties of a ride can rate each other, once each.
 ///
-/// This is a ledger: it keeps what people earned, and outlives the escrow that reported it. Several escrows
-/// may report at once, so a new escrow can open rides while the one it replaces finishes its own. A ride is
-/// known by its escrow and its id there, since each escrow counts its rides from one.
-contract Reputation is Governed {
+/// A data contract: it keeps what people earned, and outlives every release's escrow. Its writers are the
+/// escrows. Several may report at once, so a new release's escrow can open rides while the one it replaces
+/// finishes its own. A ride is known by its escrow and its id there, since each escrow counts its rides from one.
+/// The rating rules below are fixed: no release changes how a score is made.
+contract Reputation is DataContract {
     struct RideParties {
         address rider;
         address driver;
         bool riderRated;
         bool driverRated;
     }
-
-    /// @notice The escrows whose completed rides count.
-    mapping(address escrow => bool) public isEscrow;
 
     mapping(address escrow => mapping(uint256 rideId => RideParties)) public rides;
     mapping(address => uint256) public completedRides;
@@ -29,17 +27,17 @@ contract Reputation is Governed {
     event Rated(
         address indexed escrow, uint256 indexed rideId, address from, address indexed to, uint8 stars
     );
-    event EscrowSet(address indexed escrow, bool allowed);
 
-    error NotEscrow();
     error NotParty();
     error AlreadyRated();
     error InvalidStars();
+    error AlreadyRecorded();
 
-    constructor(IPBACGovernor governor_) Governed(governor_) {}
+    constructor(IPBACGovernor governor_) DataContract(governor_) {}
 
-    function recordCompletion(uint256 rideId, address rider, address driver) external {
-        if (!isEscrow[msg.sender]) revert NotEscrow();
+    function recordCompletion(uint256 rideId, address rider, address driver) external onlyWriter {
+        // A ride counts once: an escrow cannot report it again to reset who rated it.
+        if (rides[msg.sender][rideId].rider != address(0)) revert AlreadyRecorded();
         rides[msg.sender][rideId] = RideParties(rider, driver, false, false);
         completedRides[rider]++;
         completedRides[driver]++;
@@ -70,12 +68,5 @@ contract Reputation is Governed {
     function scoreOf(address subject) external view returns (uint256) {
         uint256 n = ratingCount[subject];
         return n == 0 ? 0 : ratingSum[subject] * 100 / n;
-    }
-
-    /// @notice Lets an escrow report completed rides, or stops it. An escrow being replaced is left allowed
-    /// until its last ride settled, so the rides it holds still count.
-    function setEscrow(address escrow_, bool allowed) external onlyGovernor {
-        isEscrow[escrow_] = allowed;
-        emit EscrowSet(escrow_, allowed);
     }
 }

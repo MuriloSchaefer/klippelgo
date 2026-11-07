@@ -116,6 +116,49 @@ class Governance(private val stack: Stack) : AutoCloseable {
         gov("unblock", account)
     }
 
+    // ---------------------------------------------------------------- releases
+
+    /** The release the app under test was built at, as its deployment file names it. */
+    val release: String = json.readTree(stack.deploymentFile).get("version")?.asText()
+        ?: error("${stack.deploymentFile} names no release version: deploy again with this code's contracts")
+
+    /** `0` none, `1` active, `2` deprecated, `3` revoked, read afresh from the release registry. */
+    fun releaseStatus(version: String = release): Int = stack.script(
+        "cast", "call", "--rpc-url", stack.rpc, stack.deployment.releases, "statusOf(uint48)(uint8)",
+        org.klippelgo.chain.Deployment.packVersion(version).toString(),
+    ).trim().split(" ")[0].toInt()
+
+    /** The board deprecates the app's release. It is put back at the end. */
+    fun deprecateRelease() {
+        undo.addFirst { reinstate(release) }
+        request("release", "deprecate", release)
+    }
+
+    /** Segurança revokes the app's release, in the registry only. It is put back at the end. */
+    fun revokeRelease() {
+        undo.addFirst { reinstate(release) }
+        request("release", "revoke", release)
+    }
+
+    /** The board puts the app's release back, as it does once a revoke turns out not to be needed. */
+    fun reinstateRelease() = reinstate(release)
+
+    private fun reinstate(version: String) {
+        if (releaseStatus(version) in 2..3) request("release", "reinstate", version)
+    }
+
+    /**
+     * The board publishes the next release after the latest, naming `apks` (files) as its APKs, and gives its
+     * version. A release cannot be unpublished: at the end it is revoked, so no phone is offered it.
+     */
+    fun publishNextRelease(vararg apks: java.io.File): String {
+        val latest = stack.script("cast", "call", "--rpc-url", stack.rpc, stack.deployment.releases, "latest()(uint48)").trim().split(" ")[0].toLong()
+        val next = org.klippelgo.chain.Deployment.versionText(latest + 1)
+        undo.addFirst { if (releaseStatus(next) in 1..2) request("release", "revoke", next) }
+        request("release", "publish", next, *apks.map { it.path }.toTypedArray())
+        return next
+    }
+
     /**
      * A second member of a role (`finance`, `security`, …), with a key of its own and gas: Instituto Klippel,
      * as the board, adds them. They leave the role at the end. Gives the member's private key.

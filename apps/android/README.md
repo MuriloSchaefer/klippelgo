@@ -188,7 +188,18 @@ running for the two phones to find each other.
 `app/build/outputs/apk/release/`: about 35 MB for phones (`arm64-v8a`) and 37 MB for emulators (`x86_64`), and a
 universal one of about 63 MB with both. The app is built for those two architectures only, since the Rust core is.
 Code reached only by reflection or from native code must be kept in `app/proguard-rules.pro`, or the release
-breaks where the debug build works. The APKs are unsigned; there is no release key yet.
+breaks where the debug build works.
+
+What a build is pinned to:
+
+| | How | Default |
+| --- | --- | --- |
+| The network | `-Pklippelgo.network=<name>` copies `deployments/<name>.json` into the APK as `deployment.json`. A build for any network but `local` fails without that file, or when its `version` is not `/VERSION` | `local`, which falls back to a fresh testnet's addresses when `deployments/local.json` is missing |
+| The version | `versionName` is `/VERSION`; `versionCode` is major × 1 000 000 + minor × 1 000 + patch | |
+| The update mirror | `-Pklippelgo.apkMirror=<url>`: where the app fetches `klippelgo-<version>-<abi or universal>.apk` | The map packs' host and port |
+| Signing | `KLIPPELGO_RELEASE_KEYSTORE`, `KLIPPELGO_RELEASE_STORE_PASSWORD`, `KLIPPELGO_RELEASE_KEY_ALIAS`, `KLIPPELGO_RELEASE_KEY_PASSWORD`, from the environment or Gradle properties | Unsigned. The release key is held like the production deployer's key: on hardware, used in a ceremony, never in CI ([docs/releases-and-data.md](../../docs/releases-and-data.md)) |
+
+The build leaves out the VCS and dependency metadata that would make two builds of one tag differ.
 
 ## Moving the car
 

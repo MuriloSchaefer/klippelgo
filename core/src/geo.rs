@@ -71,9 +71,10 @@ pub fn encode(lat: f64, lon: f64, precision: usize) -> String {
     out
 }
 
-/// Gossip topic a driver subscribes to for a cell.
-pub fn topic(cell: &str) -> String {
-    format!("/klippelgo/presence/1/{cell}")
+/// Gossip topic a driver would announce presence on in a cell, among phones of one release (the same 16 hex
+/// characters a match topic carries). Nothing uses it yet, and the gossip node's topic filter does not admit it.
+pub fn topic(release: &str, cell: &str) -> String {
+    format!("/klippelgo/presence/{release}/{cell}")
 }
 
 #[cfg(test)]
@@ -86,7 +87,10 @@ mod tests {
         assert_eq!(encode(57.64911, 10.40744, 11), "u4pruydqqvj");
         // The centre of Cascavel, Paraná, the pilot city: a 5-character cell is all the gossip network sees.
         assert_eq!(encode(-24.9555, -53.4552, DISCOVERY_PRECISION), "6g9fp");
-        assert_eq!(topic("6gycf"), "/klippelgo/presence/1/6gycf");
+        assert_eq!(
+            topic("9206bc18e70d7a15", "6gycf"),
+            "/klippelgo/presence/9206bc18e70d7a15/6gycf"
+        );
     }
 
     #[test]

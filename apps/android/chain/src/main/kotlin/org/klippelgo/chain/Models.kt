@@ -175,3 +175,32 @@ data class Coin(val symbol: String, val address: String, val decimals: Int) {
 }
 
 class ChainException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+/** Mirrors `ReleaseRegistry.Status`, plus [Unknown] for a release the registry does not name or could not be read. */
+enum class ReleaseStatus {
+    Unknown, Active, Deprecated, Revoked;
+
+    companion object {
+        fun of(onChain: Int): ReleaseStatus = when (onChain) {
+            1 -> Active
+            2 -> Deprecated
+            3 -> Revoked
+            else -> Unknown
+        }
+    }
+}
+
+/**
+ * What the release registry says of this build's release ([version]) and of the [latest] one. An update is
+ * offered only to a higher release that is active: never back to an older one, which a lying RPC could otherwise
+ * offer as an older release's genuine, signed APK (P24 in apps/docs/security.md).
+ */
+data class ReleaseCheck(val status: ReleaseStatus, val version: Long, val latest: Long, val latestStatus: ReleaseStatus) {
+    val updateAvailable: Boolean get() = version != 0L && latest > version && latestStatus == ReleaseStatus.Active
+
+    /** Revoked: rides under way finish and money can be withdrawn, and nothing new starts. */
+    val mayStartRides: Boolean get() = status != ReleaseStatus.Revoked
+}
+
+/** What an earlier release's escrow still holds for this account: rides not finished there, and payments owed. */
+data class LeftOnEscrow(val escrow: String, val unfinished: List<java.math.BigInteger>, val owed: Map<Coin, java.math.BigInteger>)

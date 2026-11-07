@@ -256,7 +256,8 @@ fn us(seconds: f64) -> i64 {
 }
 
 fn topic(cell: usize) -> String {
-    format!("/klippelgo/match/1/bc{cell:03}")
+    // Every simulated phone is on one release.
+    format!("/klippelgo/match/0000000000000000/bc{cell:03}")
 }
 
 fn ride_topic(trip: u64) -> String {

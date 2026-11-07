@@ -29,7 +29,7 @@ flowchart LR
 | --- | --- |
 | Router | Real: the `klippelgo-node` binary, started as a child process, as `make gossip-node` runs it |
 | Phones | Real: `klippelgo_core::gossip::GossipNode`, the object the apps get through UniFFI, each dialling only the router |
-| Topics, cells, message sizes, cadences | As the app uses them: `/klippelgo/match/1/<cell>`, the nine cells around a driver, the sizes of the signed JSON messages, `Matchmaker`'s intervals |
+| Topics, cells, message sizes, cadences | As the app uses them: `/klippelgo/match/<release>/<cell>` (one release for every simulated phone), the nine cells around a driver, the sizes of the signed JSON messages, `Matchmaker`'s intervals |
 | Message content | A 41-byte header the benchmark reads back, padded to the real message's size. The router never reads content, so this changes nothing it does |
 | People | Simulated: riders arrive at random (Poisson) at the busiest cell's rate; drivers quote, are chosen and drive on fixed durations |
 | Matchmaker's limits | Simulated on each phone: the 2 s drain, the 200-request list and what leaves it. A request a phone quoted is not kept past its close here: one phone quotes for hundreds of people, and keeping them would fill a list as no real phone's fills |

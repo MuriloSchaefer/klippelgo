@@ -20,7 +20,7 @@ Four facts decide everything else on this page.
 | No contract has an owner or a proxy, and the one authority is the guardian, Instituto Klippel's team council ([security.md](security.md), C1). Code at an address never changes | A fix is never "pushed". It is either a parameter the council changes, a new contract the council wires in, or a whole new deployment |
 | There is no pause in the contracts | Segurança's `stop-rides` playbook stops new rides at once; rides under way go on. What ships must be right, and the route for the day it is not is written down before launch |
 | The deployer can do anything until `finishBootstrap` and the council accepting the guardian's seat (L11), and the deploy script is many transactions, not one | A deployment is not trusted because it was made. It is trusted after anyone has checked it against the published configuration |
-| Addresses are identity. Every quote and receipt hash carries the chain id and the escrow's address, the app ships with the addresses compiled in, and stake, reputation and credentials live in specific contracts | A new deployment is a new network of people, not an update. Moving to one has a cost that no script removes                            |
+| Addresses are identity. Every quote and receipt hash carries the chain id and the escrow's address, and the app ships with the addresses compiled in. Stake, reputation and credentials live in data contracts that outlive releases | A release replaces code contracts and the app together; the data stays. A new deployment is a new network of people, and moving to one has a cost that no script removes |
 
 ## Environments
 
@@ -60,7 +60,7 @@ flowchart LR
 | Pull request      | `forge fmt --check`, `forge test`, local deploy, `demo-ride.sh`, `gov/test.sh`, the security review ([CLAUDE.md](../../CLAUDE.md))                          | Author, reviewer, CI     |
 | Release candidate | Deploys and verifies on Amoy with no manual step                                                                                                                   | CI                       |
 | Soak | The app's end-to-end suites against Amoy; one action taken through request, approve and execute with `klippel-gov` by two members; a map pack activated | Maintainers |
-| Audit | For any change to a contract that holds funds (`RideEscrow`, `IdentityRegistry`, `FeeVault`), to `PBACGovernor` or to `TeamCouncil`: an external review of the tagged commit | External |
+| Audit | For any change to a contract that holds funds (`RideEscrow`, `StakeVault`, `FeeVault`), to a data contract (`IdentityStore`, `Reputation`), to `PBACGovernor`, `ReleaseRegistry` or `TeamCouncil`: an external review of the tagged commit | External |
 | Release           | The build from the tag reproduces byte for byte; the dry run on a fork of mainnet ends with the expected addresses and a closed bootstrap                          | CI                       |
 | Ceremony          | Runbook below                                                                                                                                                      | Two people               |
 | Publication       | Verification passes when run by someone who was not the deployer                                                                                                   | A second person, then CI |
@@ -70,11 +70,28 @@ flowchart LR
 | Part  | Changes when                                                          | On chain                                            |
 | ----- | --------------------------------------------------------------------- | --------------------------------------------------- |
 | MAJOR | A new full deployment: new governor, new addresses                    | New network of contracts. The old one keeps running |
-| MINOR | A contract is replaced or added inside a live deployment, by the board | One or more new addresses in the deployment file |
+| MINOR | A release: code contracts replaced or added inside a live deployment, wired in by the board and published in `ReleaseRegistry` | New code contract addresses in the deployment file; the data contracts' stay |
 | PATCH | Scripts, tests, docs, tooling                                         | Nothing                                             |
 
 A parameter changed by the council is not a version: it is governance doing its job, and `klippel-gov status`
 shows the result.
+
+**Releases.** The repository's version is in `/VERSION`. The app is built at it, with that version and the
+deployment file's addresses compiled in, and the release is published under it in `ReleaseRegistry`: the hash
+of its code contracts' addresses and the SHA-256 of each APK built from the tag. Every app reads its own
+release's status at start and in its log batch: active, deprecated (it asks its user to update) or revoked (it
+starts no new ride). An app-only release keeps the same code contracts and so the same contracts hash. The
+design, and what each part can and cannot enforce, is [docs/releases-and-data.md](../../docs/releases-and-data.md).
+
+| Who | Does | With |
+| --- | --- | --- |
+| The board | Publishes a release after checking its addresses and APK hashes against the tag, and deprecates the one before | `klippel-gov request release publish <version> <apk files>`, three directors, 72 hours |
+| The board | Stores that release's `revoke-release-<version>` playbook, which names its escrow, and new `stop-rides` and `resume-rides` for that escrow (the launch ones name the launch escrow) | `grantPlaybook`, three directors, 72 hours |
+| Segurança | Revokes a release after a vulnerability, at once, closing its escrow in the same action | `klippel-gov run revoke-release-<version>`; the tool refuses a name two active playbooks share |
+| The board | Puts a deprecated or revoked release back | `klippel-gov request release reinstate <version>`, two directors |
+
+The local deploy publishes the release itself, while the deployer is still the guardian, with no APK hashes,
+and stores its `revoke-release-<version>` playbook with the team.
 
 ## Configuration
 
@@ -126,14 +143,18 @@ wallet (`--ledger`), and no workflow holds a key that can do anything on mainnet
   "version": "1.0.0",
   "commit": "<the tagged commit>",
   "deployBlock": 0,
-  "PBACGovernor": "0x…", "TeamCouncil": "0x…", "IdentityRegistry": "0x…", "Reputation": "0x…", "FeeVault": "0x…",
-  "RideEscrow": "0x…", "DisputeCourt": "0x…", "MapRegistry": "0x…", "FareGuide": "0x…",
+  "dataDeployBlock": 0,
+  "PBACGovernor": "0x…", "TeamCouncil": "0x…", "ReleaseRegistry": "0x…",
+  "IdentityStore": "0x…", "StakeVault": "0x…", "Reputation": "0x…", "MapRegistry": "0x…", "FareGuide": "0x…",
+  "IdentityRegistry": "0x…", "RideEscrow": "0x…", "DisputeCourt": "0x…", "FeeVault": "0x…",
+  "AccountFactory": "0x…", "BrlPaymaster": "0x…",
+  "previousEscrows": [{ "RideEscrow": "0x…", "deployBlock": 0 }],
   "BRLA": "0x…", "BRZ": "0x…",
   "institutoKlippel": "0x…", "taxCollector": "0x…"
 }
 ```
 
-`deployBlock` is where `klippel-gov` starts reading the council's events from, and where the app starts its scans for rides and drivers. The local deploy writes the block it ran at. Forge's own record of the transactions
+`version` is the release (`/VERSION` at the tag). `deployBlock` is where `klippel-gov` starts reading the council's events from, and where the app starts its scans for rides. `dataDeployBlock`, when present, is where the data contracts were deployed, earlier than a later release's code: the app reads registrations from there. `previousEscrows` are earlier releases' escrows the app keeps reading until the account has no ride and no payment left on them. The local deploy writes the block it ran at. Forge's own record of the transactions
 (`contracts/broadcast/<script>/<chain id>/`) is committed with it for every chain but the local one.
 
 ## Keys
@@ -222,14 +243,15 @@ and fails on any difference:
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------- |
 | Runtime bytecode at each address                                                                                                                                                      | The build from the tag                | Different code                                                                        |
 | `bootstrapper() == 0`, `guardian() == TeamCouncil`, `pendingGuardian() == 0` | | L11: a deployer that kept its power |
-| `governor()` of every contract and the council's `governor`, the governor's `registry` and `reputation`, the escrow's `reputation`, `feeVault`, `court`, the court's `escrow`, `Reputation.isEscrow` of the escrow | The deployment file | A contract wired to something else |
+| `governor()` of every contract and the council's `governor`, the governor's `identities`, `stakes` and `reputation`, the escrow's `reputation`, `feeVault`, `court`, the court's `escrow`, the registry's and the vault's `identities`, `IdentityStore.writers` of the registry and `Reputation.writers` of the escrow, and `ReleaseRegistry.release(version)` against the contracts hash of the file's code contracts | The deployment file | A contract wired to something else |
 | Every parameter, policy, token configuration, attester, the tariff and the verifier tolerances                                                                                        | `deployments/config/<network>.json` | A value changed between deploy and bootstrap's end                                    |
-| The full list of `PolicySet`, `AttesterSet`, `TokenConfigured`, `ModulesSet`, `RoleCreated`, `MemberRoleSet`, `PermissionGranted` and `PlaybookGranted` events since `deployBlock` | The same file | Something extra set during bootstrap: a second attester, a policy on another function, an extra member or permission |
+| The full list of `PolicySet`, `AttesterSet`, `TokenConfigured`, `ModulesSet`, `WriterSet`, `Published`, `RoleCreated`, `MemberRoleSet`, `PermissionGranted` and `PlaybookGranted` events since `deployBlock` | The same file | Something extra set during bootstrap: a second attester or writer, a policy on another function, an extra member or permission |
 | No council actions, no identities, no stake, no rides | | A deployment someone used before it was announced |
 
 `klippel-gov status` already checks that the bootstrap is closed, that every contract answers to the governor,
-that the council is the guardian and that no handover is waiting, and is what an operator runs day to day; it
-does not compare bytecode or the rest of the wiring. After launch the nightly run compares state with the
+that the council is the guardian and that no handover is waiting, that the governor reads the file's data
+contracts and that the file's registry and escrow are their writers, and the file's release status; it is what
+an operator runs day to day. It does not compare bytecode or the rest of the wiring. After launch the nightly run compares state with the
 council's executed actions instead of the launch file: parameters are meant to move, by the council and only
 by the council.
 
@@ -250,8 +272,11 @@ Step 3 takes a day at least. Plan the ceremony that far ahead.
 flowchart TD
     q{What changes?}
     q -- "A number, a policy, a token,<br/>an attester, a block" --> p[Council action<br/>no deployment]
-    q -- "The code of FareGuide, FeeVault,<br/>MapRegistry, DisputeCourt,<br/>RideEscrow or TeamCouncil" --> m[Deploy the one contract,<br/>the board wires it in<br/>MINOR]
-    q -- "The code of Reputation,<br/>IdentityRegistry or PBACGovernor" --> v[New full deployment<br/>MAJOR]
+    q -- "The code of IdentityRegistry, RideEscrow,<br/>DisputeCourt, FeeVault, AccountFactory<br/>or BrlPaymaster" --> m[A release: deploy the code contracts,<br/>the board wires them in and publishes it<br/>MINOR]
+    q -- "TeamCouncil" --> c[New council,<br/>proposeGuardian]
+    q -- "The shape of IdentityStore,<br/>Reputation, MapRegistry<br/>or FareGuide" --> d[Migrate the data contract<br/>read-through by default]
+    q -- "StakeVault" --> s[New vault,<br/>people move their stake]
+    q -- "PBACGovernor or<br/>ReleaseRegistry" --> v[New full deployment<br/>MAJOR]
 ```
 
 **A parameter** needs no engineer: `klippel-gov request …`, the role's approvals, its delay. It is the
@@ -269,15 +294,16 @@ team's to cancel it. What each replacement costs today:
 | `MapRegistry`      | `setPolicy` for `attest`; the app reads its address                                                                           | Yes, with an app release     | Activated packs must be attested and activated again                                                                                                                            |
 | `FeeVault`         | `RideEscrow.setModules`                                                                                                         | Yes                          | Nothing: sweep the old vault. Rides already open pay the new one, since the vault is read at settlement                                                                         |
 | `DisputeCourt` | `RideEscrow.setModules`, `setPolicy` for `commit` | Yes | Nothing: each ride keeps the court it opened with, so the old court finishes its disputes and the new one hears rides opened after it. A court with a bug cannot be swapped out of the rides that name it (L23) |
-| `RideEscrow` | `Reputation.setEscrow(new, true)`, `setPolicy` for `open` and `accept`, a new `DisputeCourt` (its escrow is fixed at construction), and new rides closed on the old one | Yes, with an app release | Nothing: `Reputation` listens to both, rides are keyed by escrow and id, and the old escrow settles what it holds. Delist it once its last ride settled. A driver's two places (C22) are per escrow: close `accept` on the old one when the new one opens, or a driver can hold two rides on each meanwhile |
-| `Reputation` | `PBACGovernor.setModules`, `RideEscrow.setModules` | No | Every score and every completed-ride count |
-| `IdentityRegistry` | `PBACGovernor.setModules`                                                                                                       | No                           | Roles, credentials, blocks. Stake stays withdrawable from the old registry but counts for nothing                                                                               |
-| `PBACGovernor` | It is `immutable` in every contract | No | Everything |
+| `IdentityRegistry` | `IdentityStore.setWriter(new, true)`, then `setWriter(old, false)` | Yes, with an app release | Nothing: roles, credentials and blocks are in `IdentityStore`, which stays |
+| `RideEscrow` | `Reputation.setWriter(new, true)`, `setPolicy` for `open` and `accept`, a new `DisputeCourt` (its escrow is fixed at construction), and new rides closed on the old one | Yes, with an app release | Nothing: `Reputation` listens to both, rides are keyed by escrow and id, and the old escrow settles what it holds. Delist it once its last ride settled. A driver's two places (C22) are per escrow: close `accept` on the old one when the new one opens, or a driver can hold two rides on each meanwhile |
+| `Reputation`, `IdentityStore` | Data: not replaced by a release. A new shape is a migration, `PBACGovernor.setModules` and, for `Reputation`, `RideEscrow.setModules` | By migration only | Nothing if migrated read-through (the new contract answers from the frozen old one for accounts it has not seen); see [docs/releases-and-data.md](../../docs/releases-and-data.md), "Migrating a data contract". Not built yet |
+| `StakeVault` | `PBACGovernor.setModules`, and the new vault's `identities` (fixed at construction: moving `IdentityStore` means a new vault too) | No: its code is final | People move their own stake: `requestUnstake` and `withdrawStake` on the old vault, `addStake` on the new. Stake on the old one counts for nothing once the governor reads the new one |
+| `PBACGovernor`, `ReleaseRegistry` | It is `immutable` in every contract; the release registry's address is compiled into every app | No | Everything |
 | `TeamCouncil` | `PBACGovernor.proposeGuardian` by the board, then `acceptGuardianSeat` on the new council; `setAttester` for the new one | Yes | Credentials the old council issued stay valid while it stays on the attester list. Pending actions on the old council die with its seat |
 
-So `Reputation`, `IdentityRegistry` and `PBACGovernor` are a new deployment in practice, and that is the
-honest state of deployability today: cheap for parameters, the leaf contracts, the escrow and the council,
-expensive for the ledgers and the governor.
+So a release replaces every code contract in place while people keep their identity, stake, credentials and
+reputation. Only `PBACGovernor` and `ReleaseRegistry` are a new deployment, and a data contract whose shape
+changes is a migration.
 
 ## Old versions
 
@@ -308,18 +334,21 @@ What does not move to the successor, and has to be said plainly to users before 
 | Blocked accounts | Blocked again by Segurança, if still wanted |
 | Map packs                       | Attested and activated again                                                                |
 
-**The app** ships with one deployment's addresses, so an app version belongs to a deployment. During a
-retirement, the old app keeps working against the old contracts for whoever has a ride under way, and tells
-its user to update before starting another. Two things must be settled before the first retirement: the gossip
-topic (`/klippelgo/match/1/<cell>`) does not carry the deployment, so phones on both would hear each other's
-requests; and the app needs to hold a retired deployment long enough to finish a ride and withdraw stake.
+**The app** ships with one release's addresses, so an app version belongs to a release. During a
+retirement, the old app keeps working against the old contracts for whoever has a ride under way, and when
+its release is deprecated or revoked tells its user to update before starting another. Match topics carry the
+release (`/klippelgo/match/<release>/<cell>`, the first eight bytes of its contracts hash), so phones on two
+releases never hear each other's requests. A new release's deployment file lists the escrows before it in
+`previousEscrows`; the app reads the account's unfinished rides and owed payments there and withdraws the
+payments. Stake is in `StakeVault`, which a release does not replace.
 
 **If a deployed contract turns out to be exploitable**, in order of speed:
 
 1. Segurança runs `stop-rides`, one member, at once: nobody may open or accept a ride. Rides under way go on,
    on their own terms.
 2. Credenciamento revokes licences where a driver is the problem: one member, at once.
-3. An app release that refuses to open rides on that deployment. It reaches only phones that update.
+3. Segurança runs the release's `revoke-release-<version>` playbook: honest apps on it start no ride and offer the
+   update, and its escrow takes no new ride from any app. A fixed release follows.
 4. The board closes the door for good (step 2 of retiring a deployment), or wires in a fix.
 
 The board's `resume-rides` puts the policies back once it is safe.
@@ -333,8 +362,9 @@ The board's `resume-rides` puts the policies back once it is safe.
 | `script/verify-deployment.sh`                                                                                                                                          | Trusting a deployment                            |
 | `deploy-testnet.yml`, `release.yml`, `verify-deployment.yml`, and the GitHub environments `amoy` and `polygon`                                                 | The pipeline                                     |
 | A pinned Foundry version in every workflow                                                                                                                               | Reproducible bytecode                            |
-| The app reading a deployment per build flavour instead of`local.json` only (`apps/android/app/build.gradle.kts`)                                                     | Testnet and production builds                    |
-| The deployment in the gossip topic; the app keeping a retired deployment                                                                                                 | Retiring a version                               |
+| Finishing a ride on an earlier release from the app: it lists unfinished rides and withdraws owed payments on `previousEscrows`, but cannot complete, cancel or time out a ride there | Retiring a release |
+| Migrating a data contract read-through (`IdentityStore`, `Reputation`): the new contract answering from the frozen old one | A data contract whose shape changes |
+| `release.yml` building the APKs twice and comparing them, publishing them under `klippelgo-<version>-<abi>.apk` to the mirror and a store, and a release key on hardware | The `apk` hashes a director checks, and updates people can install |
 | `TeamDeployer` reading the team from `deployments/config/<network>.json` | The production council |
 | The watcher that pages every member on each council request ([docs/governance.md](../../docs/governance.md)) | Production |
 | An external audit                                                                                                                                                        | Production                                       |

@@ -12,7 +12,7 @@ file disagree, the doc wins; if the code and a doc disagree, stop and tell the u
 
 1. Read `contracts/docs/overview.md`, section "Structure and patterns". It says where each kind of code goes
    and the nine patterns every contract follows.
-2. Read `contracts/docs/security.md`: the access table, invariants C1 to C22, and the known limits. Name the
+2. Read `contracts/docs/security.md`: the access table, invariants C1 to C25, and the known limits. Name the
    invariants your change touches before you write it.
 3. If the change adds state, a loop, or a transaction per ride, read `contracts/docs/scalability.md`,
    sections "Why every call is constant" and "What would not scale".

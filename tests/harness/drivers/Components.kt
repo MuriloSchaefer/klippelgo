@@ -89,6 +89,49 @@ class MapView(phone: Phone) : Component(phone, Tags.MAP) {
     fun zoomOut() = phone.tap(Tags.MAP_ZOOM_OUT)
 }
 
+/** What the release registry says of the app's release, above every screen, with the button to update. */
+class ReleaseNotice(phone: Phone) : Component(phone, Tags.RELEASE_NOTICE) {
+    /** `revoked`, `deprecated`, `update` (a newer release is out), or `none` when there is no notice. */
+    fun status(): String =
+        phone.screen().startingWith(Tags.releaseNoticeStatus("")).firstOrNull()?.tag?.removePrefix(Tags.releaseNoticeStatus("")) ?: "none"
+
+    /** Waits until the notice says `status` (`none` waits for it to leave), as the app reads the registry again. */
+    fun awaitStatus(status: String, timeoutMs: Long = 90_000): Boolean {
+        phone.await("the release notice to say $status", timeoutMs) { screen ->
+            val now = screen.startingWith(Tags.releaseNoticeStatus("")).firstOrNull()?.tag?.removePrefix(Tags.releaseNoticeStatus("")) ?: "none"
+            true.takeIf { now == status }
+        }
+        return true
+    }
+
+    fun text(): String? = readOrNull(Tags.RELEASE_NOTICE_TEXT)
+
+    /** Whether the notice offers to update. */
+    fun offersUpdate(): Boolean = phone.find(Tags.RELEASE_NOTICE_UPDATE) != null
+
+    /** Whether the notice holds the update back until the ride under way is finished. */
+    fun updateWaitsForRide(): Boolean = phone.find(Tags.RELEASE_NOTICE_AFTER_RIDE) != null
+
+    /** Taps the update button. What follows is Android's installer, or the reason the update was refused. */
+    fun update() = phone.tap(Tags.RELEASE_NOTICE_UPDATE)
+
+    /** Why the last update did not install, when it did not. */
+    fun failure(): String? = readOrNull(Tags.RELEASE_NOTICE_FAILED)
+}
+
+/** What escrows of earlier releases still hold for this account: rides to finish there, and money to withdraw. */
+class PreviousRelease(phone: Phone) : Component(phone, Tags.PREVIOUS_RELEASE) {
+    fun rides(): String? = readOrNull(Tags.PREVIOUS_RELEASE_RIDES)
+
+    fun owed(escrow: String): String? = readOrNull(Tags.previousReleaseOwed(escrow))
+
+    /** Takes back what that escrow owes, and waits until the screen no longer shows it. */
+    fun withdraw(escrow: String) {
+        phone.tap(Tags.previousReleaseWithdraw(escrow))
+        phone.awaitGone(Tags.previousReleaseOwed(escrow), 60_000)
+    }
+}
+
 /** The card that stands where the map's controls would be while the region's map pack is not on the phone. */
 class MapNotice(phone: Phone) : Component(phone, Tags.MAP_NOTICE) {
     /** `checking`, `not-published`, `not-downloaded`, `downloading`, `failed`, or `ready` when there is no notice. */

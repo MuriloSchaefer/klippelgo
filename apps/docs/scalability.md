@@ -28,7 +28,7 @@ flowchart LR
 
 | Dependency | Load per phone | Grows with |
 | --- | --- | --- |
-| Chain RPC | While the app is on screen, a driver is online, or a ride is under way: the newest block every 2 s; when it is new, one batch of four log queries over the new blocks; a full read (about ten requests, the rides and ratings in one batch each) when those show something about this account, after each action, and every 30 s. A few more reads before each operation (nonce, block, balances, allowance). Nothing while the app is off screen with no ride and not online | Number of open apps |
+| Chain RPC | While the app is on screen, a driver is online, or a ride is under way: the newest block every 2 s; when it is new, one batch of four log queries over the new blocks; a full read (about ten requests, the rides and ratings in one batch each, plus two or three for the release's status, and for each earlier release's escrow in the deployment file one batch (what it owes in each coin, and each of this account's rides there not yet seen settled) and its incremental log scans) when those show something about this account, after each action, and every 30 s. A few more reads before each operation (nonce, block, balances, allowance). Nothing while the app is off screen with no ride and not online | Number of open apps |
 | Bundler | Two operations per ride per side (the rider's `open` and `complete`, the driver's `accept` and `start`), each an estimate, a send and a receipt polled every half second | Rides |
 | Gossip router | The messages of the cells the phone hears: a driver's own and the eight around it, a rider's only those of their own requests. A rider also receives their own ride's positions, a driver sends them. Every phone hears the router join and leave each ride's topic, about 9 MB an hour at the target | How busy those cells are |
 | Pack mirror | One download per region per release, resumable, only changed files | Releases |
@@ -59,7 +59,7 @@ flowchart TB
 
 | # | Limit | Where it is | Lever |
 | --- | --- | --- | --- |
-| S10 | **First scans from the deploy block.** A new phone, or a rider waiting for a driver it never looked at, reads every 2 000-block range since `deployBlock` one after another before it shows those rides | `KlippelGoClient.scan` | Scan backwards from the head and stop at the account's first ride, or start from a checkpoint the app ships |
+| S10 | **First scans from the deploy block.** A new phone, or a rider waiting for a driver it never looked at, reads every 2 000-block range since `deployBlock` one after another before it shows those rides. Registered drivers are scanned from `dataDeployBlock`, which stays where the data contracts were deployed as releases follow, and each earlier release's escrow from its own deploy block | `KlippelGoClient.scan` | Scan backwards from the head and stop at the account's first ride, or start from a checkpoint the app ships |
 | S12 | **Every poll downloads the escrow's events of 17 blocks.** `changedSince` reads all escrow logs from 16 blocks before the last read to the head, for every phone on screen, and filters on the phone. At 14 rides a second that is about 1 900 logs, 2.4 GB an hour per phone | `KlippelGoClient.changedSince` | Filter by the indexed rider and driver topics on the node; read only the new blocks and the reorganised ones |
 
 None of these is a redesign.

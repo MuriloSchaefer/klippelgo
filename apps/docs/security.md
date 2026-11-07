@@ -1,7 +1,7 @@
 # Apps: security
 
 The app is where an attacker actually meets KlippelGo: it takes messages from strangers, downloads map data
-from a mirror, holds the keys, and shows the user what to believe. The numbered invariants (`A1` to `A15`) are
+from a mirror, holds the keys, and shows the user what to believe. The numbered invariants (`A1` to `A17`) are
 what the [security reviewer](../../.claude/agents/security-reviewer.md) checks a change against.
 
 Related: [overview.md](overview.md), [core security](../../core/docs/security.md),
@@ -32,12 +32,15 @@ flowchart LR
     end
     gossip((Gossip<br/>anyone)):::untrusted
     mirror[(Pack mirror)]:::untrusted
+    apkmirror[(APK mirror)]:::untrusted
+    installer[Android installer<br/>same signing key only]
     rpc[(RPC provider)]:::semi
     bundler[(Bundler)]:::semi
     chain[(Contracts)]:::trusted
 
     gossip -- "every message validated on entry" --> mm
     mirror -- "hashes checked against the chain" --> ms
+    apkmirror -- "SHA-256 checked against ReleaseRegistry" --> up[Updater] -- "the person confirms" --> installer
     rpc -- "reads are believed" --> cl
     cl -- "operations the device key signed" --> bundler --> chain
     bundler -- "gas estimates (capped), receipts (believed)" --> cl
@@ -206,8 +209,22 @@ a driver and a short window could be filled to hide the real one.
   refuses gas limits above fixed ceilings (per kind of gas), a fee per gas above 1 000 gwei, and any operation
   that could cost more than R$ 5,00 at the worst, at the rate it reads from `FareGuide`: a bundler cannot make
   one operation take the account's balance. A lying RPC can lower that rate (P3); the gas ceilings still bound
-  the operation.
+  the operation. It gives the paymaster's check at least 80 000 gas whatever the bundler estimates, since that
+  check's cost depends on what is cold when the bundle runs; the EntryPoint charges verification gas as used, so
+  the floor costs nothing unless spent, and the R$ 5,00 worst case includes it.
 - **A13. Cleartext traffic is allowed only to loopback and the emulator's host alias.**
+- **A16. A revoked release starts nothing, and nothing else stops the app.** When the release registry says this
+  build's release is revoked, the view model refuses to ask for a ride, change its price, take an offer, quote
+  and accept, and shows why (the guard is in `announce`, which every request goes through, and in each action
+  that quotes, locks or accepts); a ride under way still finishes and money owed is still withdrawn. While a
+  ride of the account is unfinished, the app offers no update, since the new release's app could not finish it
+  (P25). A release the
+  registry does not name, names with other code contracts than this build's, or that cannot be read, counts as
+  unknown and changes nothing, so neither the RPC nor the registry is a switch that turns the app off.
+- **A17. Only an APK the release registry names is handed to the installer.** `Updater` keeps a download only if
+  its SHA-256 is one `ReleaseRegistry.isApk` names for that release; anything else is deleted unread. A download
+  is capped at 400 MB, lives in `cacheDir/updates/`, the only folder the FileProvider shares, and Android
+  installs it only after the person confirms and only if it is signed with the app's own key.
 - **A14. Money shown is money locked.** The amounts on the confirmation screen are computed from the same
   values passed to `open`, including fee, bonds and the tax rate read from the chain. The tax shown is the sum
   the escrow does at `open`, at a rate read again every ten seconds, and it is inside the fare: it changes what
@@ -241,6 +258,8 @@ Real today. A change touching one should close it or leave it no worse, and say 
 | P21 | Losing the phone loses the account: recovery by a passkey (designed in docs/accounts-and-pix.md, accepted by the account's WebAuthn signers) has no screen yet | Android passkeys need a domain that serves `assetlinks.json` | The domain, then the setup screen that adds the passkey as a second signer |
 | P22 | A closed request stops being announced, and a phone that never heard it close has nothing telling it so | A peer can replay a closed request's signed message to a driver who missed the close or arrived later, and it shows as open for as long as the replay goes on, up to its expiry. The rider's phone answers what it hears with the close, at most every 10 s, while it is online and in that cell, which also tells any peer that this rider's phone is still there. An offer on it goes nowhere: the rider no longer listens for it. No money is at stake | The ride channel; a cost for relaying |
 | P23 | Anyone can join a ride's topic and publish there, as on any topic | They see when a driver's positions go out, sealed. Each forged position costs the rider's phone one signature recovery, and a read for a new certificate, with no limit per tick (P4). It cannot be believed or stop the route | A topic name only the two phones know, sent inside the sealed route; a limit per gossip sender |
+| P24 | The release status and an APK's hash are what the RPC says. A lying RPC can call this build's release revoked, and the app starts no ride until the person changes provider or the lie stops. It can also call a release active that the registry revoked, with `isApk` true: whoever runs both the RPC and the APK mirror (by default the mirror is the host next to the chain node) can then serve that release's genuine APK, signed with the release key, as the update, and Android installs it once the person confirms | The registry is read like any other contract (P3) | A revoked status stops only new rides, never money (A16). The app offers only a higher version than its own, so it is never taken back to an older release. A stranger's own APK still needs the release key, which Android checks. An escrow closed on chain refuses rides whatever the RPC says. A second source for the latest release's status, light-client proofs or several RPCs, as for P3 |
+| P25 | A ride left on an earlier release's escrow cannot be finished from the app: it lists the ride and withdraws money owed there, but sends `start`, `complete`, `cancel`, receipts and timeouts only to its own release's escrow | Not built | The app holds an update back until the chain was read once and while a ride of the account in its current role is accepted, started, disputed, or open and locked by this account; it checks again before opening the installer, so a ride started during the download keeps the checked file waiting. An Open ride someone else opened naming the driver does not hold it: it holds no bond of the driver's, and its rider takes it back on the old escrow. Not covered: a ride of the account in its other role, a ride left behind another way (the app reinstalled at a newer release, the other party updating). Those need their transactions sent by hand. Closes when the app can act on `previousEscrows` |
 
 ## How it is tested
 
@@ -259,6 +278,8 @@ through.
 | `ForgedOffersTest` | A1, A3, A6; the `offer` row | Nine offers that each break one rule never reach a rider's screen: wrong signer, over the ceiling, under the floor, a valid signature moved to another fare or another expiry, expiring after the request, expired, for another request, and a well-formed one from an account the policy does not let accept |
 | `OnDutyTest` | A10; `OnDutyService` | On an emulator: the service starts and stops with going online and offline, outlasts a ride's end while online, its notification brings back the running activity, and with the driver's screen off a rider goes on hearing the car |
 | `RoutePrivacyTest` | A9; "Who learns what" | Everything said in the cell, and on the ride's own topic, during a ride is recorded: the request has the documented fields and no more, and no point of the route or of the driver appears in the clear, nor inside the sealed fields once their base64 is undone |
+| `ReleaseTest` (integrity) | A16 | A revoked release refuses a rider's request and a driver's quote and says why, and works again once put back; a deprecated one goes on; an update to a newer release waits until the driver's ride is over. `ReleaseCheckTest` (`:chain`) pins that only a revoked status refuses, that an update goes only to a higher active release, and that an unreadable registry or a release published with other code contracts is unknown and refuses nothing |
+| `ReleaseUpdatesTest` | A17 | Against the chain, not the screen: a release published naming one APK file; that file is accepted, an altered copy and the same file under another version are refused |
 | `RevealedRouteTest` | A5 | A drivable route in the right regions that is not the one locked in the escrow is never shown as checked, and the same trip revealed honestly is. A ride a stranger opened with the honest quote's hash, driver, coin and fare is never shown with that route, while the honest ride beside it is. It stops short of P14 |
 | `ThreePhonesTest` (integrity) | The honest path of A4 and A5 between real apps | Three copies of the app, a rider and two drivers: the driver not picked gets no ride and no route, and the one picked is shown the route as checked |
 | `RiderRideTest` (integrity) | A14, and the honest path of A4 | The amounts on the confirmation screen are the amounts the escrow holds after the lock |

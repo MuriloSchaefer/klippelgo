@@ -237,4 +237,18 @@
     </plurals>
     <string name="on_duty_channel">Em serviço</string>
     <string name="on_duty_text">Conectado enquanto você está online ou em uma corrida</string>
+    <!-- Releases (docs/releases-and-data.md) -->
+    <string name="release_revoked">Esta versão do app foi revogada por uma falha de segurança. Corridas em andamento terminam normalmente e seu dinheiro pode ser sacado, mas nenhuma corrida nova começa nela.</string>
+    <string name="release_revoked_refused">Esta versão do app foi revogada. Atualize para pedir ou aceitar corridas novas.</string>
+    <string name="release_deprecated">Esta versão do app será desativada em breve. Atualize quando puder.</string>
+    <string name="release_update_available">A versão %1$s do app está disponível.</string>
+    <string name="update_after_ride">Termine a corrida em andamento antes de atualizar: ela só pode ser concluída nesta versão.</string>
+    <string name="update_install">Atualizar</string>
+    <string name="update_downloading">Baixando a atualização…</string>
+    <string name="update_refused">A atualização baixada não é uma das publicadas na rede. Ela foi apagada e não será instalada.</string>
+    <string name="update_missing">Nenhum espelho tem esta atualização para o seu telefone ainda.</string>
+    <string name="update_failed">Não foi possível baixar a atualização: %1$s</string>
+    <string name="previous_rides">Você tem %1$d corrida(s) por terminar numa versão anterior do app. Elas terminam no contrato em que começaram.</string>
+    <string name="previous_owed">Uma versão anterior do app guarda %1$s para você.</string>
+    <string name="previous_withdraw">Sacar</string>
 </resources>

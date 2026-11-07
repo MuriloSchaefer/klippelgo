@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity ^0.8.28;
 
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {ProtocolDeployer} from "./ProtocolDeployer.sol";
 import {TeamCouncil} from "../src/TeamCouncil.sol";
 import {PBACGovernor} from "../src/PBACGovernor.sol";
-import {IdentityRegistry} from "../src/IdentityRegistry.sol";
-import {Reputation} from "../src/Reputation.sol";
+import {IdentityStore} from "../src/IdentityStore.sol";
+import {StakeVault} from "../src/StakeVault.sol";
+import {ReleaseRegistry} from "../src/ReleaseRegistry.sol";
+import {DataContract} from "../src/DataContract.sol";
 import {FeeVault} from "../src/FeeVault.sol";
 import {RideEscrow} from "../src/RideEscrow.sol";
 import {DisputeCourt} from "../src/DisputeCourt.sol";
@@ -36,6 +39,7 @@ abstract contract TeamDeployer is ProtocolDeployer {
         address recovery; // a cold multisig, never used day to day
         bool local; // the local testnet: one approval and no delay for everything, so tests stay fast
         address paymaster; // the gas paymaster in reais, or zero for none; its permissions come last
+        uint48 release; // the release published at launch, or zero for none: its revoke-release playbook
     }
 
     /// @dev Approvals and delays, launch values or local ones.
@@ -67,13 +71,13 @@ abstract contract TeamDeployer is ProtocolDeployer {
                 roles: _roles(),
                 members: _members(t),
                 permissions: _permissions(p, n, address(0), t.paymaster),
-                playbooks: _playbooks(p, n),
+                playbooks: _playbooks(p, n, t.release),
                 minBoardDelay: t.local ? 0 : 24 hours
             })
         );
 
         _guardianCall(
-            p, address(p.registry), abi.encodeCall(p.registry.setAttester, (address(council), true))
+            p, address(p.identities), abi.encodeCall(p.identities.setAttester, (address(council), true))
         );
         p.governor.proposeGuardian(address(council));
         council.acceptGuardianSeat();
@@ -119,7 +123,7 @@ abstract contract TeamDeployer is ProtocolDeployer {
         view
         returns (TeamCouncil.Permission[] memory list)
     {
-        list = new TeamCouncil.Permission[](40);
+        list = new TeamCouncil.Permission[](48);
         uint256 k;
         PBACGovernor g = p.governor;
 
@@ -140,9 +144,9 @@ abstract contract TeamDeployer is ProtocolDeployer {
         list[k++] = _viaGov(BOARD, address(g), PBACGovernor.setModules.selector, n.board, n.boardDelay);
         list[k++] = _viaGov(BOARD, address(p.escrow), RideEscrow.setModules.selector, n.board, n.boardDelay);
         list[k++] =
-            _viaGov(BOARD, address(p.reputation), Reputation.setEscrow.selector, n.board, n.boardDelay);
+            _viaGov(BOARD, address(p.reputation), DataContract.setWriter.selector, n.board, n.boardDelay);
         list[k++] =
-            _viaGov(BOARD, address(p.registry), IdentityRegistry.setAttester.selector, n.board, n.boardDelay);
+            _viaGov(BOARD, address(p.identities), IdentityStore.setAttester.selector, n.board, n.boardDelay);
         list[k++] =
             _viaGov(BOARD, address(p.feeVault), FeeVault.setBeneficiary.selector, n.board, n.boardDelay);
 
@@ -160,9 +164,8 @@ abstract contract TeamDeployer is ProtocolDeployer {
         list[k++] = _viaGov(
             OPERATIONS, address(p.escrow), RideEscrow.setCompletionTimeout.selector, n.two, n.dayDelay
         );
-        list[k++] = _viaGov(
-            OPERATIONS, address(p.registry), IdentityRegistry.setUnbondingPeriod.selector, n.two, n.dayDelay
-        );
+        list[k++] =
+            _viaGov(OPERATIONS, address(p.stakes), StakeVault.setUnbondingPeriod.selector, n.two, n.dayDelay);
         list[k++] = _viaGov(OPERATIONS, address(p.court), DisputeCourt.setPeriods.selector, n.two, n.dayDelay);
         bytes4[5] memory maps = [
             MapRegistry.activate.selector,
@@ -176,14 +179,13 @@ abstract contract TeamDeployer is ProtocolDeployer {
         }
 
         // Credenciamento: the council is the attester, so credentials outlive the member who checked them.
-        list[k++] = _direct(CREDENTIALING, address(p.registry), IdentityRegistry.attest.selector, n.two, 0);
-        list[k++] = _direct(CREDENTIALING, address(p.registry), IdentityRegistry.revoke.selector, 1, 0);
+        list[k++] = _direct(CREDENTIALING, address(p.identities), IdentityStore.attest.selector, n.two, 0);
+        list[k++] = _direct(CREDENTIALING, address(p.identities), IdentityStore.revoke.selector, 1, 0);
 
         // Segurança: what protects people, at once. Blocking takes one; unblocking takes two.
+        list[k++] = _viaGovArg(SECURITY, address(p.identities), IdentityStore.setBlocked.selector, 2, 1, 1, 0);
         list[k++] =
-            _viaGovArg(SECURITY, address(p.registry), IdentityRegistry.setBlocked.selector, 2, 1, 1, 0);
-        list[k++] =
-            _viaGovArg(SECURITY, address(p.registry), IdentityRegistry.setBlocked.selector, 2, 0, n.two, 0);
+            _viaGovArg(SECURITY, address(p.identities), IdentityStore.setBlocked.selector, 2, 0, n.two, 0);
 
         // Recuperação: cancels (by its flag), suspends at once, and replaces the board after a week.
         list[k++] = _directArg(RECOVERY, self, TeamCouncil.setSuspended.selector, 2, 1, 1, 0);
@@ -192,6 +194,19 @@ abstract contract TeamDeployer is ProtocolDeployer {
 
         // The board stores playbooks, such as a new resume-rides after Operações changed a policy (L25).
         list[k++] = _direct(BOARD, self, TeamCouncil.grantPlaybook.selector, n.board, n.boardDelay);
+
+        // Releases (docs/releases-and-data.md). Wiring a code contract into the data is the one action that can
+        // change what an account has, so it is the board's, with its delay: everyone's window to see it coming.
+        list[k++] =
+            _viaGov(BOARD, address(p.identities), DataContract.setWriter.selector, n.board, n.boardDelay);
+        // Publishing and deprecating is the board's, and so is putting a release back. Revoking one after a
+        // vulnerability is Segurança's, one member, at once, like stop-rides.
+        list[k++] =
+            _viaGov(BOARD, address(p.releases), ReleaseRegistry.publish.selector, n.board, n.boardDelay);
+        list[k++] =
+            _viaGov(BOARD, address(p.releases), ReleaseRegistry.deprecate.selector, n.board, n.boardDelay);
+        list[k++] = _viaGov(BOARD, address(p.releases), ReleaseRegistry.reinstate.selector, n.two, 0);
+        list[k++] = _viaGov(SECURITY, address(p.releases), ReleaseRegistry.revoke.selector, 1, 0);
 
         // The paymaster: Finanças sends on the reais it collected; the board moves its native coin and stake.
         if (paymaster != address(0)) {
@@ -207,14 +222,65 @@ abstract contract TeamDeployer is ProtocolDeployer {
     }
 
     /// @dev Granted after the permissions above, so their ids follow them.
-    function _playbooks(Protocol memory p, Numbers memory n)
+    function _playbooks(Protocol memory p, Numbers memory n, uint48 release)
         internal
         view
         returns (TeamCouncil.Playbook[] memory pb)
     {
-        pb = new TeamCouncil.Playbook[](2);
+        pb = new TeamCouncil.Playbook[](release == 0 ? 2 : 3);
         pb[0] = TeamCouncil.Playbook("stop-rides", SECURITY, 1, 0, true, _stopRides(p, false));
         pb[1] = TeamCouncil.Playbook("resume-rides", BOARD, n.two, 0, true, _stopRides(p, true));
+        if (release != 0) {
+            pb[2] = TeamCouncil.Playbook(
+                _revokeReleaseName(release), SECURITY, 1, 0, true, _revokeRelease(p, release)
+            );
+        }
+    }
+
+    /// @notice `revoke-release-<version>`: one per release, so the one Segurança runs names the release it revokes.
+    function _revokeReleaseName(uint48 release) internal pure returns (string memory) {
+        return string.concat(
+            "revoke-release-",
+            Strings.toString(release >> 32),
+            ".",
+            Strings.toString((release >> 16) & 0xffff),
+            ".",
+            Strings.toString(release & 0xffff)
+        );
+    }
+
+    /// @notice A release's revoke, with its escrow's door closed in the same action: honest apps stop starting
+    /// rides on it, and no app at all can open or accept one there. Rides under way finish on their own terms.
+    /// The board grants one of these with each release it publishes, since it names that release's escrow.
+    function _revokeRelease(Protocol memory p, uint48 release)
+        internal
+        view
+        returns (TeamCouncil.Call[] memory c)
+    {
+        TeamCouncil.Call[] memory stop = _stopRides(p, false);
+        c = new TeamCouncil.Call[](stop.length + 1);
+        c[0] = TeamCouncil.Call(address(p.releases), abi.encodeCall(p.releases.revoke, (release)));
+        for (uint256 i; i < stop.length; ++i) {
+            c[i + 1] = stop[i];
+        }
+    }
+
+    /// @notice Publishes the release made of this protocol's code contracts and these account contracts, while
+    /// the deployer is still the guardian. A real network publishes through the board instead, once the APKs
+    /// are built and their hashes known.
+    function _publishRelease(Protocol memory p, uint48 version, address factory, address paymaster) internal {
+        bytes32 code = p.releases
+            .contractsHash(
+                address(p.escrow),
+                address(p.court),
+                address(p.feeVault),
+                address(p.registry),
+                factory,
+                paymaster
+            );
+        _guardianCall(
+            p, address(p.releases), abi.encodeCall(p.releases.publish, (version, code, new bytes32[](0)))
+        );
     }
 
     /// @notice The playbook that stops new rides (no one may open or accept), or the one that puts the policies

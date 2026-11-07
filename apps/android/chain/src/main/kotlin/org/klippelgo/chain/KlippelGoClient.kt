@@ -16,6 +16,7 @@ import org.web3j.abi.datatypes.generated.Uint16
 import org.web3j.abi.datatypes.generated.Uint192
 import org.web3j.abi.datatypes.generated.Uint256
 import org.web3j.abi.datatypes.generated.Uint32
+import org.web3j.abi.datatypes.generated.Uint48
 import org.web3j.abi.datatypes.generated.Uint64
 import org.web3j.abi.datatypes.generated.Uint8
 import org.web3j.crypto.Hash
@@ -73,7 +74,7 @@ class KlippelGoClient(
     fun balanceOf(coin: Coin, owner: String = address): BigInteger =
         uint(call(coin.address, fn("balanceOf", listOf(Address(owner)), listOf(uint256Ref)))[0])
 
-    fun rolesOf(who: String = address): Int = uint(call(deployment.registry, rolesFn(who))[0]).toInt()
+    fun rolesOf(who: String = address): Int = uint(call(deployment.identities, rolesFn(who))[0]).toInt()
 
     /** Rides that reached a final state, by id. They never change again. */
     private val finished = java.util.concurrent.ConcurrentHashMap<BigInteger, Ride>()
@@ -216,9 +217,10 @@ class KlippelGoClient(
      * scanning only the blocks not scanned before ([scan]); roles and reputations are read in batches.
      */
     fun drivers(): List<DriverInfo> {
-        val registered = scan("registered", deployment.registry, listOf(REGISTERED_TOPIC)) { Numeric.toHexStringWithPrefixZeroPadded(Numeric.toBigInt(it.topics[1]), 40) }
+        // The identity store outlives releases: registrations are read from the block it was deployed in.
+        val registered = scan("registered", deployment.identities, listOf(REGISTERED_TOPIC), deployment.dataStartBlock) { Numeric.toHexStringWithPrefixZeroPadded(Numeric.toBigInt(it.topics[1]), 40) }
             .toList()
-        val roles = callAll(registered.map { deployment.registry to rolesFn(it) }).map { uint(it[0]).toInt() }
+        val roles = callAll(registered.map { deployment.identities to rolesFn(it) }).map { uint(it[0]).toInt() }
         return driverInfos(registered.filterIndexed { i, _ -> roles[i] and ROLE_DRIVER != 0 })
     }
 
@@ -261,10 +263,7 @@ class KlippelGoClient(
         )
         if (!(p[0] as Bool).value) return listOf(Blocker.Disabled)
         // A blocked account passes no policy whatever else it has, so nothing else is worth listing.
-        // A registry deployed before the block existed has no such function: there, nobody is blocked.
-        val blocked = runCatching {
-            (call(deployment.registry, fn("blocked", listOf(Address(driver)), listOf(boolRef)))[0] as Bool).value
-        }.getOrDefault(false)
+        val blocked = (call(deployment.identities, fn("blocked", listOf(Address(driver)), listOf(boolRef)))[0] as Bool).value
         if (blocked) return listOf(Blocker.Blocked)
         val roles = uint(p[1]).toInt()
         val minScore = uint(p[2]).toInt()
@@ -272,16 +271,14 @@ class KlippelGoClient(
         val minStake = uint(p[4])
         val credential = (p[5] as Bytes32).value
 
-        val id = call(
-            deployment.registry,
-            fn("identity", listOf(Address(driver)), listOf(uint8Ref, uint64Ref, uint64Ref, uint256Ref, uint256Ref)),
-        )
+        val id = call(deployment.identities, fn("identity", listOf(Address(driver)), listOf(uint8Ref, uint64Ref)))
         val registeredAt = uint(id[1]).toLong()
-        val stake = uint(id[3])
+        // Stake is in its own vault, whose code no release changes.
+        val stake = uint(call(deployment.stakes, fn("stakeOf", listOf(Address(driver)), listOf(uint256Ref)))[0])
         val blockers = mutableListOf<Blocker>()
         if (registeredAt == 0L || (roles != 0 && uint(id[0]).toInt() and roles == 0)) blockers += Blocker.Role
         if (stake < minStake) {
-            val token = (call(deployment.registry, fn("stakeToken", emptyList(), listOf(addressRef)))[0] as Address).value
+            val token = (call(deployment.stakes, fn("stakeToken", emptyList(), listOf(addressRef)))[0] as Address).value
             val coin = coinFor(token)
             blockers += Blocker.Stake(coin.toReais(stake), coin.toReais(minStake))
         }
@@ -290,7 +287,7 @@ class KlippelGoClient(
         if (minScore != 0 && info.ratings > 0 && info.score < minScore) blockers += Blocker.Score(info.score, minScore)
         if (credential.any { it != 0.toByte() }) {
             val has = call(
-                deployment.registry,
+                deployment.identities,
                 fn("hasCredential", listOf(Address(driver), Bytes32(credential)), listOf(boolRef)),
             )[0] as Bool
             if (!has.value) blockers += Blocker.Credential(cnh = credential.contentEquals(CREDENTIAL_CNH))
@@ -371,13 +368,20 @@ class KlippelGoClient(
     @Volatile private var anchorChecked = false
 
     /**
-     * Everything `pick` takes from the logs of `contract` matching `topics` (null for any), from the block the
-     * contracts were deployed in. Each call reads only the blocks after the last one it read, in ranges a public
+     * Everything `pick` takes from the logs of `contract` matching `topics` (null for any), from `startBlock`:
+     * the block this release's contracts were deployed in, or an earlier one for data contracts and earlier
+     * releases' escrows, which are older than the release. Each call reads only the blocks after the last one it read, in ranges a public
      * node accepts, and the last few again in case the chain reorganised. What it found is kept, and can be kept
      * on the phone across restarts ([savedScans]). Each kind is scanned by one caller at a time; different kinds
      * at once, so a long first scan of one does not hold up the others.
      */
-    private fun scan(key: String, contract: String, topics: List<String?>, pick: (EthLog.LogObject) -> String): Set<String> {
+    private fun scan(
+        key: String,
+        contract: String,
+        topics: List<String?>,
+        startBlock: Long = deployment.startBlock,
+        pick: (EthLog.LogObject) -> String,
+    ): Set<String> {
         val head = blockNumber().toLong()
         val s = synchronized(scans) {
             if (!anchorChecked) {
@@ -389,15 +393,15 @@ class KlippelGoClient(
                 // Only once the comparison was made: a read that failed asks again next time.
                 anchorChecked = true
             }
-            scans.getOrPut(key) { Scan(deployment.startBlock - 1) }
+            scans.getOrPut(key) { Scan(startBlock - 1) }
         }
         synchronized(s) {
             // A chain that went backwards is another chain: read it from the start.
             if (s.to > head) {
-                s.to = deployment.startBlock - 1
+                s.to = startBlock - 1
                 s.found.clear()
             }
-            var from = maxOf(deployment.startBlock, s.to - REORG_BLOCKS + 1)
+            var from = maxOf(startBlock, s.to - REORG_BLOCKS + 1)
             while (from <= head) {
                 val to = minOf(head, from + LOG_RANGE - 1)
                 val filter = EthFilter(DefaultBlockParameter.valueOf(BigInteger.valueOf(from)), DefaultBlockParameter.valueOf(BigInteger.valueOf(to)), contract)
@@ -457,14 +461,90 @@ class KlippelGoClient(
 
     private val json = com.fasterxml.jackson.databind.ObjectMapper()
 
+    // ---------------------------------------------------------------- the release
+
+    /**
+     * What `ReleaseRegistry` says of the release this build is, and of the latest one, in one batch of reads.
+     * A release published with other code contracts than this build's counts as not found: the build is not
+     * that release. Any failure to read is [ReleaseStatus.Unknown], never a refusal: the app works as it did
+     * without the registry, so that the RPC cannot switch it off (docs/releases-and-data.md).
+     */
+    fun releaseCheck(): ReleaseCheck {
+        val mine = deployment.versionKey
+        if (deployment.releases.isBlank() || mine == 0L) return ReleaseCheck(ReleaseStatus.Unknown, mine, 0, ReleaseStatus.Unknown)
+        return runCatching {
+            val releaseFn = { v: Long -> fn("release", listOf(Uint48(v)), listOf(bytes32Ref, uint8Ref, uint64Ref)) }
+            val (own, latestOut) = callAll(listOf(deployment.releases to releaseFn(mine), deployment.releases to fn("latest", emptyList(), listOf(uint48Ref))))
+            val latest = uint(latestOut[0]).toLong()
+            val ownStatus = if ((own[0] as Bytes32).value.contentEquals(deployment.releaseContracts)) ReleaseStatus.of(uint(own[1]).toInt()) else ReleaseStatus.Unknown
+            val latestStatus = when {
+                latest == 0L -> ReleaseStatus.Unknown
+                latest == mine -> ownStatus
+                else -> ReleaseStatus.of(uint(call(deployment.releases, releaseFn(latest))[1]).toInt())
+            }
+            ReleaseCheck(ownStatus, mine, latest, latestStatus)
+        }.getOrElse { ReleaseCheck(ReleaseStatus.Unknown, mine, 0, ReleaseStatus.Unknown) }
+    }
+
+    /** Whether the registry names `sha256` as an APK of release `version`: how a downloaded update is checked. */
+    fun isApk(version: Long, sha256: ByteArray): Boolean =
+        (call(deployment.releases, fn("isApk", listOf(Uint48(version), Bytes32(sha256)), listOf(boolRef)))[0] as Bool).value
+
+    /**
+     * Whether `file` is, byte for byte, an APK the registry names for release `version`. Where the file came from
+     * does not matter: any mirror may serve it, and only this answer lets it be installed.
+     */
+    fun publishedApk(version: Long, file: java.io.File): Boolean {
+        if (version == 0L || deployment.releases.isBlank()) return false
+        return isApk(version, sha256Of(file))
+    }
+
+    // ---------------------------------------------------------------- earlier releases
+
+    /**
+     * What earlier releases' escrows still hold for this account: rides it has not finished there, and payments
+     * owed to it. A ride settles on the escrow it opened on, so these are read until nothing is left.
+     */
+    fun leftOnPreviousReleases(): List<LeftOnEscrow> = deployment.previousEscrows.mapNotNull { previous ->
+        val escrow = previous.address
+        runCatching {
+            val mine = listOf(listOf(RIDE_OPENED_TOPIC, null, topicOf(address)), listOf(RIDE_OPENED_TOPIC, null, null, topicOf(address)))
+                .flatMap { topics -> scan("previous/$escrow/${topics.size}", escrow, topics, previous.startBlock) { Numeric.toBigInt(it.topics[1]).toString() } }
+                .map(::BigInteger).distinct()
+            // A ride that settled there stays settled: it is not asked again, so the reads stay as few as the
+            // rides still open there, not as many as this account ever had.
+            val done = finishedOnPrevious.getOrPut(escrow.lowercase()) { java.util.concurrent.ConcurrentHashMap.newKeySet() }
+            val ask = mine.filter { it !in done }
+            val out = callAll(
+                coins.map { coin -> escrow to fn("owed", listOf(Address(coin.address), Address(address)), listOf(uint256Ref)) } +
+                    ask.map { id -> escrow to rideFn(id) },
+            )
+            val owed = coins.zip(out.take(coins.size)).associate { (coin, o) -> coin to uint(o[0]) }.filterValues { it.signum() > 0 }
+            val open = ask.zip(out.drop(coins.size)).mapNotNull { (id, o) ->
+                if (rideOf(id, o).status in UNFINISHED) id else { done += id; null }
+            }
+            LeftOnEscrow(escrow, open, owed).takeIf { open.isNotEmpty() || owed.isNotEmpty() }
+        }.getOrNull()
+    }
+
+    /** Rides on earlier releases' escrows seen settled, by escrow. */
+    private val finishedOnPrevious = java.util.concurrent.ConcurrentHashMap<String, MutableSet<BigInteger>>()
+
+
+    /** Takes what an earlier release's escrow owes this account in `coin`. Needs no policy, so a revoked release still pays. */
+    fun withdrawFrom(escrow: String, coin: Coin) {
+        require(deployment.previousEscrows.any { it.address.equals(escrow, ignoreCase = true) }) { "not an earlier release's escrow" }
+        send(escrow, fn("withdraw", listOf(Address(coin.address), Address(address)), emptyList()))
+    }
+
     // ---------------------------------------------------------------- what changed
 
     /**
      * Whether anything this account's screen shows may have changed on chain since block `after`, and the newest
      * block looked at. One batch of log queries over the new blocks: the escrow's events (rides in `rides` or
      * opened naming one of `accounts`, payments to this account, a change of its settings), money arriving in
-     * this account, any governance change to policies, the tariff or the map packs, and the registry's events
-     * about this account. Changes it does not cover, such as a rating someone else gave, wait for a full read.
+     * this account, any governance change to policies, the tariff, the map packs or the releases, and the
+     * identity store's and stake vault's events about this account. Changes it does not cover, such as a rating someone else gave, wait for a full read.
      * A chain that went backwards, or more new blocks than one query covers, count as a change.
      *
      * The last [RECHECK_BLOCKS] blocks before the new ones are read again each time, and an event counts once:
@@ -481,8 +561,8 @@ class KlippelGoClient(
         val filters = listOf(
             EthFilter(from, to, deployment.escrow),
             EthFilter(from, to, listOf(deployment.brz, deployment.brla)).addSingleTopic(TRANSFER_TOPIC).addNullTopic().addSingleTopic(me),
-            EthFilter(from, to, listOf(deployment.governor, deployment.fares, deployment.maps)),
-            EthFilter(from, to, deployment.registry).addNullTopic().addSingleTopic(me),
+            EthFilter(from, to, listOf(deployment.governor, deployment.fares, deployment.maps, deployment.releases)),
+            EthFilter(from, to, listOf(deployment.identities, deployment.stakes)).addNullTopic().addSingleTopic(me),
         )
         val logs = batch(filters.map { web3.ethGetLogs(it) }).map { r ->
             if (r.hasError()) throw ChainException(r.error.message)
@@ -676,13 +756,13 @@ class KlippelGoClient(
         send(deployment.registry, fn("register", listOf(Uint8(roles.toLong())), emptyList()))
     }
 
-    /** Stakes `amount` of the stake coin (BRLA) in the registry, as a driver must to accept rides. */
+    /** Stakes `amount` of the stake coin (BRLA) in the stake vault, as a driver must to accept rides. */
     fun addStake(amount: BigInteger) {
         val stakeCoin = brla
         sendCalls(
             listOfNotNull(
-                approval(stakeCoin, deployment.registry, amount),
-                Call(deployment.registry, FunctionEncoder.encode(fn("addStake", listOf(Uint256(amount)), emptyList()))),
+                approval(stakeCoin, deployment.stakes, amount),
+                Call(deployment.stakes, FunctionEncoder.encode(fn("addStake", listOf(Uint256(amount)), emptyList()))),
             ),
         )
     }
@@ -843,7 +923,11 @@ class KlippelGoClient(
             // The real signature is checked by the chip's curve, which the placeholder never reaches.
             verificationGasLimit = margin(estimate.verificationGasLimit) + BigInteger.valueOf(100_000),
             callGasLimit = margin(estimate.callGasLimit),
-            paymasterVerificationGasLimit = estimate.paymasterVerificationGasLimit?.let(::margin) ?: op.paymasterVerificationGasLimit,
+            // The paymaster's check reads the escrow and FareGuide and moves the prefund in the gas coin: what it costs
+            // depends on which of those are cold when the bundle runs, which a lone simulation cannot know. Below the
+            // floor it can run out of gas (AA33). Unused verification gas is given back, so the floor costs nothing.
+            paymasterVerificationGasLimit = (estimate.paymasterVerificationGasLimit?.let(::margin) ?: op.paymasterVerificationGasLimit)
+                .max(BigInteger.valueOf(MIN_PAYMASTER_VERIFICATION_GAS)),
             paymasterPostOpGasLimit = estimate.paymasterPostOpGasLimit?.let(::margin) ?: op.paymasterPostOpGasLimit,
         )
         // The most this operation can cost the account, in reais at the rate the paymaster charges.
@@ -886,6 +970,8 @@ class KlippelGoClient(
         private const val MAX_VERIFICATION_GAS = 1_500_000L
         private const val MAX_CALL_GAS = 3_000_000L
         private const val MAX_PAYMASTER_VERIFICATION_GAS = 300_000L
+        /** What the paymaster's check is given at least: its reads and transfer all cold, with room to spare. */
+        private const val MIN_PAYMASTER_VERIFICATION_GAS = 80_000L
         private const val MAX_POST_OP_GAS = 150_000L
         /** 1 000 gwei: far above what Polygon PoS charges in normal times. */
         private const val MAX_FEE_PER_GAS = 1_000_000_000_000L
@@ -953,6 +1039,10 @@ class KlippelGoClient(
         private val CREDENTIAL_CNH = Numeric.hexStringToByteArray(Hash.sha3String("klippelgo.credential.CNH"))
         private val uint256Ref = object : TypeReference<Uint256>() {}
         private val uint64Ref = object : TypeReference<Uint64>() {}
+        private val uint48Ref = object : TypeReference<Uint48>() {}
+
+        /** A ride in one of these may still need its party: to complete it, wait for its timeout, or answer a dispute. */
+        private val UNFINISHED = setOf(RideStatus.Open, RideStatus.Accepted, RideStatus.Started, RideStatus.Disputed)
         private val uint32Ref = object : TypeReference<Uint32>() {}
         private val uint16Ref = object : TypeReference<Uint16>() {}
         private val uint8Ref = object : TypeReference<Uint8>() {}
@@ -968,6 +1058,20 @@ class KlippelGoClient(
             "InvalidStars()", "ERC20InsufficientBalance(address,uint256,uint256)",
             "ERC20InsufficientAllowance(address,uint256,uint256)",
         ).associate { selectorHex(it) to it.substringBefore('(') }
+
+        /** SHA-256 of a file, read in pieces: an APK is too large to hold whole. */
+        fun sha256Of(file: java.io.File): ByteArray {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    digest.update(buffer, 0, n)
+                }
+            }
+            return digest.digest()
+        }
 
         fun selector(signature: String): ByteArray = Numeric.hexStringToByteArray(Hash.sha3String(signature)).copyOf(4)
 

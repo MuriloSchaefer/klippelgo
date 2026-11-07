@@ -49,9 +49,12 @@ import org.klippelgo.app.DEFAULT_RPC
 import org.klippelgo.app.R
 import org.klippelgo.app.Role
 import org.klippelgo.app.UiState
+import org.klippelgo.app.UpdateState
 import org.klippelgo.app.setAppLanguage
 import org.klippelgo.app.ui.tags.Tags
 import org.klippelgo.chain.Coin
+import org.klippelgo.chain.Deployment
+import org.klippelgo.chain.ReleaseStatus
 import org.klippelgo.chain.DriverInfo
 import org.klippelgo.chain.Ride
 import org.klippelgo.chain.RideStatus
@@ -69,11 +72,17 @@ fun Modifier.testable(): Modifier = semantics { testTagsAsResourceId = true }
 fun KlippelGoApp(vm: AppViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
     Surface(Modifier.fillMaxSize().testable(), color = MaterialTheme.colorScheme.background) {
-        Box(Modifier.safeDrawingPadding().imePadding()) {
-            when (state.role) {
-                null -> Onboarding(state, vm)
-                Role.RIDER -> RiderApp(state, vm)
-                Role.DRIVER -> DriverApp(state, vm)
+        Column(Modifier.safeDrawingPadding().imePadding()) {
+            if (state.role != null) {
+                ReleaseNotice(state, vm::update)
+                PreviousRelease(state, vm::withdrawPrevious)
+            }
+            Box(Modifier.weight(1f)) {
+                when (state.role) {
+                    null -> Onboarding(state, vm)
+                    Role.RIDER -> RiderApp(state, vm)
+                    Role.DRIVER -> DriverApp(state, vm)
+                }
             }
         }
         state.error?.let { msg ->
@@ -251,6 +260,79 @@ fun NetworkNotice(state: UiState, modifier: Modifier = Modifier) {
     }
     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.error, modifier = modifier.testTag(Tags.NETWORK_NOTICE)) {
         Text(text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 13.sp, lineHeight = 18.sp)
+    }
+}
+
+/**
+ * What the release registry says of this app, when it says something: revoked (no new ride starts here),
+ * deprecated, or a newer release out. With the button that fetches the update, checks it against the registry and
+ * asks Android to install it. Nothing for an active release with nothing newer, or when the registry is unknown.
+ */
+@Composable
+fun ReleaseNotice(state: UiState, onUpdate: () -> Unit) {
+    val release = state.release ?: return
+    val (status, text) = when {
+        release.status == ReleaseStatus.Revoked -> Tags.RELEASE_REVOKED to stringResource(R.string.release_revoked)
+        release.status == ReleaseStatus.Deprecated -> Tags.RELEASE_DEPRECATED to stringResource(R.string.release_deprecated)
+        release.updateAvailable -> Tags.RELEASE_UPDATE to stringResource(R.string.release_update_available, Deployment.versionText(release.latest))
+        else -> return
+    }
+    val urgent = release.status == ReleaseStatus.Revoked
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (urgent) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.padding(start = 12.dp, top = 8.dp, end = 12.dp).fillMaxWidth().testTag(Tags.RELEASE_NOTICE),
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.testTag(Tags.releaseNoticeStatus(status))) {
+                Text(text, Modifier.testTag(Tags.RELEASE_NOTICE_TEXT), fontSize = 13.sp, lineHeight = 18.sp)
+            }
+            when (val u = state.update) {
+                is UpdateState.Downloading ->
+                    Text(stringResource(R.string.update_downloading), Modifier.testTag(Tags.RELEASE_NOTICE_DOWNLOADING), fontSize = 13.sp)
+                is UpdateState.Failed ->
+                    Text(u.message, Modifier.testTag(Tags.RELEASE_NOTICE_FAILED), fontSize = 13.sp, lineHeight = 18.sp)
+                else -> Unit
+            }
+            if (release.updateAvailable && state.update !is UpdateState.Downloading) {
+                if (state.updateMustWait) {
+                    Text(stringResource(R.string.update_after_ride), Modifier.testTag(Tags.RELEASE_NOTICE_AFTER_RIDE), fontSize = 13.sp, lineHeight = 18.sp)
+                } else {
+                    PrimaryButton(stringResource(R.string.update_install), onUpdate, Modifier.testTag(Tags.RELEASE_NOTICE_UPDATE))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * What escrows of earlier releases still hold for this account. A ride there settles there; money owed there is
+ * taken back with a button, which needs no policy, so it works on a revoked release too.
+ */
+@Composable
+fun PreviousRelease(state: UiState, onWithdraw: (String) -> Unit) {
+    if (state.leftOnPrevious.isEmpty()) return
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.padding(start = 12.dp, top = 8.dp, end = 12.dp).fillMaxWidth().testTag(Tags.PREVIOUS_RELEASE),
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val rides = state.leftOnPrevious.sumOf { it.unfinished.size }
+            if (rides > 0) {
+                Text(stringResource(R.string.previous_rides, rides), Modifier.testTag(Tags.PREVIOUS_RELEASE_RIDES), fontSize = 13.sp, lineHeight = 18.sp)
+            }
+            for (left in state.leftOnPrevious.filter { it.owed.isNotEmpty() }) {
+                val amount = left.owed.entries.joinToString(" + ") { (coin, units) -> brl(coin, units) }
+                Text(stringResource(R.string.previous_owed, amount), Modifier.testTag(Tags.previousReleaseOwed(left.escrow)), fontSize = 13.sp)
+                SecondaryButton(
+                    stringResource(R.string.previous_withdraw),
+                    { onWithdraw(left.escrow) },
+                    Modifier.fillMaxWidth().testTag(Tags.previousReleaseWithdraw(left.escrow)),
+                    enabled = !state.busy,
+                )
+            }
+        }
     }
 }
 

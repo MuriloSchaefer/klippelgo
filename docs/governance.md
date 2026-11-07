@@ -43,18 +43,22 @@ Every action on the protocol is assigned to exactly one role. Nothing else can b
 | Diretoria | `TeamCouncil`: put a member in a role or take them out (`setMemberRole`); create a role; grant or revoke a permission; store a playbook; change a permission's approvals or delay | 3 of the role | 72 h |
 | Diretoria | `TeamCouncil.setSuspended(member, true)`: suspend a member | 2 | none |
 | Diretoria | `TeamCouncil.setSuspended(member, false)`: lift a suspension | 3 | 72 h |
-| Diretoria | `PBACGovernor.proposeGuardian`, `PBACGovernor.setModules`, `RideEscrow.setModules`, `Reputation.setEscrow`, `IdentityRegistry.setAttester` | 3 | 72 h |
+| Diretoria | `PBACGovernor.proposeGuardian`, `PBACGovernor.setModules`, `RideEscrow.setModules`, `setWriter` on `Reputation` and `IdentityStore` (which code contracts write the data that outlives releases), `IdentityStore.setAttester` | 3 | 72 h |
 | Diretoria | `FeeVault.setBeneficiary` | 3 | 72 h |
+| Diretoria | `ReleaseRegistry.publish`, `deprecate`: which releases apps may run ([releases-and-data.md](releases-and-data.md)) | 3 | 72 h |
+| Diretoria | `ReleaseRegistry.reinstate`: put a deprecated or revoked release back | 2 | none |
 | Finanças | `RideEscrow.setToken` (the allow-list, the R$ 1,00 fee, bonds), `RideEscrow.setTax`, `RideEscrow.setCap`, `FareGuide.setTariff`, `FareGuide.setNativeCoinPrice` | 2 | 24 h |
 | Finanças | `FeeVault.payClaim` | 2 | 24 h |
-| Operações | `PBACGovernor.setPolicy`, `RideEscrow.setCompletionTimeout`, `IdentityRegistry.setUnbondingPeriod`, `DisputeCourt.setPeriods` | 2 | 24 h |
+| Operações | `PBACGovernor.setPolicy`, `RideEscrow.setCompletionTimeout`, `StakeVault.setUnbondingPeriod` (30 days at most), `DisputeCourt.setPeriods` | 2 | 24 h |
 | Operações | `MapRegistry.activate`, `retire`, `setRebuildQuorum`, `setGracePeriod`, `setVerifierParams` | 2 | 24 h |
-| Credenciamento | `IdentityRegistry.attest` (approve a CNH or KYC credential) | 2 | none |
-| Credenciamento | `IdentityRegistry.revoke` | 1 | none |
-| Segurança | `IdentityRegistry.setBlocked(account, true)` | 1 | none |
-| Segurança | `IdentityRegistry.setBlocked(account, false)` | 2 | none |
+| Credenciamento | `IdentityStore.attest` (approve a CNH or KYC credential) | 2 | none |
+| Credenciamento | `IdentityStore.revoke` | 1 | none |
+| Segurança | `IdentityStore.setBlocked(account, true)` | 1 | none |
+| Segurança | `IdentityStore.setBlocked(account, false)` | 2 | none |
+| Segurança | `ReleaseRegistry.revoke`: apps on that release start no new ride | 1 | none |
 | Segurança | The "stop new rides" playbook: `setPolicy` on `RideEscrow.open` and `accept`, disabled | 1 | none |
 | Diretoria | The "resume rides" playbook: those two policies back as they were | 2 | none |
+| Segurança | The `revoke-release-<version>` playbook: `ReleaseRegistry.revoke` of that release and the "stop new rides" calls on its escrow, in one action. The launch one is stored at deployment; the Diretoria stores one per release it publishes, with new "stop" and "resume rides" for its escrow | 1 | none |
 | Recuperação | `TeamCouncil.setSuspended(member, true)` | 1 | none |
 | Recuperação | `TeamCouncil.setMemberRole(member, Diretoria, …)`: put a director in or take one out | 1 | 7 days |
 | Any member of the role, the Diretoria, or Recuperação | Cancel a pending action of that role (Recuperação's own, only Recuperação) | 1 | none |
@@ -75,7 +79,7 @@ What sits where, and why:
   team reaches for during an incident. They take no money from anyone and are undone the same way, so one member
   may do them. Undoing a block takes two, so a person with a stolen key cannot unblock an account a colleague
   just blocked.
-- **The council is the trusted attester.** `TeamCouncil` is on `IdentityRegistry`'s attester list and calls
+- **The council is the trusted attester.** `TeamCouncil` is on `IdentityStore`'s attester list and calls
   `attest` and `revoke` itself, not through the governor. Credentials stay issued by the council when the member
   who checked the documents leaves, which is what [gov/README.md](../gov/README.md) achieves today with a Safe.
 - **Playbooks are calls written in advance.** "Stop new rides" is not a permission to call `setPolicy` with
@@ -222,7 +226,7 @@ flowchart LR
     rec[(Recuperação<br/>cold Safe)]
     gov[PBACGovernor]
     contracts[Every onlyGovernor setter]
-    reg[IdentityRegistry<br/>attest, revoke]
+    reg[IdentityStore<br/>attest, revoke]
     watch[[Watcher<br/>alerts every member]]
 
     hw1 & hw2 -- "request, approve, cancel" --> pend
@@ -253,10 +257,13 @@ These hold because the protocol contracts do not offer them to the guardian:
 - Take a user's coins from their own address, or from a ride's escrow. Rides already open settle by the terms
   they opened with: fare, fee, tax and collector are fixed per ride. The one thing read at settlement is where
   the R$ 1,00 goes (`RideEscrow.setModules`), which is why that sits with the Diretoria.
-- Take a user's stake. It can make leaving slower (`setUnbondingPeriod`), which is why that sits behind
-  Operações' two approvals and a day.
+- Take a user's stake. It is in `StakeVault`, which has no writer list and whose code is final. The team can
+  make leaving slower (`setUnbondingPeriod`), never beyond 30 days, which is why that sits behind Operações' two
+  approvals and a day.
 - Rewrite a credential another attester issued, or change or delete a rating already given. (It can add
-  completions and ratings, by listing a contract of its own in `Reputation`: one of the powers in limit L19.)
+  completions and ratings, or roles, by listing a contract of its own as a writer of `Reputation` or
+  `IdentityStore`: one of the powers in limit L19. The data contracts' own rules still bind it: roles only grow,
+  a ride is recorded and rated once.)
 
 What the team can do to users is still a lot, and is public: block anyone, change who may ride or drive, change
 the tax and its collector, and wire in a new escrow or court for new rides. Every one of those is an event on
@@ -305,9 +312,9 @@ approval and no delay, so every request runs at once and the tests stay fast.
 | Where | What |
 | --- | --- |
 | [`contracts/src/TeamCouncil.sol`](../contracts/src/TeamCouncil.sol) | The council: roles, members, suspension, permissions with an argument rule, playbooks, actions, and the lockout and protection rules |
-| [`contracts/script/TeamDeployer.sol`](../contracts/script/TeamDeployer.sol) | The six launch roles, every permission and both playbooks of this page, the launch numbers or the local ones, and the handover of the guardian's seat |
+| [`contracts/script/TeamDeployer.sol`](../contracts/script/TeamDeployer.sol) | The six launch roles, every permission and the playbooks of this page (`revoke-release-<version>` when a release was published first), the launch numbers or the local ones, and the handover of the guardian's seat |
 | [`contracts/test/TeamCouncil.t.sol`](../contracts/test/TeamCouncil.t.sol) | The council with the launch numbers |
-| [`gov/klippel-gov`](../gov/README.md) | `request`, `approve`, `cancel`, `execute`, `actions`, `action`, `team …`, `playbooks`, `run`, `stop-rides`, `resume-rides`; licences through Credenciamento |
+| [`gov/klippel-gov`](../gov/README.md) | `request`, `approve`, `cancel`, `execute`, `actions`, `action`, `team …`, `playbooks`, `run`, `stop-rides`, `resume-rides`, `release`, `request release …`; licences through Credenciamento |
 | [contracts/docs](../contracts/docs/security.md) | The guardian in the access table, invariants C1, C14 and C19, the guardian's powers as limit L19 |
 
 Still to build:

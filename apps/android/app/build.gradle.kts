@@ -4,6 +4,36 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// What this build is pinned to (docs/releases-and-data.md): one network's contract addresses, compiled in, and the
+// release version in /VERSION. `-Pklippelgo.network=amoy` builds against deployments/amoy.json; the default is the
+// local testnet, whose file `make deploy` writes.
+val repoRoot = rootProject.file("../..")
+val network = (findProperty("klippelgo.network") as String?)?.trim().orEmpty().ifEmpty { "local" }
+require(Regex("[a-z0-9-]+").matches(network)) { "klippelgo.network '$network' is not a network name" }
+val deploymentFile = repoRoot.resolve("deployments/$network.json")
+val releaseVersion = repoRoot.resolve("VERSION").readText().trim()
+val versionParts = Regex("""(\d{1,4})\.(\d{1,3})\.(\d{1,3})""").matchEntire(releaseVersion)?.groupValues?.drop(1)?.map { it.toInt() }
+    ?: error("VERSION holds '$releaseVersion', not MAJOR.MINOR.PATCH with parts Android's version code can hold")
+// A later release always has a larger code, which is what Android checks before it lets one replace another.
+val releaseVersionCode = versionParts[0] * 1_000_000 + versionParts[1] * 1_000 + versionParts[2]
+
+if (network != "local") {
+    // A build for a real network carries that network's addresses or is not made at all: there is no fallback.
+    require(deploymentFile.isFile) { "No ${deploymentFile.path}: a build for $network needs its deployment file" }
+    val deployed = groovy.json.JsonSlurper().parse(deploymentFile).let { (it as Map<*, *>)["version"] as String? }
+    require(deployed == releaseVersion) {
+        "${deploymentFile.name} is release '$deployed' and VERSION says '$releaseVersion': the app must be built at the release it is published as"
+    }
+} else if (deploymentFile.isFile) {
+    val deployed = groovy.json.JsonSlurper().parse(deploymentFile).let { (it as Map<*, *>)["version"] as String? }
+    if (deployed != releaseVersion) logger.warn("deployments/local.json is release '$deployed', VERSION says '$releaseVersion': run make deploy")
+}
+
+// The release key, from the environment or ~/.gradle/gradle.properties, never from this repository. Without it a
+// release build is unsigned, as CI makes it: the key is used in a ceremony, on hardware (apps/android/README.md).
+fun secret(name: String): String? = System.getenv(name)?.takeIf { it.isNotBlank() } ?: (findProperty(name) as String?)?.takeIf { it.isNotBlank() }
+val releaseKeystore = secret("KLIPPELGO_RELEASE_KEYSTORE")
+
 android {
     namespace = "org.klippelgo.app"
     // The Valhalla library asks for 36 to compile against. The app still targets 35.
@@ -13,8 +43,14 @@ android {
         applicationId = "org.klippelgo.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = releaseVersionCode
+        versionName = releaseVersion
+
+        // The network this build is pinned to. Only the local one may fall back to a fresh testnet's addresses.
+        buildConfigField("String", "NETWORK", "\"$network\"")
+        buildConfigField("boolean", "LOCAL_NETWORK", (network == "local").toString())
+        // Where updates are downloaded from. Empty: the mirror next to the chain node, where the map packs are.
+        buildConfigField("String", "APK_MIRROR", "\"${(findProperty("klippelgo.apkMirror") as String?).orEmpty()}\"")
 
         // No tests run on the phone. This is what starts the UI agent the test harness talks to (tests/README.md).
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -24,8 +60,23 @@ android {
         ndk { abiFilters += setOf("arm64-v8a", "x86_64") }
     }
 
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = secret("KLIPPELGO_RELEASE_STORE_PASSWORD")
+                keyAlias = secret("KLIPPELGO_RELEASE_KEY_ALIAS")
+                keyPassword = secret("KLIPPELGO_RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
+            // Reproducible: the same tag builds the same APK, signature aside, wherever it is built. Nothing
+            // about the machine or the checkout goes in.
+            vcsInfo.include = false
             // R8 drops the code and resources nothing reaches. What is found by reflection is kept in
             // proguard-rules.pro.
             isMinifyEnabled = true
@@ -43,6 +94,13 @@ android {
             include("arm64-v8a", "x86_64")
             isUniversalApk = true
         }
+    }
+
+    // The dependency list Google Play reads is encrypted for Google alone: it would make the APK differ from what
+    // anyone else can check, and says nothing a person can verify.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     compileOptions {
@@ -81,11 +139,12 @@ kotlin {
     }
 }
 
-// Ships the addresses from the last `make deploy` (deployments/local.json) inside the app. Without that file the
-// app falls back to the addresses a fresh local testnet always gets.
-val copyDeployment by tasks.registering(Copy::class) {
-    from(rootProject.file("../../deployments")) { include("local.json") }
+// Ships the network's addresses inside the app, as deployment.json. Only for the local network may the file be
+// missing: the app then uses the addresses a fresh local testnet always gets.
+val copyDeployment by tasks.registering(Sync::class) {
+    from(deploymentFile) { rename { "deployment.json" } }
     into(layout.buildDirectory.dir("generated/deployments"))
+    inputs.property("network", network)
 }
 
 // Builds the Rust core, which holds the gossip network and the map and trip proofs, for phones (arm64) and emulators (x86_64). Needs the NDK

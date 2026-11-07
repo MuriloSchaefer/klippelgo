@@ -23,8 +23,14 @@ use tokio::sync::mpsc;
 /// Port the bootstrap node listens on by default.
 pub const DEFAULT_PORT: u16 = 4001;
 
-/// A cell's topic is this and five geohash characters.
-const MATCH_TOPIC_PREFIX: &str = "/klippelgo/match/1/";
+/// A cell's topic is this, the release (16 lowercase hex characters: the first eight bytes of the hash of the
+/// release's code contracts), a slash and five geohash characters. Phones on releases with other code contracts
+/// are on other topics, so they never match through an escrow one of them does not use
+/// (docs/releases-and-data.md).
+const MATCH_TOPIC_PREFIX: &str = "/klippelgo/match/";
+
+/// Characters in a release as a match topic carries it.
+const RELEASE_HEX_LEN: usize = 16;
 
 /// A ride's topic is this and its quote hash in lowercase hex.
 const RIDE_TOPIC_PREFIX: &str = "/klippelgo/ride/1/0x";
@@ -249,8 +255,13 @@ fn check_topic(topic: &str) -> Result<(), GossipError> {
 /// Whether this is a topic KlippelGo uses. The shapes are exact, so a stranger cannot pick how long a name every
 /// phone keeps in memory is.
 fn is_topic(topic: &str) -> bool {
-    if let Some(cell) = topic.strip_prefix(MATCH_TOPIC_PREFIX) {
-        return cell.len() == 5
+    if let Some(rest) = topic.strip_prefix(MATCH_TOPIC_PREFIX) {
+        let Some((release, cell)) = rest.split_once('/') else {
+            return false;
+        };
+        return release.len() == RELEASE_HEX_LEN
+            && release.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+            && cell.len() == 5
             && cell
                 .chars()
                 .all(|c| "0123456789bcdefghjkmnpqrstuvwxyz".contains(c));
@@ -488,10 +499,24 @@ mod tests {
     fn a_peer_can_be_on_klippelgo_topics_only() {
         let mut filter = KlippelGoTopics;
         assert!(filter.can_subscribe(&ride(1)));
-        assert!(filter.can_subscribe(&TopicHash::from_raw("/klippelgo/match/1/6g9fp")));
+        assert!(filter.can_subscribe(&TopicHash::from_raw(
+            "/klippelgo/match/9206bc18e70d7a15/6g9fp"
+        )));
         assert!(!filter.can_subscribe(&TopicHash::from_raw("/klippelgo/other")));
+        // The release has one shape: the old unversioned topic, a short or upper-case release, or a cell
+        // without one are not KlippelGo's.
+        assert!(!filter.can_subscribe(&TopicHash::from_raw("/klippelgo/match/1/6g9fp")));
+        assert!(!filter.can_subscribe(&TopicHash::from_raw(
+            "/klippelgo/match/9206BC18E70D7A15/6g9fp"
+        )));
+        assert!(!filter.can_subscribe(&TopicHash::from_raw(
+            "/klippelgo/match/9206bc18e70d7a1/6g9fp"
+        )));
+        assert!(!filter.can_subscribe(&TopicHash::from_raw(
+            "/klippelgo/match/9206bc18e70d7a15/6g9fp/x"
+        )));
         assert!(!filter.can_subscribe(&TopicHash::from_raw(format!(
-            "/klippelgo/match/1/{}",
+            "/klippelgo/match/9206bc18e70d7a15/{}",
             "b".repeat(15_000)
         ))));
     }

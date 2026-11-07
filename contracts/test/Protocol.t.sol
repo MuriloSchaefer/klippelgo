@@ -11,7 +11,11 @@ import {MapRegistry} from "../src/MapRegistry.sol";
 import {FareGuide} from "../src/FareGuide.sol";
 import {Governed} from "../src/Governed.sol";
 import {Reputation} from "../src/Reputation.sol";
+import {DataContract} from "../src/DataContract.sol";
+import {IdentityStore} from "../src/IdentityStore.sol";
 import {IdentityRegistry} from "../src/IdentityRegistry.sol";
+import {StakeVault} from "../src/StakeVault.sol";
+import {ReleaseRegistry} from "../src/ReleaseRegistry.sol";
 import {MockBRL} from "../src/mocks/MockBRL.sol";
 
 contract ProtocolTest is Test, ProtocolDeployer {
@@ -70,18 +74,18 @@ contract ProtocolTest is Test, ProtocolDeployer {
 
         vm.startPrank(driver);
         p.registry.register(2);
-        brla.approve(address(p.registry), 100e18);
-        p.registry.addStake(100e18);
+        brla.approve(address(p.stakes), 100e18);
+        p.stakes.addStake(100e18);
         vm.stopPrank();
         vm.prank(attester);
-        p.registry.attest(driver, CREDENTIAL_CNH, keccak256("cnh"), 0);
+        p.identities.attest(driver, CREDENTIAL_CNH, keccak256("cnh"), 0);
 
         for (uint256 i; i < 3; ++i) {
             _fund(jurors[i]);
             vm.startPrank(jurors[i]);
             p.registry.register(4);
-            brla.approve(address(p.registry), 500e18);
-            p.registry.addStake(500e18);
+            brla.approve(address(p.stakes), 500e18);
+            p.stakes.addStake(500e18);
             vm.stopPrank();
         }
     }
@@ -534,7 +538,7 @@ contract ProtocolTest is Test, ProtocolDeployer {
 
     function test_DriverNeedsCredentialToAccept() public {
         vm.prank(attester);
-        p.registry.revoke(driver, CREDENTIAL_CNH);
+        p.identities.revoke(driver, CREDENTIAL_CNH);
         vm.prank(rider);
         uint256 id = p.escrow.open(driver, brz, FARE, keccak256("quote"));
         vm.prank(driver);
@@ -547,28 +551,28 @@ contract ProtocolTest is Test, ProtocolDeployer {
     function test_AnAttesterCannotTakeOverAnothersValidCredential() public {
         address second = makeAddr("secondAttester");
         vm.prank(address(p.governor));
-        p.registry.setAttester(second, true);
+        p.identities.setAttester(second, true);
 
         vm.prank(second);
-        vm.expectRevert(IdentityRegistry.NotIssuer.selector);
-        p.registry.attest(driver, CREDENTIAL_CNH, keccak256("other"), 0);
+        vm.expectRevert(IdentityStore.NotIssuer.selector);
+        p.identities.attest(driver, CREDENTIAL_CNH, keccak256("other"), 0);
         vm.prank(second);
-        vm.expectRevert(IdentityRegistry.NotIssuer.selector);
-        p.registry.revoke(driver, CREDENTIAL_CNH);
+        vm.expectRevert(IdentityStore.NotIssuer.selector);
+        p.identities.revoke(driver, CREDENTIAL_CNH);
 
         // The issuer renews its own, and once it is revoked anyone trusted may issue a new one.
         vm.startPrank(attester);
-        p.registry.attest(driver, CREDENTIAL_CNH, keccak256("renewed"), 0);
-        p.registry.revoke(driver, CREDENTIAL_CNH);
+        p.identities.attest(driver, CREDENTIAL_CNH, keccak256("renewed"), 0);
+        p.identities.revoke(driver, CREDENTIAL_CNH);
         vm.stopPrank();
         vm.prank(second);
-        p.registry.attest(driver, CREDENTIAL_CNH, keccak256("other"), 0);
-        assertTrue(p.registry.hasCredential(driver, CREDENTIAL_CNH));
+        p.identities.attest(driver, CREDENTIAL_CNH, keccak256("other"), 0);
+        assertTrue(p.identities.hasCredential(driver, CREDENTIAL_CNH));
     }
 
     function test_DriverNeedsStakeToAccept() public {
         vm.prank(driver);
-        p.registry.requestUnstake(1e18);
+        p.stakes.requestUnstake(1e18);
         assertFalse(p.governor.hasPermission(driver, address(p.escrow), RideEscrow.accept.selector));
     }
 
@@ -583,10 +587,10 @@ contract ProtocolTest is Test, ProtocolDeployer {
 
     function test_ABlockedAccountPassesNoPolicy() public {
         vm.expectRevert(Governed.NotGovernor.selector);
-        p.registry.setBlocked(rider, true);
+        p.identities.setBlocked(rider, true);
 
-        _govern(address(p.registry), abi.encodeCall(p.registry.setBlocked, (rider, true)));
-        assertTrue(p.registry.blocked(rider));
+        _govern(address(p.identities), abi.encodeCall(p.identities.setBlocked, (rider, true)));
+        assertTrue(p.identities.blocked(rider));
         vm.prank(rider);
         vm.expectRevert(
             abi.encodeWithSelector(Governed.NotPermitted.selector, rider, RideEscrow.open.selector)
@@ -594,10 +598,10 @@ contract ProtocolTest is Test, ProtocolDeployer {
         p.escrow.open(driver, brz, FARE, keccak256("quote"));
 
         // A blocked driver with stake, score and CNH in order cannot accept.
-        _govern(address(p.registry), abi.encodeCall(p.registry.setBlocked, (driver, true)));
+        _govern(address(p.identities), abi.encodeCall(p.identities.setBlocked, (driver, true)));
         assertFalse(p.governor.hasPermission(driver, address(p.escrow), RideEscrow.accept.selector));
 
-        _govern(address(p.registry), abi.encodeCall(p.registry.setBlocked, (rider, false)));
+        _govern(address(p.identities), abi.encodeCall(p.identities.setBlocked, (rider, false)));
         vm.prank(rider);
         p.escrow.open(driver, brz, FARE, keccak256("quote"));
     }
@@ -610,8 +614,8 @@ contract ProtocolTest is Test, ProtocolDeployer {
         p.escrow.accept(second);
         vm.prank(rider);
         uint256 third = p.escrow.open(driver, brz, FARE, keccak256("quote"));
-        _govern(address(p.registry), abi.encodeCall(p.registry.setBlocked, (rider, true)));
-        _govern(address(p.registry), abi.encodeCall(p.registry.setBlocked, (driver, true)));
+        _govern(address(p.identities), abi.encodeCall(p.identities.setBlocked, (rider, true)));
+        _govern(address(p.identities), abi.encodeCall(p.identities.setBlocked, (driver, true)));
 
         // Both blocked, and the ride still settles: the driver is paid the fare less the fee, and the bond.
         uint256 driverBefore = brz.balanceOf(driver);
@@ -636,9 +640,9 @@ contract ProtocolTest is Test, ProtocolDeployer {
         // The stake leaves the usual way.
         uint256 brlaBefore = brla.balanceOf(driver);
         vm.startPrank(driver);
-        p.registry.requestUnstake(100e18);
+        p.stakes.requestUnstake(100e18);
         skip(1 days);
-        p.registry.withdrawStake();
+        p.stakes.withdrawStake();
         vm.stopPrank();
         assertEq(brla.balanceOf(driver), brlaBefore + 100e18);
     }
@@ -718,8 +722,8 @@ contract ProtocolTest is Test, ProtocolDeployer {
         // The old guardian governs nothing, and the offer cannot be accepted twice.
         address[] memory targets = new address[](1);
         bytes[] memory calls = new bytes[](1);
-        targets[0] = address(p.registry);
-        calls[0] = abi.encodeCall(p.registry.setBlocked, (rider, true));
+        targets[0] = address(p.identities);
+        calls[0] = abi.encodeCall(p.identities.setBlocked, (rider, true));
         vm.prank(institute);
         vm.expectRevert(PBACGovernor.NotGuardian.selector);
         p.governor.execute(targets, calls);
@@ -755,7 +759,7 @@ contract ProtocolTest is Test, ProtocolDeployer {
         t[1] = address(next);
         c[1] = abi.encodeCall(next.setToken, (IERC20(address(brz)), 1_0000, 2_0000, 5_0000));
         t[2] = address(p.reputation);
-        c[2] = abi.encodeCall(p.reputation.setEscrow, (address(next), true));
+        c[2] = abi.encodeCall(p.reputation.setWriter, (address(next), true));
         t[3] = address(g);
         c[3] = abi.encodeCall(
             g.setPolicy,
@@ -808,8 +812,8 @@ contract ProtocolTest is Test, ProtocolDeployer {
         p.escrow.open(driver, brz, FARE, keccak256("quote"));
 
         // The driver's stake, licence and score are where they were, and let them accept on the new one.
-        assertEq(p.registry.stakeOf(driver), 100e18);
-        assertTrue(p.registry.hasCredential(driver, CREDENTIAL_CNH));
+        assertEq(p.stakes.stakeOf(driver), 100e18);
+        assertTrue(p.identities.hasCredential(driver, CREDENTIAL_CNH));
         assertEq(p.reputation.scoreOf(driver), 500);
         vm.startPrank(rider);
         brz.approve(address(next), type(uint256).max);
@@ -842,7 +846,7 @@ contract ProtocolTest is Test, ProtocolDeployer {
 
     function test_AnEscrowTheLedgerNoLongerListensToStillPaysEveryone() public {
         uint256 id = _openAndStart();
-        _govern(address(p.reputation), abi.encodeCall(p.reputation.setEscrow, (address(p.escrow), false)));
+        _govern(address(p.reputation), abi.encodeCall(p.reputation.setWriter, (address(p.escrow), false)));
         uint256 driverBefore = brz.balanceOf(driver);
         vm.prank(rider);
         p.escrow.complete(id, RECEIPT);
@@ -856,10 +860,10 @@ contract ProtocolTest is Test, ProtocolDeployer {
     }
 
     function test_OnlyAListedEscrowRecordsRides() public {
-        vm.expectRevert(Reputation.NotEscrow.selector);
+        vm.expectRevert(DataContract.NotWriter.selector);
         p.reputation.recordCompletion(1, rider, driver);
         vm.expectRevert(Governed.NotGovernor.selector);
-        p.reputation.setEscrow(address(this), true);
+        p.reputation.setWriter(address(this), true);
     }
 
     function test_ARideKeepsTheCourtAndTimeoutItOpenedWith() public {
@@ -1189,6 +1193,228 @@ contract ProtocolTest is Test, ProtocolDeployer {
         vm.prank(address(p.governor));
         vm.expectRevert(FareGuide.InvalidTariff.selector);
         p.fares.setTariff(dearer);
+    }
+
+    // ---------------------------------------------------------------- data that outlives releases
+
+    function test_OnlyAListedRegistryAddsRolesAndRolesOnlyGrow() public {
+        vm.expectRevert(DataContract.NotWriter.selector);
+        p.identities.addRoles(rider, 2);
+
+        uint64 since = p.identities.registeredAt(rider);
+        skip(1 days);
+        vm.prank(rider);
+        p.registry.register(2);
+        assertEq(p.identities.rolesOf(rider), 3); // rider and driver: nothing was taken away
+        assertEq(p.identities.registeredAt(rider), since); // and account age did not reset
+
+        vm.prank(rider);
+        vm.expectRevert(IdentityStore.InvalidRoles.selector);
+        p.registry.register(8);
+    }
+
+    /// @dev A release replaces the registry: the people, their roles, credentials and stake stay.
+    function test_ANewReleasesRegistryWritesTheSameIdentities() public {
+        IdentityRegistry next = new IdentityRegistry(p.governor, p.identities);
+        address someone = makeAddr("someone");
+        vm.prank(someone);
+        vm.expectRevert(DataContract.NotWriter.selector);
+        next.register(1);
+
+        _govern(address(p.identities), abi.encodeCall(p.identities.setWriter, (address(next), true)));
+        _govern(address(p.identities), abi.encodeCall(p.identities.setWriter, (address(p.registry), false)));
+        vm.prank(someone);
+        next.register(1);
+        assertEq(p.identities.rolesOf(someone), 1);
+        vm.prank(someone);
+        vm.expectRevert(DataContract.NotWriter.selector);
+        p.registry.register(2);
+
+        // The driver who registered on the old one still drives.
+        assertTrue(p.governor.hasPermission(driver, address(p.escrow), RideEscrow.accept.selector));
+    }
+
+    function test_TheStakeVaultIsOutOfGovernancesReach() public {
+        // No writer list: nothing can be wired in to move stake.
+        (bool ok,) =
+            address(p.stakes).call(abi.encodeWithSignature("setWriter(address,bool)", address(this), true));
+        assertFalse(ok);
+        // The unbonding period is the guardian's, but never long enough to hold stake hostage.
+        vm.prank(institute);
+        address[] memory t = new address[](1);
+        bytes[] memory c = new bytes[](1);
+        t[0] = address(p.stakes);
+        c[0] = abi.encodeCall(p.stakes.setUnbondingPeriod, (31 days));
+        vm.expectRevert();
+        p.governor.execute(t, c);
+        _govern(address(p.stakes), abi.encodeCall(p.stakes.setUnbondingPeriod, (30 days)));
+        assertEq(p.stakes.unbondingPeriod(), 30 days);
+    }
+
+    function test_OnlyARegisteredAccountStakes() public {
+        address stranger = makeAddr("stranger");
+        _fund(stranger);
+        vm.startPrank(stranger);
+        brla.approve(address(p.stakes), 1e18);
+        vm.expectRevert(StakeVault.NotRegistered.selector);
+        p.stakes.addStake(1e18);
+        vm.stopPrank();
+    }
+
+    function test_AnEscrowCannotRecordARideTwice() public {
+        _govern(address(p.reputation), abi.encodeCall(p.reputation.setWriter, (address(this), true)));
+        p.reputation.recordCompletion(77, rider, driver);
+        vm.expectRevert(Reputation.AlreadyRecorded.selector);
+        p.reputation.recordCompletion(77, rider, driver);
+        assertEq(p.reputation.completedRides(driver), 1);
+    }
+
+    // ---------------------------------------------------------------- releases
+
+    uint48 constant V1 = (1 << 32); // 1.0.0
+
+    function _publish(uint48 v, bytes32 code, bytes32[] memory apks) internal {
+        _govern(address(p.releases), abi.encodeCall(p.releases.publish, (v, code, apks)));
+    }
+
+    function test_AReleaseIsPublishedOnceWithItsApks() public {
+        assertEq(p.releases.versionOf(1, 0, 0), V1);
+        bytes32[] memory apks = new bytes32[](2);
+        apks[0] = sha256("arm64");
+        apks[1] = sha256("universal");
+        bytes32 code = p.releases
+            .contractsHash(
+                address(p.escrow),
+                address(p.court),
+                address(p.feeVault),
+                address(p.registry),
+                address(1),
+                address(2)
+            );
+        assertEq(
+            code,
+            keccak256(
+                abi.encode(
+                    address(p.escrow),
+                    address(p.court),
+                    address(p.feeVault),
+                    address(p.registry),
+                    address(1),
+                    address(2)
+                )
+            )
+        );
+
+        vm.expectRevert(Governed.NotGovernor.selector);
+        p.releases.publish(V1, code, apks);
+
+        _publish(V1, code, apks);
+        ReleaseRegistry.Release memory r = p.releases.release(V1);
+        assertEq(r.contracts, code);
+        assertEq(uint8(r.status), uint8(ReleaseRegistry.Status.Active));
+        assertTrue(p.releases.isApk(V1, sha256("arm64")));
+        assertFalse(p.releases.isApk(V1, sha256("modified")));
+        assertEq(p.releases.latest(), V1);
+
+        // A version names one build forever: a fix is a new version.
+        vm.prank(institute);
+        address[] memory t = new address[](1);
+        bytes[] memory c = new bytes[](1);
+        t[0] = address(p.releases);
+        c[0] = abi.encodeCall(p.releases.publish, (V1, keccak256("other"), apks));
+        vm.expectRevert();
+        p.governor.execute(t, c);
+    }
+
+    function test_AReleaseMovesFromActiveToDeprecatedToRevokedAndBack() public {
+        _publish(V1, keccak256("code"), new bytes32[](0));
+        _govern(address(p.releases), abi.encodeCall(p.releases.deprecate, (V1)));
+        assertEq(uint8(p.releases.statusOf(V1)), uint8(ReleaseRegistry.Status.Deprecated));
+        _govern(address(p.releases), abi.encodeCall(p.releases.revoke, (V1)));
+        assertEq(uint8(p.releases.statusOf(V1)), uint8(ReleaseRegistry.Status.Revoked));
+        _govern(address(p.releases), abi.encodeCall(p.releases.reinstate, (V1)));
+        assertEq(uint8(p.releases.statusOf(V1)), uint8(ReleaseRegistry.Status.Active));
+
+        // An unpublished release has no status to move.
+        vm.prank(institute);
+        address[] memory t = new address[](1);
+        bytes[] memory c = new bytes[](1);
+        t[0] = address(p.releases);
+        c[0] = abi.encodeCall(p.releases.revoke, (V1 + 1));
+        vm.expectRevert();
+        p.governor.execute(t, c);
+    }
+
+    /// @dev Runs one call as the guardian and expects the governor to fail with the target's `reason`.
+    function _governFails(address target, bytes memory call, bytes memory reason) internal {
+        address[] memory t = new address[](1);
+        bytes[] memory c = new bytes[](1);
+        t[0] = target;
+        c[0] = call;
+        vm.prank(institute);
+        vm.expectRevert(abi.encodeWithSelector(PBACGovernor.CallFailed.selector, 0, reason));
+        p.governor.execute(t, c);
+    }
+
+    function test_AReleaseOnlyMovesAlongItsStatuses() public {
+        _publish(V1, keccak256("code"), new bytes32[](0));
+        bytes memory active =
+            abi.encodeWithSelector(ReleaseRegistry.WrongStatus.selector, ReleaseRegistry.Status.Active);
+        // An active release is not put back: there is nothing to put back.
+        _governFails(address(p.releases), abi.encodeCall(p.releases.reinstate, (V1)), active);
+
+        _govern(address(p.releases), abi.encodeCall(p.releases.revoke, (V1)));
+        bytes memory revoked =
+            abi.encodeWithSelector(ReleaseRegistry.WrongStatus.selector, ReleaseRegistry.Status.Revoked);
+        // A revoked release comes back only by reinstate: deprecating it would make it work again.
+        _governFails(address(p.releases), abi.encodeCall(p.releases.deprecate, (V1)), revoked);
+        _governFails(address(p.releases), abi.encodeCall(p.releases.revoke, (V1)), revoked);
+
+        _govern(address(p.releases), abi.encodeCall(p.releases.reinstate, (V1)));
+        _govern(address(p.releases), abi.encodeCall(p.releases.deprecate, (V1)));
+        bytes memory deprecated =
+            abi.encodeWithSelector(ReleaseRegistry.WrongStatus.selector, ReleaseRegistry.Status.Deprecated);
+        _governFails(address(p.releases), abi.encodeCall(p.releases.deprecate, (V1)), deprecated);
+    }
+
+    function test_AReleaseNeedsAVersionAHashAndRealApks() public {
+        bytes memory invalid = abi.encodeWithSelector(ReleaseRegistry.InvalidRelease.selector);
+        bytes32[] memory none = new bytes32[](0);
+        _governFails(
+            address(p.releases), abi.encodeCall(p.releases.publish, (0, keccak256("code"), none)), invalid
+        );
+        _governFails(address(p.releases), abi.encodeCall(p.releases.publish, (V1, bytes32(0), none)), invalid);
+        bytes32[] memory zero = new bytes32[](1);
+        _governFails(
+            address(p.releases), abi.encodeCall(p.releases.publish, (V1, keccak256("code"), zero)), invalid
+        );
+    }
+
+    function test_TheLatestReleaseIsTheHighestPublished() public {
+        uint48 v2 = p.releases.versionOf(2, 0, 0);
+        _publish(v2, keccak256("two"), new bytes32[](0));
+        // A backport of the 1.x line does not become the update apps on 2.0.0 are offered.
+        _publish(p.releases.versionOf(1, 9, 1), keccak256("backport"), new bytes32[](0));
+        assertEq(p.releases.latest(), v2);
+    }
+
+    function test_AStakeVaultIsNeverMadeWithALongUnbonding() public {
+        vm.expectRevert(StakeVault.InvalidPeriod.selector);
+        new StakeVault(p.governor, p.identities, IERC20(address(brla)), 31 days);
+    }
+
+    function test_AReleaseNamesAFewApksAtMost() public {
+        bytes32[] memory apks = new bytes32[](9);
+        for (uint256 i; i < apks.length; ++i) {
+            apks[i] = bytes32(i + 1);
+        }
+        vm.prank(institute);
+        address[] memory t = new address[](1);
+        bytes[] memory c = new bytes[](1);
+        t[0] = address(p.releases);
+        c[0] = abi.encodeCall(p.releases.publish, (V1, keccak256("code"), apks));
+        vm.expectRevert();
+        p.governor.execute(t, c);
     }
 }
 

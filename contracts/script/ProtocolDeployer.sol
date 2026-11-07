@@ -3,7 +3,10 @@ pragma solidity ^0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {PBACGovernor} from "../src/PBACGovernor.sol";
+import {IdentityStore} from "../src/IdentityStore.sol";
+import {StakeVault} from "../src/StakeVault.sol";
 import {IdentityRegistry} from "../src/IdentityRegistry.sol";
+import {ReleaseRegistry} from "../src/ReleaseRegistry.sol";
 import {Reputation} from "../src/Reputation.sol";
 import {FeeVault} from "../src/FeeVault.sol";
 import {RideEscrow} from "../src/RideEscrow.sol";
@@ -11,8 +14,12 @@ import {DisputeCourt} from "../src/DisputeCourt.sol";
 import {MapRegistry} from "../src/MapRegistry.sol";
 import {FareGuide} from "../src/FareGuide.sol";
 
-/// @notice Deploys and wires the eight protocol contracts, sets the first policies and the BRL allow-list, then
-/// ends the bootstrap so only the guardian can change anything. Shared by the deploy script and the tests.
+/// @notice Deploys and wires the protocol contracts, sets the first policies and the BRL allow-list, then ends the
+/// bootstrap so only the guardian can change anything. Shared by the deploy script and the tests.
+///
+/// They are of three kinds (docs/releases-and-data.md): governance (the governor, the release registry), data
+/// that outlives every release (identities, stake, reputation, map packs, the tariff), and the code contracts of
+/// the first release (registry, escrow, court, fee vault). Data contracts list the code contracts that write them.
 abstract contract ProtocolDeployer {
     bytes32 public constant CREDENTIAL_CNH = keccak256("klippelgo.credential.CNH");
     bytes32 public constant CREDENTIAL_KYC = keccak256("klippelgo.credential.KYC");
@@ -45,6 +52,9 @@ abstract contract ProtocolDeployer {
 
     struct Protocol {
         PBACGovernor governor;
+        ReleaseRegistry releases;
+        IdentityStore identities;
+        StakeVault stakes;
         IdentityRegistry registry;
         Reputation reputation;
         FeeVault feeVault;
@@ -56,7 +66,10 @@ abstract contract ProtocolDeployer {
 
     function _deployProtocol(Config memory c) internal returns (Protocol memory p) {
         p.governor = new PBACGovernor(c.guardian);
-        p.registry = new IdentityRegistry(p.governor, c.stakeToken, c.unbondingPeriod);
+        p.releases = new ReleaseRegistry(p.governor);
+        p.identities = new IdentityStore(p.governor);
+        p.stakes = new StakeVault(p.governor, p.identities, c.stakeToken, c.unbondingPeriod);
+        p.registry = new IdentityRegistry(p.governor, p.identities);
         p.reputation = new Reputation(p.governor);
         p.feeVault = new FeeVault(p.governor, c.feeBeneficiary);
         p.escrow = new RideEscrow(p.governor, c.completionTimeout);
@@ -65,9 +78,12 @@ abstract contract ProtocolDeployer {
         p.fares = new FareGuide(p.governor, _launchTariff());
 
         PBACGovernor g = p.governor;
-        g.bootstrapCall(address(g), abi.encodeCall(g.setModules, (p.registry, p.reputation)));
+        g.bootstrapCall(address(g), abi.encodeCall(g.setModules, (p.identities, p.stakes, p.reputation)));
         g.bootstrapCall(
-            address(p.reputation), abi.encodeCall(p.reputation.setEscrow, (address(p.escrow), true))
+            address(p.identities), abi.encodeCall(p.identities.setWriter, (address(p.registry), true))
+        );
+        g.bootstrapCall(
+            address(p.reputation), abi.encodeCall(p.reputation.setWriter, (address(p.escrow), true))
         );
         g.bootstrapCall(
             address(p.escrow),
@@ -86,32 +102,38 @@ abstract contract ProtocolDeployer {
         g.bootstrapCall(address(p.fares), abi.encodeCall(p.fares.setNativeCoinPrice, (c.nativeCoinCentavos)));
         for (uint256 i; i < c.attesters.length; ++i) {
             g.bootstrapCall(
-                address(p.registry), abi.encodeCall(p.registry.setAttester, (c.attesters[i], true))
+                address(p.identities), abi.encodeCall(p.identities.setAttester, (c.attesters[i], true))
             );
         }
 
         uint256 stakeOne = 10 ** c.stakeDecimals;
 
         _policy(
-            g, address(p.escrow), RideEscrow.open.selector, _p(p.registry.ROLE_RIDER(), 0, 0, 0, bytes32(0))
+            g, address(p.escrow), RideEscrow.open.selector, _p(p.identities.ROLE_RIDER(), 0, 0, 0, bytes32(0))
         );
         _policy(
             g,
             address(p.escrow),
             RideEscrow.accept.selector,
-            _p(p.registry.ROLE_DRIVER(), c.driverMinScore, 0, c.driverMinStakeBrl * stakeOne, CREDENTIAL_CNH)
+            _p(
+                p.identities.ROLE_DRIVER(),
+                c.driverMinScore,
+                0,
+                c.driverMinStakeBrl * stakeOne,
+                CREDENTIAL_CNH
+            )
         );
         _policy(
             g,
             address(p.court),
             DisputeCourt.commit.selector,
-            _p(p.registry.ROLE_VALIDATOR(), 0, 0, c.validatorMinStakeBrl * stakeOne, bytes32(0))
+            _p(p.identities.ROLE_VALIDATOR(), 0, 0, c.validatorMinStakeBrl * stakeOne, bytes32(0))
         );
         _policy(
             g,
             address(p.maps),
             MapRegistry.attest.selector,
-            _p(p.registry.ROLE_VALIDATOR(), 0, 0, c.validatorMinStakeBrl * stakeOne, bytes32(0))
+            _p(p.identities.ROLE_VALIDATOR(), 0, 0, c.validatorMinStakeBrl * stakeOne, bytes32(0))
         );
         g.finishBootstrap();
     }

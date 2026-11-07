@@ -153,6 +153,11 @@ class Matchmaker(
         resubscribe()
     }
 
+    /** Where this phone's release matches: its topics are this and a cell. */
+    private val matchPrefix = topicFor(client.deployment.gossipRelease, "")
+
+    private fun topicFor(cell: String) = matchPrefix + cell
+
     /** Subscribes to the cells this phone needs now and leaves the others. */
     private fun resubscribe() {
         val wanted = HashSet(area)
@@ -169,8 +174,8 @@ class Matchmaker(
     @Synchronized
     fun tick() {
         for (message in node.drain()) {
-            val cell = message.topic.removePrefix(TOPIC_PREFIX)
-            if (message.topic.startsWith(TOPIC_PREFIX) && cell in subscribed) {
+            val cell = message.topic.removePrefix(matchPrefix)
+            if (message.topic.startsWith(matchPrefix) && cell in subscribed) {
                 runCatching { receive(cell, message.data) }.onFailure { note("a message in $cell failed: ${it.message}") }
             } else if (message.topic in rideTopics) {
                 runCatching { receiveOnRide(message.topic, message.data) }.onFailure { note("a position failed: ${it.message}") }
@@ -762,7 +767,7 @@ class Matchmaker(
         private const val POSITION_ON_THE_RIDE_EVERY_MS = 900L
         private const val POSITION_FRESH_MS = 30_000L
 
-        private const val TOPIC_PREFIX = "/klippelgo/match/1/"
+        private const val TOPIC_PREFIX = "/klippelgo/match/"
         private const val RIDE_TOPIC_PREFIX = "/klippelgo/ride/1/"
 
         /** Rides whose driver's positions a rider's phone listens for. More than one person has under way. */
@@ -780,8 +785,11 @@ class Matchmaker(
         /** Gossip topic of one ride, by the hash of its quote: its rider listens, its driver sends. */
         fun rideTopic(quoteHash: String) = RIDE_TOPIC_PREFIX + quoteHash.lowercase()
 
-        /** Gossip topic for matching in one geohash-5 cell. */
-        fun topicFor(cell: String) = TOPIC_PREFIX + cell
+        /**
+         * Gossip topic for matching in one geohash-5 cell, among phones on one release (`Deployment.gossipRelease`):
+         * phones built against other code contracts never hear each other's requests.
+         */
+        fun topicFor(release: String, cell: String) = "$TOPIC_PREFIX$release/$cell"
 
         /** The gossip cell of a request: the one its pickup region is in. */
         fun cellOf(request: RideRequest): String = cellOf(request.route.pickupCell)

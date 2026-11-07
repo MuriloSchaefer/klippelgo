@@ -160,7 +160,7 @@ contract AccountsTest is Test, ProtocolDeployer {
         assertGt(account.code.length, 0);
         assertTrue(KlippelGoAccount(payable(account)).isSigner(signer));
         // It registered as a rider, from its own address.
-        assertEq(p.registry.identity(account).roles, 1);
+        assertEq(p.identities.identity(account).roles, 1);
         // The paymaster paid the network in the native coin and took the same in BRZ, at R$ 2,50 a coin.
         uint256 spent = depositBefore - entryPoint.balanceOf(address(paymaster));
         uint256 charged = 50_0000 - brz.balanceOf(account);

@@ -30,7 +30,9 @@ import org.klippelgo.chain.SessionCertificate
 import org.klippelgo.chain.SessionKey
 import org.klippelgo.chain.DriverInfo
 import org.klippelgo.chain.KlippelGoClient
+import org.klippelgo.chain.LeftOnEscrow
 import org.klippelgo.chain.Matchmaker
+import org.klippelgo.chain.ReleaseCheck
 import org.klippelgo.chain.Offer
 import org.klippelgo.chain.Ride
 import org.klippelgo.chain.RideStatus
@@ -145,7 +147,33 @@ data class UiState(
     val infrastructure: BigDecimal? = null,
     /** What this phone's transactions for each ride on screen actually cost the network, in reais, by ride id. */
     val infrastructureSpent: Map<BigInteger, BigDecimal> = emptyMap(),
-)
+    /**
+     * Both roles: what the release registry says of the release this app is, and of the latest one. Null until
+     * first read. Revoked, the app starts no new ride; deprecated, or with a newer release out, it offers the update.
+     */
+    val release: ReleaseCheck? = null,
+    /** Both roles: the latest release's APK, while it is fetched and checked for installing. */
+    val update: UpdateState = UpdateState.Idle,
+    /** Both roles: rides unfinished and money owed on escrows of earlier releases. Empty when nothing is left. */
+    val leftOnPrevious: List<LeftOnEscrow> = emptyList(),
+) {
+    /**
+     * Both roles: whether an update must wait. It waits until the chain was read once (the rides are not known
+     * before) and while a ride of this account is unfinished, since the ride settles on the escrow it opened on,
+     * which a release with other code contracts no longer finishes. An Open ride counts only when this account
+     * locked it: anyone can open one naming a driver, it holds no bond of the driver's, and the rider takes it
+     * back on the old escrow, so it must not hold the driver's update. Only the current role's rides are known
+     * here (P25).
+     */
+    val updateMustWait: Boolean
+        get() = connected != true || rides.any {
+            when (it.status) {
+                RideStatus.Accepted, RideStatus.Started, RideStatus.Disputed -> true
+                RideStatus.Open -> it.rider.equals(address, ignoreCase = true)
+                else -> false
+            }
+        }
+}
 
 const val DEFAULT_RPC = "http://10.0.2.2:8545"
 
@@ -157,8 +185,10 @@ const val DEFAULT_RPC = "http://10.0.2.2:8545"
  * reaches the other only through the contracts.
  */
 class AppViewModel(app: Application) : AndroidViewModel(app) {
-    private val prefs = app.getSharedPreferences("klippelgo", Context.MODE_PRIVATE)
+    // Brought to this release's shape before anything reads it: an update never needs a fresh install.
+    private val prefs = app.getSharedPreferences("klippelgo", Context.MODE_PRIVATE).also(AppData::migrate)
     private val deployment: Deployment = loadDeployment(app)
+    private val updater = Updater(app)
 
     private val _state = MutableStateFlow(
         UiState(
@@ -346,6 +376,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * long the trip is, rounded, and carries a salted hash of the route. Where it starts and ends stays here.
      */
     fun requestRide(coin: Coin, maxFareReais: BigDecimal) = act {
+        mayStartRides(it)
         _state.update { it.copy(askedAgain = false) }
         announce(match, coin, coin.toBaseUnits(maxFareReais))
     }
@@ -357,8 +388,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val cancelledHere = HashSet<BigInteger>()
     private val settled = HashSet<BigInteger>()
 
+    /** Every request goes out here, so a revoked release asks for no ride whatever path led here (A16). */
     @Synchronized
     private fun announce(m: Matchmaker?, coin: Coin, maxFare: BigInteger) {
+        client?.let(::mayStartRides)
         val route = _state.value.route ?: throw IllegalStateException("No route yet")
         val id = packId ?: throw IllegalStateException("No map pack")
         // A new salt each time: the same trip asked twice shows as two unrelated hashes.
@@ -401,6 +434,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * same trip goes out at the new price, which the fare guide's range still bounds.
      */
     fun changePrice(request: RideRequest, price: BigInteger) = act {
+        mayStartRides(it)
         val coin = it.coinFor(request.token)
         _state.update { s -> s.copy(askedAgain = false) }
         match?.closeRequest(request)
@@ -417,6 +451,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * locked hash commits to, is kept on this phone as the ride's evidence and sent sealed to the chosen driver.
      */
     fun acceptOffer(request: RideRequest, offer: Offer) = act {
+        mayStartRides(it)
         val terms = OfferTerms(offer.fare.toString(), request.token, request.rider, offer.driver, offer.expiresAt.toULong())
         // Lock only an offer for the request this phone has out now. Asking again, at another price or from
         // another pickup, replaces the route and salt kept here; an offer made for the request before that
@@ -650,6 +685,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Quote a price for a rider's request. Sending again replaces the earlier quote. */
     fun sendOffer(request: RideRequest, fareReais: BigDecimal) = act {
+        mayStartRides(it)
         match?.sendOffer(request, it.coinFor(request.token).toBaseUnits(fareReais))
     }
 
@@ -658,6 +694,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * still to take, so none of them is the next ride: a rider who locks one now is given it back ([declineVoid]).
      */
     fun accept(id: BigInteger) = act {
+        mayStartRides(it)
         it.accept(id)
         val rides = _state.value.rides
         val taken = rides.firstOrNull { r -> r.id == id }?.quoteHash?.lowercase()
@@ -964,6 +1001,76 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun rate(id: BigInteger, stars: Int) = act { it.rate(id, stars) }
 
+    // ---------------------------------------------------------------- releases
+
+    /**
+     * Refuses a new ride (asking, quoting, locking, accepting) on a release the registry revoked. Rides under way
+     * go on, and money can still be withdrawn. The registry is asked now if it was not read yet, so the first
+     * screen that can start a ride never runs ahead of it. A release the registry does not name, or a registry
+     * that cannot be read, refuses nothing: the RPC must not be able to switch the app off.
+     */
+    private fun mayStartRides(c: KlippelGoClient) {
+        val check = _state.value.release ?: c.releaseCheck().also { r -> _state.update { it.copy(release = r) } }
+        if (!check.mayStartRides) throw IllegalStateException(getApplication<Application>().getString(R.string.release_revoked_refused))
+    }
+
+    /** The update mirror: the one this build names, or the one next to the chain node, where the map packs are. */
+    private fun apkMirror(): String = BuildConfig.APK_MIRROR.ifBlank { mirror() }
+
+    /**
+     * Fetches the latest release's APK, checks it against the registry and asks Android's installer to install
+     * it. The person confirms in the installer; Android accepts only an APK signed with this app's key.
+     */
+    fun update() {
+        val c = client ?: return
+        val latest = _state.value.release?.takeIf { it.updateAvailable }?.latest ?: return
+        if (_state.value.update is UpdateState.Downloading) return
+        // A ride settles on the escrow it opened on. A release with other code contracts would leave this one
+        // where its app cannot finish it, so the update waits until no ride of this account is unfinished.
+        if (_state.value.updateMustWait) return
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            // Checked already and held back for a ride: hand that file to the installer now.
+            if ((_state.value.update as? UpdateState.Ready)?.version == latest) {
+                updater.installIntent(latest)?.let { app.startActivity(it); return@launch }
+            }
+            if (!updater.mayInstall()) {
+                app.startActivity(updater.allowInstallsIntent())
+                return@launch
+            }
+            _state.update { it.copy(update = UpdateState.Downloading(0, 0)) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    updater.download(apkMirror(), latest, { file -> c.publishedApk(latest, file) }) { done, total ->
+                        _state.update { it.copy(update = UpdateState.Downloading(done, total)) }
+                    }
+                }
+            }
+            result.fold(
+                {
+                    _state.update { it.copy(update = UpdateState.Ready(latest)) }
+                    // A ride may have started while the APK came down: the checked file is kept, and the
+                    // installer opens only once no ride of this account is unfinished (the button again).
+                    if (!_state.value.updateMustWait) updater.installIntent(latest)?.let(app::startActivity)
+                },
+                { e ->
+                    val text = when (e) {
+                        is ApkRefused -> app.getString(R.string.update_refused)
+                        is NoApk -> app.getString(R.string.update_missing)
+                        else -> app.getString(R.string.update_failed, message(e))
+                    }
+                    _state.update { it.copy(update = UpdateState.Failed(text)) }
+                },
+            )
+        }
+    }
+
+    /** Takes what an earlier release's escrow owes this account, in each coin it owes. */
+    fun withdrawPrevious(escrow: String) = act { c ->
+        val left = _state.value.leftOnPrevious.firstOrNull { it.escrow.equals(escrow, ignoreCase = true) } ?: return@act
+        left.owed.keys.forEach { coin -> c.withdrawFrom(left.escrow, coin) }
+    }
+
     private fun act(block: (KlippelGoClient) -> Unit) {
         val c = client ?: return
         val role = _state.value.role ?: return
@@ -1182,6 +1289,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 savedScans = it
             }
             val links = if (role == Role.DRIVER) links(rides, rideRoutes) else emptyList()
+            // Read with every full read, which a release event in the change check also starts.
+            val release = c.releaseCheck()
+            val leftOnPrevious = c.leftOnPreviousReleases()
             _state.update {
                 // A read left running by a change of account does not put that account's rides on the new screen.
                 if (it.role != role || client !== c) it else it.copy(
@@ -1191,6 +1301,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     infrastructureSpent = rides.mapNotNull { r -> c.gasSpent(r.id)?.let { wei -> r.id to c.infrastructureCost(wei) } }.toMap(),
                     drivers = drivers, canAccept = canAccept, blockers = blockers, me = me,
                     rideRoutes = rideRoutes, links = links, ridesAhead = ridesAhead, driverAt = driverAt,
+                    release = release, leftOnPrevious = leftOnPrevious,
                 )
             }
             // A ride that just ended leaves the rider where it took them.
@@ -1265,9 +1376,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         /** How long a driver who gave a ride up is not shown that rider's requests. */
         private const val SKIP_AFTER_REFUSAL_MS = 3 * 60_000L
 
-        /** Prefers the addresses from the last deploy (bundled at build time), else a fresh testnet's. */
+        /**
+         * The addresses this build was pinned to (`deployments/<network>.json`, bundled at build time). Only a
+         * build for the local testnet falls back to a fresh testnet's: any other is built with its file or not at
+         * all, so it can never run against addresses it was not released with.
+         */
         private fun loadDeployment(app: Application): Deployment = runCatching {
-            app.assets.open("local.json").bufferedReader().use { Deployment.fromJson(it.readText()) }
-        }.getOrDefault(Deployment.LOCAL_DEFAULT)
+            app.assets.open("deployment.json").bufferedReader().use { Deployment.fromJson(it.readText()) }
+        }.getOrElse { e ->
+            if (BuildConfig.LOCAL_NETWORK) Deployment.LOCAL_DEFAULT
+            else throw IllegalStateException("this ${BuildConfig.NETWORK} build carries no deployment", e)
+        }
     }
 }

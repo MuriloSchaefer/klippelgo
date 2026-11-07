@@ -8,6 +8,8 @@ import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOper
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
 import {LocalAccounts} from "./LocalAccounts.sol";
 import {IdentityRegistry} from "../src/IdentityRegistry.sol";
+import {IdentityStore} from "../src/IdentityStore.sol";
+import {StakeVault} from "../src/StakeVault.sol";
 import {AccountFactory} from "../src/account/AccountFactory.sol";
 import {MockBRL} from "../src/mocks/MockBRL.sol";
 
@@ -27,10 +29,11 @@ contract SeedPhones is Script, LocalAccounts {
 
     /// @dev `DevAccount` RIDER, DRIVER, RIDER_2, DRIVER_2, then E2E_RIDER to E2E_DRIVER_2: the same secrets as the
     /// app's.
-    uint256[8] devKeys =
-        [uint256(0xab001), 0xab002, 0xab003, 0xab004, 0xab011, 0xab012, 0xab013, 0xab014];
+    uint256[8] devKeys = [uint256(0xab001), 0xab002, 0xab003, 0xab004, 0xab011, 0xab012, 0xab013, 0xab014];
 
     IdentityRegistry registry;
+    IdentityStore identities;
+    StakeVault stakes;
     AccountFactory factory;
     IEntryPoint entryPoint;
     address verifier;
@@ -42,6 +45,8 @@ contract SeedPhones is Script, LocalAccounts {
         _loadAccounts();
         string memory json = vm.readFile("../deployments/local.json");
         registry = IdentityRegistry(vm.parseJsonAddress(json, ".IdentityRegistry"));
+        identities = IdentityStore(vm.parseJsonAddress(json, ".IdentityStore"));
+        stakes = StakeVault(vm.parseJsonAddress(json, ".StakeVault"));
         factory = AccountFactory(vm.parseJsonAddress(json, ".AccountFactory"));
         entryPoint = IEntryPoint(vm.parseJsonAddress(json, ".EntryPoint"));
         verifier = vm.parseJsonAddress(json, ".DeviceKeyVerifier");
@@ -49,7 +54,7 @@ contract SeedPhones is Script, LocalAccounts {
         brla = MockBRL(vm.parseJsonAddress(json, ".BRLA"));
         brz = MockBRL(vm.parseJsonAddress(json, ".BRZ"));
 
-        uint8 both = registry.ROLE_RIDER() | registry.ROLE_DRIVER();
+        uint8 both = identities.ROLE_RIDER() | identities.ROLE_DRIVER();
         for (uint256 i; i < devKeys.length; ++i) {
             bytes memory signer = _signer(devKeys[i]);
             address account = factory.accountOf(signer);
@@ -62,8 +67,8 @@ contract SeedPhones is Script, LocalAccounts {
                 vm.stopBroadcast();
             }
 
-            uint256 stake = registry.identity(account).stake;
-            bool unregistered = registry.rolesOf(account) & both != both;
+            uint256 stake = stakes.stakeOf(account);
+            bool unregistered = identities.rolesOf(account) & both != both;
             if (unregistered || stake < STAKE) {
                 Execution[] memory calls = new Execution[](3);
                 uint256 n;
@@ -72,10 +77,10 @@ contract SeedPhones is Script, LocalAccounts {
                 }
                 if (stake < STAKE) {
                     calls[n++] = Execution(
-                        address(brla), 0, abi.encodeCall(IERC20.approve, (address(registry), STAKE - stake))
+                        address(brla), 0, abi.encodeCall(IERC20.approve, (address(stakes), STAKE - stake))
                     );
                     calls[n++] =
-                        Execution(address(registry), 0, abi.encodeCall(registry.addStake, (STAKE - stake)));
+                        Execution(address(stakes), 0, abi.encodeCall(stakes.addStake, (STAKE - stake)));
                 }
                 assembly {
                     mstore(calls, n)
@@ -83,9 +88,9 @@ contract SeedPhones is Script, LocalAccounts {
                 _operate(devKeys[i], account, signer, calls);
             }
 
-            if (!registry.hasCredential(account, CREDENTIAL_CNH)) {
+            if (!identities.hasCredential(account, CREDENTIAL_CNH)) {
                 vm.startBroadcast(attesterKey);
-                registry.attest(
+                identities.attest(
                     account, CREDENTIAL_CNH, keccak256(abi.encode("local test CNH credential", account)), 0
                 );
                 vm.stopBroadcast();

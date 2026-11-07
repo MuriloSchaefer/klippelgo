@@ -236,4 +236,18 @@
     </plurals>
     <string name="on_duty_channel">En servicio</string>
     <string name="on_duty_text">Conectado mientras estás en línea o en un viaje</string>
+    <!-- Releases (docs/releases-and-data.md) -->
+    <string name="release_revoked">Esta versión de la app fue revocada por una falla de seguridad. Los viajes en curso terminan normalmente y tu dinero se puede retirar, pero ningún viaje nuevo empieza en ella.</string>
+    <string name="release_revoked_refused">Esta versión de la app fue revocada. Actualiza para pedir o aceptar viajes nuevos.</string>
+    <string name="release_deprecated">Esta versión de la app se desactivará pronto. Actualiza cuando puedas.</string>
+    <string name="release_update_available">La versión %1$s de la app está disponible.</string>
+    <string name="update_after_ride">Termina el viaje en curso antes de actualizar: solo esta versión puede completarlo.</string>
+    <string name="update_install">Actualizar</string>
+    <string name="update_downloading">Descargando la actualización…</string>
+    <string name="update_refused">La actualización descargada no es una de las publicadas en la red. Se borró y no se instalará.</string>
+    <string name="update_missing">Ningún espejo tiene esta actualización para tu teléfono todavía.</string>
+    <string name="update_failed">No se pudo descargar la actualización: %1$s</string>
+    <string name="previous_rides">Tienes %1$d viaje(s) por terminar en una versión anterior de la app. Terminan en el contrato en que empezaron.</string>
+    <string name="previous_owed">Una versión anterior de la app guarda %1$s para ti.</string>
+    <string name="previous_withdraw">Retirar</string>
 </resources>

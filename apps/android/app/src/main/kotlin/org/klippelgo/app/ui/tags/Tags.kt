@@ -18,6 +18,33 @@ object Tags {
     /** `language.pt`, `language.en`, `language.es`. */
     fun language(code: String) = "language.$code"
 
+    /**
+     * What the release registry says of this app's release, above every screen while there is something to say,
+     * with the button to fetch and install the update.
+     */
+    const val RELEASE_NOTICE = "release-notice"
+
+    /** `state` is one of the names below. */
+    fun releaseNoticeStatus(state: String) = "release-notice.status.$state"
+    const val RELEASE_REVOKED = "revoked"
+    const val RELEASE_DEPRECATED = "deprecated"
+    const val RELEASE_UPDATE = "update"
+    const val RELEASE_NOTICE_TEXT = "release-notice.text"
+    const val RELEASE_NOTICE_UPDATE = "release-notice.update"
+
+    /** In place of the update button while a ride of this account is unfinished. */
+    const val RELEASE_NOTICE_AFTER_RIDE = "release-notice.after-ride"
+    const val RELEASE_NOTICE_DOWNLOADING = "release-notice.downloading"
+    const val RELEASE_NOTICE_FAILED = "release-notice.failed"
+
+    /** What earlier releases' escrows still hold for this account: unfinished rides and money owed. */
+    const val PREVIOUS_RELEASE = "previous-release"
+    const val PREVIOUS_RELEASE_RIDES = "previous-release.rides"
+
+    /** One per earlier escrow that owes this account money, by the escrow's address in lowercase. */
+    fun previousReleaseOwed(escrow: String) = "previous-release.owed.${escrow.lowercase()}"
+    fun previousReleaseWithdraw(escrow: String) = "previous-release.withdraw.${escrow.lowercase()}"
+
     const val MAP = "map"
     const val MAP_ZOOM_IN = "map.zoom-in"
     const val MAP_ZOOM_OUT = "map.zoom-out"

@@ -37,14 +37,15 @@ own `transferFrom` costs, so read these as the protocol's share.
 | Step | Gas | Notes |
 | --- | --- | --- |
 | `open` | 390 000 | Writes the ride (the largest write: the tax, its collector, the court and the timeout are kept with it), counts what the escrow holds of the coin, pulls fare + bond and checks it all arrived |
-| `accept` | 133 000 | Policy check reads registry and reputation; checks no other ride of the driver waits for its pickup and takes that place; pulls the bond and checks it arrived |
+| `accept` | 136 000 | Policy check reads the identity store, the stake vault and reputation; checks no other ride of the driver waits for its pickup and takes that place; pulls the bond and checks it arrived |
 | `start` | 103 000 | Checks no other ride of the driver is under way, and moves the ride from the pickup place to that one |
 | `complete` | 288 000 | Four transfers, the tax among them, each tried on its own, and the reputation record; frees the driver's place |
-| **Ride, happy path** | **about 910 000** | Plus a token `approve` in the same operation as `open` and as `accept`: the app approves the exact amount each time |
+| **Ride, happy path** | **about 915 000** | Plus a token `approve` in the same operation as `open` and as `accept`: the app approves the exact amount each time |
 | `cancel` | 80 000 | The higher figure for an accepted ride, which frees the driver's pickup place |
 | `decline` | 63 000 | The driver turning down an Open ride: one refund |
 | `submitReceipt` + `timeout` | 73 000 + 220 000 | When the rider does not confirm |
 | `withdraw` | 80 000 | Only after a payment failed at settlement; anyone may send it on to the payee |
+| `register`, `addStake` | 51 000, 95 000 | Once per account: `register` writes the identity store through the release's registry; stake goes to the vault |
 | Dispute: `raise`, `commit`, `reveal`, `settle` | 117 000, 85 000, 99 000, 176 000 | Per juror for commit and reveal |
 
 ### What the account adds
@@ -63,6 +64,10 @@ transactions of 345 operations, one operation per bundle:
 | **Ride, happy path** | **about 1 340 000** | **about 1 500 000** | |
 | The first operation (creates the account, then registers) | 497 000 | 517 000 | Once per account |
 
+The `approve` + `accept` and first-operation rows were measured before stake and roles moved to `StakeVault`
+and `IdentityStore`. The escrow's share of `accept` grew by about 3 000 gas (the policy reads the vault) and
+`register` by a call to the store; measure both rows again on the local testnet.
+
 What the account is charged is the EntryPoint's `actualGasUsed`: the transaction's share plus the
 `preVerificationGas` the bundler asks for (the app adds 20%) and the EntryPoint's charge for unused gas. The
 paymaster pays that to the bundler, which keeps the difference. In the account's own contracts, the signature
@@ -77,10 +82,11 @@ Governance is paid by the team, not by riders and drivers:
 
 | Step | Gas | Notes |
 | --- | --- | --- |
-| `TeamCouncil.request` | up to 248 000 | Stores the action and emits its calls; runs it too when it needs one approval and no delay |
+| `TeamCouncil.request` | up to 269 000 | Stores the action and emits its calls; runs it too when it needs one approval and no delay |
 | `TeamCouncil.approve` | 77 000, up to 217 000 | The higher figure when it is the approval that makes the action ready, and runs it |
-| `TeamCouncil.execute` | up to 213 000 | Counts the approvers again, then runs the calls through the governor |
+| `TeamCouncil.execute` | up to 228 000 | Counts the approvers again, then runs the calls through the governor |
 | `TeamCouncil.cancel` | 48 000 | |
+| `ReleaseRegistry.publish`, `revoke` | about 93 000 plus 27 000 per APK; 31 000 | At most eight APKs: a release is a bounded write |
 
 Rerun the report after changing a contract: `cd contracts && forge test --gas-report`.
 

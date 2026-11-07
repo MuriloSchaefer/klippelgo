@@ -147,7 +147,7 @@ flowchart TB
 - **R8. Secrets do not cross the network or the logs.** Offer secrets and trace keys are never serialised
   into a message, an evidence file or a log line.
 - **R9. Gossip accepts only signed, bounded, in-namespace messages.** `ValidationMode::Strict`, a maximum
-  message size, topics only of the exact shape of a cell's or a ride's, a bound on the topics a router joins, and a
+  message size, topics only of the exact shape of a cell's (with its release, 16 lowercase hex characters) or a ride's, a bound on the topics a router joins, and a
   bounded inbox that drops the oldest.
 - **R10. Gossip gives no meaning.** The node never treats a peer id as an account, and never interprets a
   payload. Callers are told every message is untrusted.
@@ -162,7 +162,7 @@ flowchart TB
 | K1 | No peer scoring, rate limiting or cost per message in gossip | A peer can flood a cell with valid-looking traffic. The caller's caps bound memory, not bandwidth | GossipSub peer scoring with an application validator; a cost for posting requests |
 | K2 | Sealing is one message, one way, to a static per-offer key | No forward secrecy beyond the offer key's short life. Losing the offer secret exposes that one route | The encrypted ride channel (Noise between the two phones) |
 | K3 | Sealed routes are broadcast to the cell, and sealed positions to a ride's topic anyone can join | Observers learn that some rider chose some driver and that a driver is on a ride, and the blob size hints at trip length | Direct or relayed phone-to-phone channel |
-| K4 | The router sees IP addresses and topic subscriptions | An IP can be tied to a 5 km cell: a driver's to the cell they are in while online, and to each one they cross into; a rider's to the cell of each pickup they ask from. A rider's IP is also tied to each ride's topic, whose name is the quote hash on chain, so to the accounts of that ride | Relays, several independent routers, later onion-style transport |
+| K4 | The router sees IP addresses and topic subscriptions | An IP can be tied to a 5 km cell: a driver's to the cell they are in while online, and to each one they cross into; a rider's to the cell of each pickup they ask from. A rider's IP is also tied to each ride's topic, whose name is the quote hash on chain, so to the accounts of that ride. A match topic names the phone's release, so a phone on a rare old release stands out in its cell | Relays, several independent routers, later onion-style transport |
 | K6 | GPS can be spoofed consistently by one phone | A lone lying phone produces a self-consistent log | Countersigning by the other phone, physical limits, and jurors when the two disagree |
 | K7 | Map matching on rural tracks and unusual geometry is weaker | A real trip can fail to match | Measured in [docs/maps-and-routing.md](../../docs/maps-and-routing.md); tolerances are governable |
 | K8 | A geohash-6 region in a sparse area may hold very few addresses | The region can identify a place | Coarser cells where density is low |

@@ -15,10 +15,14 @@ Related: [security.md](security.md), [scalability.md](scalability.md), [deployme
 | [`PBACGovernor`](../src/PBACGovernor.sol) | Policies (who may call what), and the guardian: the one account whose calls it runs as the governor | No |
 | [`TeamCouncil`](../src/TeamCouncil.sol) | The guardian: Instituto Klippel's team, its members and roles, and the approvals and delay each action needs. Also the attester the team issues credentials as | No |
 | [`Governed`](../src/Governed.sol) | Base of every other contract: `permitted` and `onlyGovernor` | No |
-| [`IdentityRegistry`](../src/IdentityRegistry.sol) | Roles, stake with unbonding, credential hashes from trusted attesters, and the accounts the guardian blocked | Stake |
+| [`DataContract`](../src/DataContract.sol) | Base of the data contracts: the list of code contracts that may write them (`writers`), set only by the governor | No |
+| [`ReleaseRegistry`](../src/ReleaseRegistry.sol) | Which releases apps may run: each version's contracts hash, the SHA-256 of its APKs, and whether it is active, deprecated or revoked | No |
+| [`IdentityStore`](../src/IdentityStore.sol) | Data: roles and when an account registered, credential hashes from trusted attesters, the trusted attesters, and the accounts the guardian blocked | No |
+| [`StakeVault`](../src/StakeVault.sol) | People's stake with unbonding. Final code: no writer list, no slashing | Stake |
+| [`IdentityRegistry`](../src/IdentityRegistry.sol) | The release's code people register through: it adds roles in `IdentityStore` | No |
 | [`RideEscrow`](../src/RideEscrow.sol) | The ride state machine: locks the fare and both bonds, pays out, and takes the fee and the government's tax from the fare. Keeps a payment it could not make until its payee withdraws it, and holds no more of a coin than its cap | Fares, bonds, payments owed |
 | [`FeeVault`](../src/FeeVault.sol) | Collects R$ 1,00 per completed ride for Instituto Klippel | Fees |
-| [`Reputation`](../src/Reputation.sol) | Completed-ride counts and star ratings between the two parties of a ride, reported by the escrows the guardian listed | No |
+| [`Reputation`](../src/Reputation.sol) | Data: completed-ride counts and star ratings between the two parties of a ride, reported by the escrows the guardian listed as writers | No |
 | [`DisputeCourt`](../src/DisputeCourt.sol) | Commit-reveal juror vote that splits a disputed fare | No |
 | [`MapRegistry`](../src/MapRegistry.sol) | Proof roots of the map packs, and the verifier's tolerances | No |
 | [`FareGuide`](../src/FareGuide.sol) | The tariff and the band riders and drivers may price in, and what one native coin is worth in reais: the rate the app shows gas in, and the paymaster charges it at | No |
@@ -26,6 +30,14 @@ Related: [security.md](security.md), [scalability.md](scalability.md), [deployme
 | [`AccountFactory`](../src/account/AccountFactory.sol) | Makes accounts as clones, at an address that follows from the first key alone | No |
 | [`DeviceKeyVerifier`](../src/account/DeviceKeyVerifier.sol) | Checks a phone chip's P-256 signature over SHA-256 of a hash | No |
 | [`BrlPaymaster`](../src/account/BrlPaymaster.sol) | Pays the network for people's operations and charges them the same in a BRL coin, at `FareGuide`'s rate | Its native deposit at the EntryPoint, the reais it collected |
+
+Each is one of three kinds, which decides how it changes ([docs/releases-and-data.md](../../docs/releases-and-data.md)):
+
+| Kind | Contracts | Changes by |
+| --- | --- | --- |
+| Governance | `PBACGovernor`, `TeamCouncil`, `ReleaseRegistry` | Stays for the network's life; the council through `proposeGuardian` |
+| Data, outlives every release | `IdentityStore`, `StakeVault`, `Reputation`, `MapRegistry`, `FareGuide` | Stays at its address. A release changes only who may write it; moving it is a migration |
+| Code, one release's | `IdentityRegistry`, `RideEscrow`, `DisputeCourt`, `FeeVault`, `AccountFactory`, `BrlPaymaster` | A release deploys new ones, the board wires them in, the old ones drain |
 
 ## How they fit together
 
@@ -39,8 +51,11 @@ flowchart TB
 
     gov[PBACGovernor<br/>policies, runs the guardian's calls]
     council[TeamCouncil<br/>the guardian: Instituto Klippel's team]
-    reg[IdentityRegistry<br/>roles, stake, credentials]
-    rep[Reputation<br/>rides and ratings]
+    rel[ReleaseRegistry<br/>releases apps may run]
+    reg[IdentityRegistry<br/>register]
+    ids[(IdentityStore<br/>roles, credentials, blocks)]
+    stk[(StakeVault<br/>stake)]
+    rep[(Reputation<br/>rides and ratings)]
     esc[RideEscrow<br/>fare and bonds]
     vault[FeeVault]
     court[DisputeCourt]
@@ -56,6 +71,10 @@ flowchart TB
     entry -- "validateUserOp, execute" --> acct
     entry -- "gas, charged in reais" --> pm
     pm -. price .-> fares
+    rider & driver -- register --> reg
+    reg -- "addRoles (a writer)" --> ids
+    driver & validator -- "addStake, withdrawStake" --> stk
+    rider & driver -. "status of their release" .-> rel
     rider -- open, complete, cancel --> esc
     driver -- accept, start, submitReceipt --> esc
     rider & driver -- raise --> court
@@ -67,18 +86,19 @@ flowchart TB
     esc -- "hasPermission?" --> gov
     court -- "hasPermission?" --> gov
     maps -- "hasPermission?" --> gov
-    gov -- roles, stake, credential, block --> reg
+    gov -- roles, credential, block --> ids
+    gov -- stake --> stk
     gov -- score, completed rides --> rep
 
-    esc -- recordCompletion --> rep
+    esc -- "recordCompletion (a writer)" --> rep
     esc -- fee --> vault
     vault -- sweep --> inst
     court -- freeze, resolve --> esc
 
     team -- "request, approve, cancel, execute" --> council
     council == "execute (the guardian)" ==> gov
-    council -- "attest, revoke (an attester)" --> reg
-    gov == "onlyGovernor setters" ==> esc & reg & vault & court & maps & fares & rep
+    council -- "attest, revoke (an attester)" --> ids
+    gov == "onlyGovernor setters" ==> esc & ids & stk & vault & court & maps & fares & rep & rel
 ```
 
 Riders, drivers and validators act through their own `KlippelGoAccount`: every call above is made by the
@@ -90,8 +110,8 @@ Two kinds of arrows matter:
 
 - **Policy checks** (`hasPermission?`). A user-facing function marked `permitted` asks the governor whether
   `msg.sender` satisfies the policy stored for `(this contract, this selector)`. The governor answers from the
-  caller's roles, stake, account age, score and credentials. An account governance blocked
-  (`IdentityRegistry.setBlocked`) satisfies none.
+  caller's roles, account age and credentials in `IdentityStore`, its stake in `StakeVault` and its score in
+  `Reputation`. An account governance blocked (`IdentityStore.setBlocked`) satisfies none.
 - **Governor setters**. Every parameter has a setter guarded by `onlyGovernor`. The governor calls it only
   when its guardian asks, through `PBACGovernor.execute`. The guardian is the team council, which runs an
   action once enough members of the right role approved it and its delay is over.
@@ -188,11 +208,12 @@ them:
 
 | It wants to | How | Takes effect |
 | --- | --- | --- |
-| Approve or revoke a driving licence (CNH), or KYC | Credenciamento, as the council, which is a trusted attester: `IdentityRegistry.attest`, `revoke` | Approve with two members, revoke with one, both at once |
-| Block an account, or stop new rides | Segurança: `IdentityRegistry.setBlocked`, or the `stop-rides` playbook | One member, at once. Unblocking takes two |
+| Approve or revoke a driving licence (CNH), or KYC | Credenciamento, as the council, which is a trusted attester: `IdentityStore.attest`, `revoke` | Approve with two members, revoke with one, both at once |
+| Block an account, or stop new rides | Segurança: `IdentityStore.setBlocked`, or the `stop-rides` playbook | One member, at once. Unblocking takes two |
+| Revoke a release after a vulnerability | Segurança: `ReleaseRegistry.revoke`, or the release's `revoke-release-<version>` playbook, which also stops new rides on its escrow | One member, at once. Putting it back takes two directors |
 | Change a fee, the tax, a cap, the tariff | Finanças | Two members, then a day |
 | Change a policy, a timeout, the map packs | Operações | Two members, then a day |
-| Change who is in the team, the guardian, the contracts wired in, the fee beneficiary | The board (Diretoria) | Three members, then 72 hours |
+| Change who is in the team, the guardian, the contracts wired in, the writers of a data contract, the fee beneficiary, or publish or deprecate a release | The board (Diretoria) | Three members, then 72 hours |
 
 On the local testnet the council has one member, Instituto Klippel's account #1, in every role, with one
 approval and no delay. The tool for all of this is [`gov/klippel-gov`](../../gov/README.md).
@@ -217,9 +238,9 @@ These are the rules new contract code follows. The skill that applies them is
 | `src/interfaces/` | Interfaces other contracts import, to avoid import cycles |
 | `src/account/` | People's accounts and what they need: the account, its factory, the device-key verifier, the paymaster. They follow ERC-4337 and OpenZeppelin's account contracts, not pattern 1: only the paymaster answers to the governor |
 | `src/mocks/` | Test-only tokens. Never referenced by production contracts |
-| `script/ProtocolDeployer.sol` | The one place that deploys and wires the protocol and sets launch policies |
+| `script/ProtocolDeployer.sol` | The one place that deploys and wires the protocol, lists each data contract's writers and sets launch policies |
 | `script/AccountsDeployer.sol` | The account contracts and the paymaster over a deployed protocol, the paymaster funded and staked |
-| `script/TeamDeployer.sol` | The team council's launch roles, permissions, playbooks and numbers, and the handover of the guardian's seat |
+| `script/TeamDeployer.sol` | The team council's launch roles, permissions, playbooks and numbers, the handover of the guardian's seat, and publishing the launch release |
 | `script/DeployLocal.s.sol`, `script/SeedPhones.s.sol` | Local network values and seeded accounts |
 | [`../gov/`](../../gov/README.md) | `klippel-gov`, the command-line tool team members request, approve and execute actions with. Not a contract: it lists every call the council makes by signature, so a new one is added there too |
 | `test/Protocol.t.sol` | Behaviour of the whole protocol, deployed through `ProtocolDeployer` |
@@ -229,12 +250,16 @@ These are the rules new contract code follows. The skill that applies them is
 
 **Patterns**
 
-1. Every protocol contract extends `Governed`. No `Ownable`, no admin address, no pausing key. The one account
+1. Every protocol contract extends `Governed`; a data contract extends `DataContract`, whose writers only the
+   governor lists, and keeps in its own code the rules no writer may break. Money held for as long as a person
+   is on the network sits in a contract no writer list reaches (`StakeVault`). No `Ownable`, no admin
+   address, no pausing key. The one account
    with power over them is the governor's guardian, `TeamCouncil`, which acts only through actions its members
    approve.
 2. A function a user calls and that should be restricted is `permitted`, and its policy is set in
    `ProtocolDeployer`. A function that changes a parameter is `onlyGovernor`. A function called by another
-   protocol contract checks that exact address (`NotCourt`, `NotEscrow`).
+   protocol contract checks that exact address (`NotCourt`), or the writer list of a data contract
+   (`onlyWriter`).
 3. A function that moves tokens is `nonReentrant`, uses `SafeERC20`, and writes its state before it transfers.
    The escrow pays through `_pay`, which keeps a failed payment as owed, and takes deposits through `_deposit`,
    which checks the cap and that the whole amount arrived.

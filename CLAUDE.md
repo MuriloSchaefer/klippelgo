@@ -20,7 +20,7 @@ How the scalability benchmark is built and runs is [core/docs/benchmark.md](core
 The design of maps, routes and trip proofs is [docs/maps-and-routing.md](docs/maps-and-routing.md).
 The design of user accounts, recovery, gas and Pix top-ups is [docs/accounts-and-pix.md](docs/accounts-and-pix.md).
 The design of team governance (members, roles, permissions, the guardian) is [docs/governance.md](docs/governance.md).
-How releases replace the app and its code contracts while data contracts stay (analysis, not built) is
+How releases replace the app and its code contracts while data contracts stay is
 [docs/releases-and-data.md](docs/releases-and-data.md).
 The end-to-end tests, their UI drivers and the CLI that plays a user are in [tests/README.md](tests/README.md).
 

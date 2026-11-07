@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Lets the app hand a checked update to Android's installer, which still asks the person to confirm and
+         accepts only an APK signed with this app's key (Updater, docs/releases-and-data.md). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="false"
@@ -36,6 +39,17 @@
             android:name=".OnDutyService"
             android:exported="false"
             android:foregroundServiceType="location|dataSync" />
+
+        <!-- Gives the installer read access to the checked update, and to nothing else. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
 
         <!-- Keeps the language picked in the app (PT, EN or ES) on Android versions before 13. -->
         <service

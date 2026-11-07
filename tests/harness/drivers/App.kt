@@ -6,6 +6,8 @@ import org.klippelgo.tests.Phone
 class App(val phone: Phone) {
     val error = ErrorDialog(phone)
     val networkNotice = NetworkNotice(phone)
+    val releaseNotice = ReleaseNotice(phone)
+    val previousRelease = PreviousRelease(phone)
     val language = Language(phone)
     val back = Back(phone)
     val map = MapView(phone)
@@ -40,5 +42,6 @@ class App(val phone: Phone) {
         "go-online" to goOnline, "auto-skip" to autoSkip, "request" to request, "driver-ride" to driverRide,
         "map" to map, "map-notice" to mapNotice, "language" to language, "back" to back,
         "network-notice" to networkNotice, "error" to error,
+        "release-notice" to releaseNotice, "previous-release" to previousRelease,
     )
 }

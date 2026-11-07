@@ -23,11 +23,16 @@ CALLS_TYPE='(address,bytes)[]'
 # Every call the council is expected to make, by the contract it belongs to. An action that calls anything
 # else is shown as unknown, so a member never mistakes it for a routine change.
 KNOWN_CALLS=(
-  "IdentityRegistry|setBlocked(address,bool)"
-  "IdentityRegistry|setAttester(address,bool)"
-  "IdentityRegistry|setUnbondingPeriod(uint64)"
-  "IdentityRegistry|attest(address,bytes32,bytes32,uint64)"
-  "IdentityRegistry|revoke(address,bytes32)"
+  "IdentityStore|setBlocked(address,bool)"
+  "IdentityStore|setAttester(address,bool)"
+  "IdentityStore|attest(address,bytes32,bytes32,uint64)"
+  "IdentityStore|revoke(address,bytes32)"
+  "IdentityStore|setWriter(address,bool)"
+  "StakeVault|setUnbondingPeriod(uint64)"
+  "ReleaseRegistry|publish(uint48,bytes32,bytes32[])"
+  "ReleaseRegistry|deprecate(uint48)"
+  "ReleaseRegistry|revoke(uint48)"
+  "ReleaseRegistry|reinstate(uint48)"
   "RideEscrow|setToken(address,uint256,uint256,uint256)"
   "RideEscrow|setTax(uint16,address)"
   "RideEscrow|setCap(address,uint256)"
@@ -43,9 +48,9 @@ KNOWN_CALLS=(
   "MapRegistry|setRebuildQuorum(uint32)"
   "MapRegistry|setGracePeriod(uint64)"
   "MapRegistry|setVerifierParams((uint32,uint32,uint32,uint32,uint32,uint32,uint32,uint32))"
-  "Reputation|setEscrow(address,bool)"
+  "Reputation|setWriter(address,bool)"
   "PBACGovernor|setPolicy(address,bytes4,(bool,uint8,uint16,uint32,uint256,bytes32))"
-  "PBACGovernor|setModules(address,address)"
+  "PBACGovernor|setModules(address,address,address)"
   "PBACGovernor|proposeGuardian(address)"
   "TeamCouncil|setMemberRole(address,uint8,bool)"
   "TeamCouncil|setSuspended(address,bool)"
@@ -56,8 +61,11 @@ KNOWN_CALLS=(
   "TeamCouncil|setApprovalsAndDelay(uint32,uint8,uint32)"
 )
 # Of those, the ones that move money, rewire the protocol or change who decides.
-SENSITIVE_CALLS=" setModules setEscrow payClaim setBeneficiary setPolicy setAttester setToken proposeGuardian setMemberRole createRole grant grantPlaybook revokePermission setApprovalsAndDelay "
-CONTRACTS=(PBACGovernor IdentityRegistry Reputation FeeVault RideEscrow DisputeCourt MapRegistry FareGuide)
+SENSITIVE_CALLS=" setModules setWriter publish reinstate payClaim setBeneficiary setPolicy setAttester setToken proposeGuardian setMemberRole createRole grant grantPlaybook revokePermission setApprovalsAndDelay "
+CONTRACTS=(PBACGovernor ReleaseRegistry IdentityStore StakeVault IdentityRegistry Reputation FeeVault RideEscrow DisputeCourt MapRegistry FareGuide)
+# A release's code contracts, in the order ReleaseRegistry.contractsHash takes them (docs/releases-and-data.md).
+RELEASE_CODE=(RideEscrow DisputeCourt FeeVault IdentityRegistry AccountFactory BrlPaymaster)
+RELEASE_STATUS=(none active deprecated revoked)
 # The functions a policy guards, for `request policy` and `account`.
 POLICIES=(
   "RideEscrow.open|open(address,address,uint256,bytes32)"
@@ -73,6 +81,7 @@ ERRORS=(
   "TooEarly(uint64)" "InvalidPermission()" "WouldLockOut()" "Protected()"
   "UntrustedAttester()" "NotRegistered()" "NotIssuer()" "InvalidRoles()" "InvalidBps()" "NoTaxCollector()"
   "InvalidTariff()" "QuorumNotReached(uint32,uint32)" "AlreadyActivated()" "UnknownPack()" "InvalidRoot()"
+  "NotWriter()" "InvalidPeriod()" "InvalidRelease()" "AlreadyPublished()"
 )
 # The launch roles' names in plain ASCII, for typing.
 ROLE_ALIASES=(board finance operations credentialing security recovery)
@@ -90,6 +99,8 @@ Reading (no key needed)
   actions [n]                         the last n actions (10)
   action <id>                         one action: what it calls, who approved, where it stands
   playbooks                           the lists of calls written in advance, and which role runs each
+  release [version]                   the published releases, or one: its status, its code contracts beside
+                                      the deployment file's, and the SHA-256 of each APK it names
 
 Acting, as a member of the team (each asks the council; it runs once it has its approvals and its delay is over)
   request <change> ...                ask for a change. Changes:
@@ -109,6 +120,11 @@ Acting, as a member of the team (each asks the council; it runs once it has its 
     verifier [endpointToleranceM=] [distanceToleranceBps=] [traceMarginM=] [maxAccuracyM=]
              [detourToleranceBps=] [maxSpeedCmS=] [maxAccelCmS2=] [maxHeadIntervalMs=]
     guardian <address>                hand the guardian's seat on (the new guardian must accept)
+    release publish <version> [apk files or 0x sha-256...]   publish the release made of the deployment
+                                      file's code contracts, and the APKs built from its tag
+    release deprecate | reinstate <version>   ask apps on it to update, or put it back
+    release revoke <version>          apps on it start no new ride (Segurança). The playbook
+                                      revoke-release also closes its escrow: prefer it
     call <Contract | address> '<signature>' [args...]   anything else, shown to members as written
   block <address> | unblock <address> the same as request block / unblock
   approve <id> | cancel <id> | execute <id>
@@ -564,12 +580,30 @@ describe_call() {
       fn=${sig%%(*}
       args=$(cast decode-calldata "$sig" "$data" | paste -sd ' ' -)
       echo "      $name.$fn  $args"
+      [ "$name" != ReleaseRegistry ] || describe_release_call "$fn" "$sig" "$data"
       [[ $SENSITIVE_CALLS != *" $fn "* ]] || echo "      !! $fn moves funds, rewires the protocol or changes who decides. Read every argument"
       return
     fi
   done
   echo "      !! UNKNOWN CALL on $name: selector ${data:0:10}"
   echo "         data $data"
+}
+
+# A release call as a director checks it before approving: the version as text and, for a publish, its contracts
+# hash against the deployment file's code contracts and each APK hash on a line of its own.
+describe_release_call() {
+  local fn=$1 sig=$2 data=$3 decoded version code h
+  decoded=$(cast decode-calldata --json "$sig" "$data" | jq -c 'if type == "object" then .data else . end')
+  version=$(jq -r '.[0] | tostring' <<<"$decoded")
+  echo "         release $(version_text "$version")"
+  [ "$fn" = publish ] || return 0
+  code=$(jq -r '.[1]' <<<"$decoded")
+  if [ "$code" = "$(release_code_hash)" ]; then echo "         contracts hash matches the code contracts in $DEPLOYMENT"
+  else echo "      !! contracts hash $code is NOT the one of the code contracts in $DEPLOYMENT: apps built from it would treat their release as unknown"; fi
+  while read -r h; do
+    [ -z "$h" ] || echo "         APK sha-256 $h"
+  done < <(jq -r '.[2] | if type == "string" then (ltrimstr("[") | rtrimstr("]") | split(", ") | .[]) else .[] end' <<<"$decoded")
+  echo "         Compare each APK hash with sha256sum of the APKs you built from the tag."
 }
 
 # An action: A the fields of action(id), A_STATE in words.
@@ -779,13 +813,24 @@ cmd_run() {
   preload
   [ -n "$want" ] || die "run which playbook? See klippel-gov playbooks"
   load_playbooks
+  load_permissions
+  local matches=0
   for i in "${!PB_ID[@]}"; do
     [ "${PB_NAME[$i]}" = "$want" ] || [ "${PB_ID[$i]}" = "$want" ] || continue
+    # Two active playbooks of one name (a revoke-release per release, say) must never be told apart by which
+    # was granted last: the wrong one could revoke the wrong release.
+    # A revoked one of the same name is passed over for an active one, and is what is found only when no
+    # active one is, so the refusal below says it was revoked.
+    if [ "${PA[${PB_ID[$i]}]}" = true ]; then
+      matches=$((matches + 1))
+    elif [ -n "$perm" ]; then
+      continue
+    fi
     perm=${PB_ID[$i]}
     bytes=${PB_CALLS[$i]}
   done
   [ -n "$perm" ] || die "there is no playbook '$want'. See klippel-gov playbooks"
-  load_permissions
+  [ "$matches" -le 1 ] || die "$matches active playbooks are named '$want'. Run one by its number (klippel-gov playbooks)"
   [ "${PA[$perm]}" = true ] || die "playbook $want was revoked"
   [ "$(cast keccak "$bytes")" = "${PX[$perm]}" ] || die "the calls the node reports for playbook $want do not match the hash the council stored. Do not trust this node"
   decoded=$(cast decode-abi --json "f()($CALLS_TYPE)" "$bytes" | jq -c 'if type == "object" then .data else . end | .[0]')
@@ -864,7 +909,7 @@ build_team() {
       [ -n "$sig" ] || die "'$fn' is not a call klippel-gov knows. Known: $(for entry in "${KNOWN_CALLS[@]}"; do printf '%s.%s ' "${entry%%|*}" "$(sed 's/(.*//' <<<"${entry#*|}")"; done)"
       [ "${fn%%.*}" != TeamCouncil ] || via=council
       [ "$fn" != PBACGovernor.proposeGuardian ] || via=council
-      [[ $fn != IdentityRegistry.attest && $fn != IdentityRegistry.revoke ]] || via=council
+      [[ $fn != IdentityStore.attest && $fn != IdentityStore.revoke ]] || via=council
       for arg in "$@"; do
         key=${arg%%=*}
         case "$key" in
@@ -921,8 +966,9 @@ build_request() {
   local what=${1:-}
   [ -n "$what" ] || die "request what? See klippel-gov help"
   shift
-  local REG ESC who kind token d cur new key bps collector seconds
-  REG=$(addr_of IdentityRegistry)
+  local REG STK ESC who kind token d cur new key bps collector seconds
+  REG=$(addr_of IdentityStore)
+  STK=$(addr_of StakeVault)
   ESC=$(addr_of RideEscrow)
   case "$what" in
     block | unblock)
@@ -1036,11 +1082,11 @@ build_request() {
       ;;
     unbonding-period)
       seconds=$(to_seconds "${1:-}")
-      cur=$(q1 "$REG" 'unbondingPeriod()(uint64)')
-      add_call "$REG" 'setUnbondingPeriod(uint64)' "$seconds"
+      [ "$seconds" -le $((30 * 86400)) ] || die "the stake vault holds nobody's stake longer than 30 days"
+      cur=$(q1 "$STK" 'unbondingPeriod()(uint64)')
+      add_call "$STK" 'setUnbondingPeriod(uint64)' "$seconds"
       TITLE="Set the unbonding period to $(duration "$seconds")"
-      LINES+=("How long stake waits before it can leave: $(duration "$cur") -> $(duration "$seconds").")
-      [ "$seconds" -le $((30 * 86400)) ] || WARNINGS+=("Over 30 days keeps people's stake locked a long time. It applies to every unstake requested from now on.")
+      LINES+=("How long stake waits before it can leave: $(duration "$cur") -> $(duration "$seconds"). It applies to every unstake requested from now on.")
       ;;
     beneficiary)
       local VAULT
@@ -1058,7 +1104,7 @@ build_request() {
       for entry in "${POLICIES[@]}"; do [ "${entry%%|*}" != "$fn" ] || sig=${entry#*|}; done
       [ -n "$sig" ] || die "'$fn' is not a function a policy guards. One of: $(printf '%s ' "${POLICIES[@]%%|*}")"
       target=$(addr_of "${fn%%.*}")
-      stake=$(q1 "$REG" 'stakeToken()(address)')
+      stake=$(q1 "$STK" 'stakeToken()(address)')
       d=$(decimals_of "$stake")
       qa cur "$GOV" 'policy(address,bytes4)((bool,uint8,uint16,uint32,uint256,bytes32))' "$target" "$(cast sig "$sig")"
       parse_kv "enabled roles minScore minAccountAge minStake credential" "$@"
@@ -1133,6 +1179,9 @@ build_request() {
       add_call "$MAPS" 'setVerifierParams((uint32,uint32,uint32,uint32,uint32,uint32,uint32,uint32))' "($(IFS=,; echo "${new[*]}"))"
       WARNINGS+=("Jurors and phones must run a verifier with the same numbers (core/verify).")
       ;;
+    release)
+      build_release "$@"
+      ;;
     call)
       local target
       target=$(resolve "${1:-}")
@@ -1151,7 +1200,7 @@ build_request() {
 cmd_credential() {
   local kind_name=$1 action=${2:-} who REG kind c
   shift 2 || die "$kind_name approve | revoke <address>"
-  REG=$(addr_of IdentityRegistry)
+  REG=$(addr_of IdentityStore)
   kind=$(credential_kind "$kind_name")
   who=$(address "${1:-}")
   shift
@@ -1225,13 +1274,15 @@ cmd_credential() {
 # ---------------------------------------------------------------- reading
 
 cmd_account() {
-  local who REG REP id c kind entry sig stake d
+  local who REG STK REP id st c kind entry sig stake d
   who=$(address "${1:-}")
-  REG=$(addr_of IdentityRegistry)
+  REG=$(addr_of IdentityStore)
+  STK=$(addr_of StakeVault)
   REP=$(addr_of Reputation)
-  stake=$(q1 "$REG" 'stakeToken()(address)')
+  stake=$(q1 "$STK" 'stakeToken()(address)')
   d=$(decimals_of "$stake")
-  qa id "$REG" 'identity(address)((uint8,uint64,uint64,uint256,uint256))' "$who"
+  qa id "$REG" 'identity(address)((uint8,uint64))' "$who"
+  qa st "$STK" 'stakeInfo(address)((uint256,uint256,uint64))' "$who"
   echo "Account $(label "$who")"
   if [ "${id[1]}" = 0 ]; then echo "  not registered"; else echo "  registered   $(when "${id[1]}") as $(roles_text "${id[0]}")"; fi
   # Each answer goes into a variable first, so a read that fails stops the command instead of printing "no".
@@ -1239,7 +1290,7 @@ cmd_account() {
   is_blocked=$(q1 "$REG" 'blocked(address)(bool)' "$who")
   is_attester=$(q1 "$REG" 'trustedAttester(address)(bool)' "$who")
   echo "  blocked      $([ "$is_blocked" = true ] && echo 'YES, by governance' || echo no)"
-  echo "  stake        $(brl "${id[3]}" "$d")$([ "${id[4]}" = 0 ] || echo ", and $(brl "${id[4]}" "$d") leaving from $(when "${id[2]}")")"
+  echo "  stake        $(brl "${st[0]}" "$d")$([ "${st[1]}" = 0 ] || echo ", and $(brl "${st[1]}" "$d") leaving from $(when "${st[2]}")")"
   echo "  rides        $(q1 "$REP" 'completedRides(address)(uint256)' "$who") completed"
   if [ "$(q1 "$REP" 'ratingCount(address)(uint256)' "$who")" = 0 ]; then echo "  score        not rated yet"
   else echo "  score        $(from_units "$(q1 "$REP" 'scoreOf(address)(uint256)' "$who")" 2) from $(q1 "$REP" 'ratingCount(address)(uint256)' "$who") ratings"; fi
@@ -1267,10 +1318,11 @@ cmd_account() {
 }
 
 cmd_status() {
-  local REG ESC VAULT COURT MAPS FARES name a v stake d key entry sig problems=0
-  REG=$(addr_of IdentityRegistry) ESC=$(addr_of RideEscrow) VAULT=$(addr_of FeeVault)
+  local REG STK REP REL ESC VAULT COURT MAPS FARES name a v stake d key entry sig problems=0
+  REG=$(addr_of IdentityStore) STK=$(addr_of StakeVault) REP=$(addr_of Reputation) REL=$(addr_of ReleaseRegistry)
+  ESC=$(addr_of RideEscrow) VAULT=$(addr_of FeeVault)
   COURT=$(addr_of DisputeCourt) MAPS=$(addr_of MapRegistry) FARES=$(addr_of FareGuide)
-  stake=$(q1 "$REG" 'stakeToken()(address)')
+  stake=$(q1 "$STK" 'stakeToken()(address)')
   d=$(decimals_of "$stake")
 
   echo "KlippelGo on chain $CHAIN ($RPC), addresses from $DEPLOYMENT"
@@ -1295,6 +1347,15 @@ cmd_status() {
     problems=1
   fi
   [ "$(q1 "$REG" 'trustedAttester(address)(bool)' "$COUNCIL")" = true ] || echo "  !! the council is not a trusted attester: it cannot issue licences"
+  # The data the policies read, and the code this deployment file's release writes it with.
+  local wired
+  wired=$(q1 "$GOV" 'identities()(address)'),$(q1 "$GOV" 'stakes()(address)'),$(q1 "$GOV" 'reputation()(address)')
+  if [ "${wired,,}" != "${REG,,},${STK,,},${REP,,}" ]; then
+    echo "  !! the governor reads identities, stake or reputation from contracts other than this deployment file's"
+    problems=1
+  fi
+  [ "$(q1 "$REG" 'writers(address)(bool)' "$(addr_of IdentityRegistry)")" = true ] || echo "  !! this deployment file's IdentityRegistry may not write the identities: nobody can register through it"
+  [ "$(q1 "$REP" 'writers(address)(bool)' "$ESC")" = true ] || echo "  !! this deployment file's RideEscrow may not write reputation: its rides do not count"
   [ "$problems" = 1 ] || echo "  The bootstrap is closed, every contract answers to the governor at $GOV, and its guardian is the team council."
 
   echo "Governance"
@@ -1308,7 +1369,19 @@ cmd_status() {
     [ "$st" != 1 ] || pending_actions=$((pending_actions + 1))
   done
   echo "  actions           $count, $pending_actions of the last 50 pending (klippel-gov actions)"
-  echo "  unbonding period  $(duration "$(q1 "$REG" 'unbondingPeriod()(uint64)')")"
+  echo "  unbonding period  $(duration "$(q1 "$STK" 'unbondingPeriod()(uint64)')")"
+
+  echo "Releases"
+  local latest mine
+  latest=$(q1 "$REL" 'latest()(uint48)')
+  if [ "$latest" = 0 ]; then echo "  none published"
+  else echo "  latest            $(version_text "$latest"), $(release_status "$latest")"; fi
+  mine=$(jq -r '.version // empty' "$DEPLOYMENT")
+  if [ -n "$mine" ]; then
+    local packed
+    packed=$(version_pack "$mine")
+    echo "  this file's       $mine, $(release_status "$packed")$([ "$(release_matches "$packed")" = true ] || echo '; its code contracts are NOT the ones published')"
+  fi
 
   echo "Money"
   echo "  tax               $(percent "$(q1 "$ESC" 'taxBps()(uint16)')") of each fare, to $(label "$(q1 "$ESC" 'taxCollector()(address)')")"
@@ -1352,6 +1425,129 @@ cmd_status() {
       "$(roles_text "${v[1]}")" "$(from_units "${v[2]}" 2)" "$(duration "${v[3]}")" "$(brl "${v[4]}" "$d")" "$(credential_name "${v[5]}")"
   done
   return "$problems"
+}
+
+# ---------------------------------------------------------------- releases
+
+# version_pack 1.2.3: the way ReleaseRegistry keys a release, major << 32 | minor << 16 | patch.
+version_pack() {
+  [[ $1 =~ ^([0-9]{1,5})\.([0-9]{1,5})\.([0-9]{1,5})$ ]] || die "'$1' is not a version. Write it like 1.2.3"
+  local a=$((10#${BASH_REMATCH[1]})) b=$((10#${BASH_REMATCH[2]})) c=$((10#${BASH_REMATCH[3]}))
+  [ "$a" -lt 65536 ] && [ "$b" -lt 65536 ] && [ "$c" -lt 65536 ] || die "each part of '$1' is under 65536"
+  echo $(((a << 32) | (b << 16) | c))
+}
+
+version_text() { echo "$(($1 >> 32)).$((($1 >> 16) & 65535)).$(($1 & 65535))"; }
+
+release_status() { echo "${RELEASE_STATUS[$(q1 "$(addr_of ReleaseRegistry)" 'statusOf(uint48)(uint8)' "$1")]}"; }
+
+# The contracts hash of the code contracts in the deployment file, as ReleaseRegistry computes it.
+release_code_hash() {
+  local args=() name
+  for name in "${RELEASE_CODE[@]}"; do args+=("$(addr_of "$name")"); done
+  q1 "$(addr_of ReleaseRegistry)" 'contractsHash(address,address,address,address,address,address)(bytes32)' "${args[@]}"
+}
+
+# true if the release published at this version is made of the deployment file's code contracts.
+release_matches() {
+  local r
+  qa r "$(addr_of ReleaseRegistry)" 'release(uint48)((bytes32,uint8,uint64))' "$1"
+  [ "${r[0]}" = "$(release_code_hash)" ] && echo true || echo false
+}
+
+build_release() {
+  local REL action=${1:-} version packed status
+  REL=$(addr_of ReleaseRegistry)
+  [ -n "${2:-}" ] || die "request release publish | deprecate | revoke | reinstate <version>"
+  version=$2
+  packed=$(version_pack "$version")
+  shift 2
+  status=$(release_status "$packed")
+  case "$action" in
+    publish)
+      [ "$status" = none ] || die "$version is published already ($status). A fix is a new version"
+      local code apks=() source h name
+      code=$(release_code_hash)
+      for source in "$@"; do
+        if [[ $source =~ ^0x[0-9a-fA-F]{64}$ ]]; then h=${source,,}
+        else
+          [ -f "$source" ] || die "'$source' is neither an APK file nor a 32-byte SHA-256"
+          h=0x$(sha256sum "$source" | cut -d' ' -f1)
+        fi
+        apks+=("$h")
+      done
+      [ ${#apks[@]} -le 8 ] || die "a release names 8 APKs at most"
+      add_call "$REL" 'publish(uint48,bytes32,bytes32[])' "$packed" "$code" "$(join "${apks[@]}")"
+      TITLE="Publish release $version"
+      LINES+=("Apps built at version $version with these code contracts may run; apps on earlier releases are offered it.")
+      for name in "${RELEASE_CODE[@]}"; do LINES+=("  $(printf '%-17s' "$name") $(addr_of "$name")"); done
+      LINES+=("  contracts hash    $code")
+      for h in "${apks[@]}"; do LINES+=("  APK sha-256       $h"); done
+      LINES+=("Each director builds the tag and checks the addresses and every APK hash above before approving.")
+      [ ${#apks[@]} -gt 0 ] || WARNINGS+=("No APK named: phones cannot check an update to this release they download.")
+      local i
+      for ((i = 0; i < ${#apks[@]}; i++)); do
+        [ "$(q1 "$REL" 'isApk(uint48,bytes32)(bool)' "$(q1 "$REL" 'latest()(uint48)')" "${apks[$i]}")" = false ] \
+          || WARNINGS+=("${apks[$i]} is an APK of the latest release already: the same build under a new version?")
+      done
+      WARNINGS+=("This release's escrow needs its own playbook, named revoke-release-$version, with revoke($packed) and stop-rides on its escrow: the board stores it with grantPlaybook once this runs. Store new stop-rides and resume-rides for its escrow too: the launch ones name the launch escrow.")
+      ;;
+    deprecate)
+      [ "$status" = active ] || die "$version is $status, not active"
+      add_call "$REL" 'deprecate(uint48)' "$packed"
+      TITLE="Deprecate release $version"
+      LINES+=("Apps on $version keep working and ask their users to update.")
+      ;;
+    revoke)
+      [ "$status" = active ] || [ "$status" = deprecated ] || die "$version is $status: only an active or deprecated release is revoked"
+      add_call "$REL" 'revoke(uint48)' "$packed"
+      TITLE="Revoke release $version"
+      LINES+=("Apps on $version let a ride under way finish and money be withdrawn, and start no new ride.")
+      WARNINGS+=("This stops honest apps only. The release's escrow stays open to any other app: the playbook revoke-release-$version closes it in the same action, and once this runs that playbook can no longer run (the release is revoked already): use stop-rides for its escrow then.")
+      ;;
+    reinstate)
+      [ "$status" = deprecated ] || [ "$status" = revoked ] || die "$version is $status: only a deprecated or revoked release is put back"
+      add_call "$REL" 'reinstate(uint48)' "$packed"
+      TITLE="Put release $version back"
+      LINES+=("Apps on $version work again as on an active release.")
+      ;;
+    *) die "request release publish | deprecate | revoke | reinstate <version>" ;;
+  esac
+}
+
+cmd_release() {
+  local REL logs n i v code apks status r latest
+  REL=$(addr_of ReleaseRegistry)
+  latest=$(q1 "$REL" 'latest()(uint48)')
+  logs=$(cast logs --json --rpc-url "$RPC" --from-block "$FROM_BLOCK" --address "$REL" 'Published(uint48,bytes32,bytes32[])') \
+    || die "could not read the release registry's events. If the node limits how far back it searches, set KLIPPEL_GOV_FROM_BLOCK"
+  n=$(jq 'length' <<<"$logs")
+  if [ -z "${1:-}" ]; then
+    [ "$n" != 0 ] || { echo "No release published since block $FROM_BLOCK."; return; }
+    for ((i = 0; i < n; i++)); do
+      v=$(cast to-dec "$(jq -r ".[$i].topics[1]" <<<"$logs")")
+      qa r "$REL" 'release(uint48)((bytes32,uint8,uint64))' "$v"
+      printf '  %-10s %-11s published %s%s\n' "$(version_text "$v")" "${RELEASE_STATUS[${r[1]}]}" "$(when "${r[2]}")" "$([ "$v" != "$latest" ] || echo ', latest')"
+    done
+    return
+  fi
+  v=$(version_pack "$1")
+  qa r "$REL" 'release(uint48)((bytes32,uint8,uint64))' "$v"
+  [ "${r[1]}" != 0 ] || die "release $1 is not published"
+  echo "Release $1: ${RELEASE_STATUS[${r[1]}]}, published $(when "${r[2]}")$([ "$v" != "$latest" ] || echo ', the latest')"
+  echo "  contracts hash    ${r[0]}"
+  local name ours
+  ours=$(release_code_hash)
+  echo "  $DEPLOYMENT's code contracts $([ "$ours" = "${r[0]}" ] && echo 'are this release:' || echo 'are NOT this release:')"
+  for name in "${RELEASE_CODE[@]}"; do printf '    %-17s %s\n' "$name" "$(addr_of "$name")"; done
+  for ((i = 0; i < n; i++)); do
+    [ "$(cast to-dec "$(jq -r ".[$i].topics[1]" <<<"$logs")")" = "$v" ] || continue
+    mapfile -t apks < <(cast decode-abi --json 'f()(bytes32,bytes32[])' "$(jq -r ".[$i].data" <<<"$logs")" \
+      | jq -r 'if type == "object" then .data else . end | .[1] | if type == "string" then (ltrimstr("[") | rtrimstr("]") | split(", ") | .[]) else .[] end | select(. != "")')
+    if [ ${#apks[@]} -eq 0 ]; then echo "  APKs              none named"
+    else for code in "${apks[@]}"; do echo "  APK sha-256       $code"; done; fi
+  done
+  echo "  Check: build the tag, compare each APK's sha256sum with the lines above."
 }
 
 cmd_sweep() {
@@ -1442,6 +1638,7 @@ case "$COMMAND" in
   request) need_wallet; build_request "$@"; TITLE="Request: $TITLE"; submit ;;
   block | unblock) need_wallet; build_request "$COMMAND" "$@"; TITLE="Request: $TITLE"; submit ;;
   playbooks) cmd_playbooks ;;
+  release) cmd_release "$@" ;;
   run) cmd_run "$@" ;;
   stop-rides | resume-rides) cmd_run "$COMMAND" ;;
   team)

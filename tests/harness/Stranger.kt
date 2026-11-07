@@ -38,7 +38,7 @@ import java.util.concurrent.CopyOnWriteArraySet
 class Stranger(private val stack: Stack) : AutoCloseable {
     private val node = GossipNode.start(GossipConfig(listen = null, bootstrap = listOf(stack.gossip), router = false))
     /** Every gossip cell of the pilot pack: the stranger hears the whole city and speaks in every part of it. */
-    private val topics = Matchmaker.covering(stack.pack.bounds() ?: error("the pack has no bounds")).map(Matchmaker::topicFor).toSet()
+    private val topics = Matchmaker.covering(stack.pack.bounds() ?: error("the pack has no bounds")).map { Matchmaker.topicFor(stack.deployment.gossipRelease, it) }.toSet()
     private val json = ObjectMapper()
     private val messages = CopyOnWriteArrayList<ByteArray>()
 
@@ -87,7 +87,7 @@ class Stranger(private val stack: Stack) : AutoCloseable {
     /** Says something in one cell only, again every second for a while. */
     fun sayIn(cell: String, message: ByteArray, seconds: Int = 6) {
         repeat(seconds) {
-            node.publish(Matchmaker.topicFor(cell), message)
+            node.publish(Matchmaker.topicFor(stack.deployment.gossipRelease, cell), message)
             try {
                 Thread.sleep(1_000)
             } catch (e: InterruptedException) {
