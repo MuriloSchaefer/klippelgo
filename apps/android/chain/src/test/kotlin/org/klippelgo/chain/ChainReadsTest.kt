@@ -126,10 +126,13 @@ class ChainReadsTest {
         if (rpc.isBlank()) return println("KLIPPELGO_RPC not set, skipping")
         val rider = KlippelGoClient(rpc, DevAccount.RIDER_2.key(), deployment)
         val driver = KlippelGoClient(rpc, DevAccount.DRIVER_2.key(), deployment)
-        // Each question asked by a phone of its own: a check remembers what it already reported.
-        fun onlooker() = KlippelGoClient(rpc, DevAccount.RIDER.key(), deployment)
+        // Each question asked by a phone of its own: a check remembers what it already reported. Each phone first
+        // takes in what happened before the test, such as a change of the escrow's settings by another test,
+        // which the check would count as it reads the blocks before `before` again.
         val nobody = "0x" + "00".repeat(19) + "01"
         val before = rider.blockNumber().toLong()
+        val onlookers = ArrayDeque(List(6) { KlippelGoClient(rpc, DevAccount.RIDER.key(), deployment).also { it.changedSince(before - 1, emptySet(), setOf(nobody)) } })
+        fun onlooker() = onlookers.removeFirst()
         val id = rider.openRide(driver.address, rider.brz, rider.brz.toBaseUnits(BigDecimal("10.00")), Hash.sha3("ride for the change check ${System.nanoTime()}".toByteArray()))
         assertTrue(onlooker().changedSince(before, emptySet(), setOf(driver.address)).second, "a ride opened naming a watched account is a change")
         assertTrue(onlooker().changedSince(before, emptySet(), setOf(rider.address)).second, "so is one a watched account opened as the rider")

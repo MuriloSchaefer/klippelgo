@@ -107,7 +107,7 @@ shows that can still change or that driver is busy with (a hundred ride ids a qu
 together with changes to the escrow's settings, both rare. The other three are money arriving in this account,
 governance changes to policies, tariff, packs and releases, and the registry's events about this account. What
 comes back is checked again on the phone, so a node that ignores the topics costs bandwidth, not a full read every
-tick. The 16 blocks before the new ones are read again each time, and an event counts once, so one a lagging node
+tick. A node that refuses lists of topics fails every check, and the phone then reads in full every 2 s. The 16 blocks before the new ones are read again each time, and an event counts once, so one a lagging node
 left out is still seen. A full read follows such a change, every action, coming back on screen, a failed check, and
 in any case 30 s after the last one, which is when a rating someone else gave, for one, reaches the screen. A driver
 accepting another ride before the waiting rider's own is accepted is also seen then.
