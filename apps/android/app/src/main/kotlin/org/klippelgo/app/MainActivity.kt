@@ -22,14 +22,16 @@ class MainActivity : AppCompatActivity() {
         // Scripted launches (scripts/two-phones.sh) pass the role the phone starts in, the node address and which
         // pair of phones it belongs to; role and pair together pick one of the local testnet's seeded accounts.
         // The end-to-end tests ask for those accounts with `devAccounts`, and then go through the create-account
-        // screen. Both work in debug builds only (see AppViewModel.useDevAccounts).
+        // screen; with `e2eAccounts` they get their own set of them. All work in debug builds only (see
+        // AppViewModel.useDevAccounts).
         if (savedInstanceState == null) {
-            if (intent.getBooleanExtra("devAccounts", false)) vm.useDevAccounts(true)
+            val e2e = intent.getBooleanExtra("e2eAccounts", false)
+            if (intent.getBooleanExtra("devAccounts", false)) vm.useDevAccounts(true, e2e)
             intent.getStringExtra("role")?.let { extra ->
                 val role = if (extra.equals("driver", ignoreCase = true)) Role.DRIVER else Role.RIDER
                 val rpc = intent.getStringExtra("rpc") ?: vm.state.value.rpcUrl
                 val pair = intent.getIntExtra("pair", 0)
-                vm.useDevAccounts(true)
+                vm.useDevAccounts(true, e2e)
                 vm.connect(role, rpc, pair.takeIf { it in 1..2 })
             }
         }

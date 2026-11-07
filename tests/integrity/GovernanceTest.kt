@@ -27,11 +27,11 @@ class GovernanceTest : Scenario() {
         waitUntil("the rules screen to show R$ $now per km", 90_000) {
             true.takeIf { app.rules.tariff().perKm.compareTo(now) == 0 }
         }
-        val tariff = stack.client(DevAccount.RIDER_2).tariff
+        val tariff = stack.client(DevAccount.E2E_RIDER_2).tariff
         assertEquals(now.movePointRight(2).toLong(), tariff.perKmCentavos)
 
         // A driver who came online after the change, so that both phones price on the tariff now in force.
-        val driver = peer(DevAccount.DRIVER)
+        val driver = peer(DevAccount.E2E_DRIVER)
         app.tabs.open("ride")
         app.whereTo.ask()
         app.ask.shown()
@@ -70,7 +70,7 @@ class GovernanceTest : Scenario() {
     @Test
     fun `a driver Segurança blocks is told so, and can accept again once unblocked`() {
         val gov = governance()
-        val rider = peer(DevAccount.RIDER_2)
+        val rider = peer(DevAccount.E2E_RIDER_2)
         freshDriver()
         app.goOnline.awaitBlockers()
 

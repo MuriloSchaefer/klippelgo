@@ -21,9 +21,9 @@ import kotlin.test.assertTrue
 class DriverTwoRidesTest : Scenario() {
     @Test
     fun `two riders lock the same driver, who sees both and takes either, and the other is given everything back`() {
-        val ana = peer(DevAccount.RIDER)
-        val bia = peer(DevAccount.RIDER_2)
-        val driver = stack.client(DevAccount.DRIVER)
+        val ana = peer(DevAccount.E2E_RIDER)
+        val bia = peer(DevAccount.E2E_RIDER_2)
+        val driver = stack.client(DevAccount.E2E_DRIVER)
         val coin = driver.brz
         val (_, _, driverBond) = driver.tokenConfig(coin)
         freshDriver()
@@ -73,8 +73,8 @@ class DriverTwoRidesTest : Scenario() {
 
     @Test
     fun `a quote sent before the driver took a ride is called off if its rider locks it after`() {
-        val ana = peer(DevAccount.RIDER)
-        val bia = peer(DevAccount.RIDER_2)
+        val ana = peer(DevAccount.E2E_RIDER)
+        val bia = peer(DevAccount.E2E_RIDER_2)
         freshDriver()
         app.goOnline.goOnline()
 
@@ -106,10 +106,10 @@ class DriverTwoRidesTest : Scenario() {
 
     @Test
     fun `the next ride is taken once the rider of the first is in the car, and never a third`() {
-        val ana = peer(DevAccount.RIDER)
-        val bia = peer(DevAccount.RIDER_2)
+        val ana = peer(DevAccount.E2E_RIDER)
+        val bia = peer(DevAccount.E2E_RIDER_2)
         // The second driver account is seeded as a rider too: here it is a third person wanting a ride.
-        val caio = peer(DevAccount.DRIVER_2)
+        val caio = peer(DevAccount.E2E_DRIVER_2)
         freshDriver()
         app.goOnline.goOnline()
 
@@ -139,7 +139,7 @@ class DriverTwoRidesTest : Scenario() {
         assertEquals(RideStatus.Open, chain.ride(b).status)
         assertFalse(app.driverRide.canAccept(), "the driver can take Bia's ride before Ana is in the car")
         // Nor around the app: the escrow itself refuses the driver's account a second ride waiting for pickup.
-        val refused = runCatching { stack.client(DevAccount.DRIVER).accept(b) }
+        val refused = runCatching { stack.client(DevAccount.E2E_DRIVER).accept(b) }
         assertTrue(refused.isFailure, "the escrow let the driver accept a second ride before the first rider was in the car")
         assertTrue("DriverBusy" in refused.exceptionOrNull()!!.message.orEmpty(), "refused for another reason: ${refused.exceptionOrNull()}")
         assertEquals(RideStatus.Open, chain.ride(b).status)

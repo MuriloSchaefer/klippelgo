@@ -26,7 +26,7 @@ class RevealedRouteTest : Scenario() {
     @Test
     fun `a route that is not the one locked in the escrow is never shown as checked`() {
         val stranger = stranger()
-        val rider = peer(DevAccount.RIDER)
+        val rider = peer(DevAccount.E2E_RIDER)
         freshDriver()
         app.goOnline.goOnline()
 
@@ -68,7 +68,7 @@ class RevealedRouteTest : Scenario() {
     @Test
     fun `a ride opened with someone else's quote hash is never shown with their route`() {
         val stranger = stranger()
-        val rider = peer(DevAccount.RIDER)
+        val rider = peer(DevAccount.E2E_RIDER)
         // Anyone with the rider role and a little money: the hash it copies is public once quoted.
         val copier = stranger.newKey()
         copier.mint(copier.brz, copier.brz.toBaseUnits(BigDecimal("100.00")))

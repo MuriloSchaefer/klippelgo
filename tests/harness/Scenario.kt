@@ -16,7 +16,8 @@ import java.io.File
  * What every test starts from: the running stack, the phone with the app on it, and peers to ride with.
  *
  * The app under test is always the first phone of its role, as it is when a person picks a role on the
- * create-account screen: account #3 as a rider, #4 as a driver. The other seeded accounts play the peers.
+ * create-account screen: `DevAccount.E2E_RIDER` as a rider, `E2E_DRIVER` as a driver. The tests' other seeded
+ * accounts play the peers. None of them is an account phones played by hand use, so those are strangers here.
  */
 @ExtendWith(Scenario.KeepTheScreen::class)
 abstract class Scenario {
@@ -29,11 +30,15 @@ abstract class Scenario {
     private val peers = mutableListOf<Peer>()
 
     /** Reads the chain as anyone can. The key signs nothing here. */
-    val chain: KlippelGoClient by lazy { stack.client(DevAccount.RIDER_2) }
+    val chain: KlippelGoClient by lazy { stack.client(DevAccount.E2E_RIDER_2) }
 
     @BeforeEach
     fun cleanSlate(info: TestInfo) {
         println("\n=== ${info.testClass.map { it.simpleName }.orElse("")}: ${info.displayName}")
+        // The app the last test left running goes on announcing its request for a while, under the same account
+        // this test's app has: a peer made before this test launches the app would take it for this test's.
+        // Every test launches the app itself, so stop it on every phone before anyone joins the network.
+        stack.phones.take(stack.phonesUp()).forEach { runCatching { it.stop() } }
         stack.settle()
     }
 
@@ -98,8 +103,8 @@ abstract class Scenario {
     fun taxCollected(coin: org.klippelgo.chain.Coin): java.math.BigInteger = chain.balanceOf(coin, stack.deployment.taxCollector)
 
     /** The account the app has when it is opened as a rider, and as a driver. */
-    val appRider: String by lazy { stack.client(DevAccount.RIDER).address }
-    val appDriver: String by lazy { stack.client(DevAccount.DRIVER).address }
+    val appRider: String by lazy { stack.client(DevAccount.E2E_RIDER).address }
+    val appDriver: String by lazy { stack.client(DevAccount.E2E_DRIVER).address }
 
     /**
      * The app as it is on the day it was installed, taken through onboarding by hand as a rider standing in the

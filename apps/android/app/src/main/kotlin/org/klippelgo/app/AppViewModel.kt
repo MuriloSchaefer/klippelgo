@@ -196,10 +196,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * In a debug build, makes this phone use the local testnet's seeded accounts instead of a key of its own, as
-     * scripted launches and the end-to-end tests ask for. Release builds ignore it.
+     * scripted launches and the end-to-end tests ask for. Release builds ignore it. `e2e` picks the end-to-end
+     * tests' own seeded accounts, so that phones played by hand on the same chain are other people to them.
      */
-    fun useDevAccounts(on: Boolean) {
-        prefs.edit().putBoolean("devAccounts", on && BuildConfig.DEBUG).apply()
+    fun useDevAccounts(on: Boolean, e2e: Boolean = false) {
+        prefs.edit().putBoolean("devAccounts", on && BuildConfig.DEBUG).putBoolean("e2eAccounts", on && e2e && BuildConfig.DEBUG).apply()
     }
 
     /**
@@ -211,7 +212,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *
      * In a debug build that was asked to ([useDevAccounts], or a scripted launch naming a `pair`), the account is
      * instead one of four seeded test accounts, chosen the first time from the role the phone starts in and the
-     * pair (1 or 2, so that four phones can play two riders and two drivers), and kept from then on.
+     * pair (1 or 2, so that four phones can play two riders and two drivers), and kept from then on. The four are
+     * the end-to-end tests' own when they asked for those ([useDevAccounts] with `e2e`).
      */
     fun connect(role: Role, rpcUrl: String, pair: Int? = null) {
         val dev = BuildConfig.DEBUG && (pair != null || prefs.getBoolean("devAccounts", false))
@@ -219,10 +221,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val kept = prefs.getString("account", null)?.let { n -> DevAccount.entries.firstOrNull { it.name == n } }
             // A phone set up before accounts were tied to phones remembers only its pair.
             val second = (pair ?: prefs.getInt("pair", 1)) == 2
-            val account = if (pair == null && kept != null) kept else when (role) {
-                Role.RIDER -> if (second) DevAccount.RIDER_2 else DevAccount.RIDER
-                Role.DRIVER -> if (second) DevAccount.DRIVER_2 else DevAccount.DRIVER
-            }
+            val account = if (pair == null && kept != null) kept
+                else DevAccount.of(role == Role.DRIVER, second, e2e = prefs.getBoolean("e2eAccounts", false))
             account.key() to account.name
         } else {
             KeystoreDeviceKey.forThisPhone(getApplication()) to DEVICE_ACCOUNT

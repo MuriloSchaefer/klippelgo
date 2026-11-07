@@ -110,7 +110,8 @@ private fun run(args: List<String>) {
                 everySeconds = options["every"]?.toDouble() ?: 1.0,
             )
         }
-        "launch" -> println("drawn in ${stack.phone.launch(fresh = rest.firstOrNull() == "fresh")} ms")
+        // A phone played by hand: the hand-played seeded accounts, as its CLI peers have, never the tests' own.
+        "launch" -> println("drawn in ${stack.phone.launch(fresh = rest.firstOrNull() == "fresh", e2e = false)} ms")
         "stop" -> show(stack.phone.stop())
         "screen" -> stack.phone.screen().let { screen ->
             show(

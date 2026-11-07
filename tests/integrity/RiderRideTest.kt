@@ -32,8 +32,8 @@ class RiderRideTest : Scenario() {
 
     @Test
     fun `a ride from search to payment`() {
-        val driver = peer(DevAccount.DRIVER)
-        val rider = stack.client(DevAccount.RIDER)
+        val driver = peer(DevAccount.E2E_DRIVER)
+        val rider = stack.client(DevAccount.E2E_RIDER)
         val coin = rider.brz
         val (fee, riderBond, _) = rider.tokenConfig(coin)
         freshRider()
@@ -138,7 +138,7 @@ class RiderRideTest : Scenario() {
 
     @Test
     fun `the map stays where the rider put it while the driver comes`() {
-        val driver = peer(DevAccount.DRIVER)
+        val driver = peer(DevAccount.E2E_DRIVER)
         freshRider()
         askForARide()
         val request = driver.awaitRequest(appRider)
@@ -223,7 +223,7 @@ class RiderRideTest : Scenario() {
 
     @Test
     fun `the trip is drawn once a destination is picked, and the pickup can be changed by name`() {
-        val driver = peer(DevAccount.DRIVER)
+        val driver = peer(DevAccount.E2E_DRIVER)
         val coin = chain.brz
         freshRider()
         val pinned = app.whereTo.pickup()
@@ -304,8 +304,8 @@ class RiderRideTest : Scenario() {
 
     @Test
     fun `a rider who cancels before the driver answers gets everything back`() {
-        val driver = peer(DevAccount.DRIVER)
-        val rider = stack.client(DevAccount.RIDER)
+        val driver = peer(DevAccount.E2E_DRIVER)
+        val rider = stack.client(DevAccount.E2E_RIDER)
         freshRider()
         val before = rider.balanceOf(rider.brz)
         val from = mark()
@@ -327,8 +327,8 @@ class RiderRideTest : Scenario() {
 
     @Test
     fun `when the driver declines, the same trip goes out again to the others`() {
-        val first = peer(DevAccount.DRIVER)
-        val second = peer(DevAccount.DRIVER_2)
+        val first = peer(DevAccount.E2E_DRIVER)
+        val second = peer(DevAccount.E2E_DRIVER_2)
         freshRider()
 
         val price = askForARide()

@@ -77,11 +77,12 @@ class Stack(
     }
 
     /**
-     * Ends every ride the test accounts left under way, so a test starts with nobody mid-ride. A chain that
-     * was used before, by an earlier run or by hand, is the normal case, not an error.
+     * Ends every ride the tests' accounts left under way, so a test starts with nobody mid-ride. A chain that
+     * was used before, by an earlier run, is the normal case, not an error. Rides played by hand on the same
+     * chain are on other accounts and left alone.
      */
     fun settle() {
-        for (account in DevAccount.entries) {
+        for (account in DevAccount.e2e) {
             val rider = client(account)
             for (id in rider.ridesAsRider().take(30)) {
                 val ride = rider.ride(id)
@@ -95,8 +96,8 @@ class Stack(
             }
         }
         // A finished ride the account has not rated opens the app on the rating screen, in place of the home
-        // screen a test starts from. Rides played by hand on the same seeded accounts leave these too.
-        for (account in DevAccount.entries) {
+        // screen a test starts from.
+        for (account in DevAccount.e2e) {
             val c = client(account)
             for (id in (c.ridesAsRider().take(10) + c.ridesAsDriver().take(10)).distinct()) {
                 runCatching { if (c.ride(id).status == RideStatus.Completed && !c.hasRated(id)) c.rate(id, 5) }
@@ -120,7 +121,7 @@ class Stack(
             val rpc = env("KLIPPELGO_RPC", "http://127.0.0.1:8545")
             val addresses = Deployment.fromJson(deployment.readText())
             // The tests sign with anvil's public keys and end rides for them. Never on anything but a local testnet.
-            val chainId = runCatching { KlippelGoClient(rpc, DevAccount.RIDER.key(), addresses).chainId() }
+            val chainId = runCatching { KlippelGoClient(rpc, DevAccount.E2E_RIDER.key(), addresses).chainId() }
                 .getOrElse { error("No chain node answers at $rpc. Bring the stack up first: tests/stack.sh up") }
             check(chainId == LOCAL_CHAIN && addresses.chainId == LOCAL_CHAIN) {
                 "The chain at $rpc (id $chainId, deployment for ${addresses.chainId}) is not a local testnet ($LOCAL_CHAIN). The tests will not touch it."

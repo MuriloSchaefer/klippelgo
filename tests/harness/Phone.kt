@@ -171,7 +171,7 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
      * (`devAccounts`, honoured by debug builds only), so the create-account screen gives the tests the accounts
      * they know: unless `ownKey`, where it makes its own key in the phone's chip, as on a real phone.
      */
-    fun launch(fresh: Boolean = false, role: String? = null, pair: Int? = null, ownKey: Boolean = false): Long {
+    fun launch(fresh: Boolean = false, role: String? = null, pair: Int? = null, ownKey: Boolean = false, e2e: Boolean = true): Long {
         requireTestDevice()
         stop()
         if (fresh) shell("pm clear $APP")
@@ -183,8 +183,12 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
         waitUntil("the UI agent to answer", 30_000) { runCatching { ask("op" to "dump") }.getOrNull() }
         // A scripted launch, as scripts/two-phones.sh does it: the role to start in, and which of the two
         // seeded accounts of that role. The create-account screen only ever gives the first.
+        // The tests' own seeded accounts (DevAccount.E2E_…), never those of phones played by hand; `e2e = false`
+        // is the CLI playing a phone by hand, which gets the hand-played ones.
+        val devAccounts = role != null || (fresh && !ownKey)
         val extras = (if (role == null) "" else " --es role $role --es rpc ${stack.rpcFromPhone}" + (pair?.let { " --ei pair $it" } ?: "")) +
-            (if (fresh && !ownKey) " --ez devAccounts true" else "")
+            (if (fresh && !ownKey) " --ez devAccounts true" else "") +
+            (if (devAccounts && e2e) " --ez e2eAccounts true" else "")
         // What the app traces from here on is this test's: kept next to the screenshot when the test fails.
         runCatching { adb("logcat", "-c") }
         val started = shell("am start -W -n $APP/.MainActivity$extras")

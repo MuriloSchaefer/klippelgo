@@ -145,7 +145,7 @@ To drive one of the other phones from the CLI: `KLIPPELGO_PHONE=emulator-5572 te
 class RiderRideTest : Scenario() {
     @Test
     fun `a rider who cancels before the driver answers gets everything back`() {
-        val driver = peer(DevAccount.DRIVER)        // another person, on the real network
+        val driver = peer(DevAccount.E2E_DRIVER)    // another person, on the real network
         freshRider()                                // install-day app, onboarded by hand, map downloaded
         app.whereTo.ask()                           // UI drivers: what a person does
         app.ask.search("Avenida Brasil")
@@ -171,9 +171,12 @@ Rules:
    for showing that something does *not* happen.
 5. **Never assume a fresh chain.** Compare balances before and after; find rides by what identifies them.
 6. **A security test sends the bad message and then a good one.** Without the second half it proves nothing.
-7. **The app is `DevAccount.RIDER` as a rider and `DevAccount.DRIVER` as a driver**, seeded smart accounts the
-   tests know, as when a person picks the role on the create-account screen of an app launched with
-   `devAccounts` (what `phone.launch(fresh = true)` does). Peers use the other seeded accounts.
+7. **The app is `DevAccount.E2E_RIDER` as a rider and `DevAccount.E2E_DRIVER` as a driver**, seeded smart
+   accounts the tests know, as when a person picks the role on the create-account screen of an app launched with
+   `devAccounts` and `e2eAccounts` (what `phone.launch(fresh = true)` does). Peers use `E2E_RIDER_2` and
+   `E2E_DRIVER_2`. Tests use only the `E2E_` accounts: phones played by hand use the others, and may be on the
+   same chain and gossip network during a run without passing for a test's rider or driver. `stack.settle()`
+   ends rides on the `E2E_` accounts only.
    `phone.launch(fresh = true, ownKey = true)` gives the app no seeded account: it makes its own key in the
    phone's chip, as on a real phone (`OnboardingTest`).
 8. **Every account pays its own gas in reais.** A balance that moved by a ride also moved by what the account's

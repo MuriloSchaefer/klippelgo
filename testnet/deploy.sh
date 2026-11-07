@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Deploys the protocol and mock BRL coins to the local testnet and seeds test accounts: a rider and a driver,
-# three validators, and everything the four phone accounts need to ride or drive (script/SeedPhones.s.sol).
+# three validators, and everything the eight phone accounts need to ride or drive (script/SeedPhones.s.sol): four
+# for phones played by hand, four for the end-to-end tests.
 set -euo pipefail
 RPC_URL="${RPC_URL:-http://127.0.0.1:8545}"
 cd "$(dirname "$0")/../contracts"

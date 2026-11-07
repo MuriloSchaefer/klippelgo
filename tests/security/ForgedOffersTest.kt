@@ -16,8 +16,8 @@ class ForgedOffersTest : Scenario() {
     @Test
     fun `a rider is shown only offers that pass every check`() {
         val stranger = stranger()
-        val honest = peer(DevAccount.DRIVER)
-        val impersonated = stack.client(DevAccount.DRIVER_2)
+        val honest = peer(DevAccount.E2E_DRIVER)
+        val impersonated = stack.client(DevAccount.E2E_DRIVER_2)
         freshRider()
         app.whereTo.ask()
         app.ask.search("Avenida Brasil")

@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
 class OnboardingTest : Scenario() {
     @Test
     fun `a new rider creates an account, adds money and finds it on chain`() {
-        val rider = stack.client(org.klippelgo.chain.DevAccount.RIDER)
+        val rider = stack.client(org.klippelgo.chain.DevAccount.E2E_RIDER)
         val before = rider.balanceOf(rider.brz)
 
         phone.launch(fresh = true)

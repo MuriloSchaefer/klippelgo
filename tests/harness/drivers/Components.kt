@@ -47,8 +47,16 @@ class NetworkNotice(phone: Phone) : Component(phone, Tags.NETWORK_NOTICE) {
 class Language(phone: Phone) : Component(phone, Tags.language("pt")) {
     /** `code` is pt, en or es. */
     fun pick(code: String) {
-        phone.tap(Tags.language(code))
-        phone.await("the app to switch to $code") { screen -> screen[Tags.language(code)]?.takeIf { it.selected } }
+        // On its first start the app sets Portuguese, which redraws the screen: a tap that lands while it does is
+        // lost, and a person taps again. Tapping a language already chosen does nothing, so tapping again is safe.
+        phone.await("the app to switch to $code") { screen ->
+            val chip = screen[Tags.language(code)]
+            when {
+                chip?.selected == true -> true
+                chip != null -> { runCatching { phone.tap(Tags.language(code)) }; Thread.sleep(1_000); null }
+                else -> null
+            }
+        }
     }
 
     fun current(): String = listOf("pt", "en", "es").first { phone.reach(Tags.language(it)).selected }

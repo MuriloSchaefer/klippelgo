@@ -31,8 +31,8 @@ class RuleChangesTest : Scenario() {
     @Test
     fun `a ride under way keeps the tax it opened with when Finanças changes it`() {
         val gov = governance()
-        val driver = peer(DevAccount.DRIVER)
-        val rider = stack.client(DevAccount.RIDER)
+        val driver = peer(DevAccount.E2E_DRIVER)
+        val rider = stack.client(DevAccount.E2E_RIDER)
         val coin = rider.brz
         val (fee, _, _) = rider.tokenConfig(coin)
         freshRider()
@@ -86,8 +86,8 @@ class RuleChangesTest : Scenario() {
     @Test
     fun `the chain refuses a ride the network stopped, even when the phones still match it`() {
         val gov = governance()
-        val driver = peer(DevAccount.DRIVER)
-        val rider = stack.client(DevAccount.RIDER)
+        val driver = peer(DevAccount.E2E_DRIVER)
+        val rider = stack.client(DevAccount.E2E_RIDER)
         val coin = rider.brz
         freshRider()
 

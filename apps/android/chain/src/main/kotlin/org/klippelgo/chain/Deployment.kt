@@ -84,6 +84,10 @@ data class Deployment(
  * test peers and emulators launched for a role have accounts that are funded, registered in both roles, staked
  * and licensed (`contracts/script/SeedPhones.s.sol`, which signs their operations with the same secrets). A real
  * phone makes its own key in its chip instead. Never send real money to these accounts.
+ *
+ * The end-to-end tests have four of their own, so that phones played by hand on the same chain and gossip network
+ * are other people to them: a request from a hand-played rider never looks like one from a test's rider, and the
+ * tests never end a ride someone is playing.
  */
 enum class DevAccount(val deviceKey: String) {
     RIDER("0x00000000000000000000000000000000000000000000000000000000000ab001"),
@@ -92,7 +96,24 @@ enum class DevAccount(val deviceKey: String) {
     /** The second pair of phones. */
     RIDER_2("0x00000000000000000000000000000000000000000000000000000000000ab003"),
     DRIVER_2("0x00000000000000000000000000000000000000000000000000000000000ab004"),
+
+    /** The end-to-end tests' accounts (tests/), in the same order. */
+    E2E_RIDER("0x00000000000000000000000000000000000000000000000000000000000ab011"),
+    E2E_DRIVER("0x00000000000000000000000000000000000000000000000000000000000ab012"),
+    E2E_RIDER_2("0x00000000000000000000000000000000000000000000000000000000000ab013"),
+    E2E_DRIVER_2("0x00000000000000000000000000000000000000000000000000000000000ab014"),
     ;
 
     fun key(): DeviceKey = SoftwareDeviceKey.fromHex(deviceKey)
+
+    companion object {
+        /** The account of a role (`driver` or not), of pair 1 or 2, from the end-to-end tests' set or the other. */
+        fun of(driver: Boolean, second: Boolean, e2e: Boolean): DevAccount = when {
+            e2e -> if (driver) (if (second) E2E_DRIVER_2 else E2E_DRIVER) else (if (second) E2E_RIDER_2 else E2E_RIDER)
+            else -> if (driver) (if (second) DRIVER_2 else DRIVER) else (if (second) RIDER_2 else RIDER)
+        }
+
+        /** The end-to-end tests' accounts. */
+        val e2e: List<DevAccount> get() = listOf(E2E_RIDER, E2E_DRIVER, E2E_RIDER_2, E2E_DRIVER_2)
+    }
 }

@@ -21,8 +21,8 @@ import kotlin.test.assertTrue
 class DriverRideTest : Scenario() {
     @Test
     fun `a ride from going online to being paid`() {
-        val rider = peer(DevAccount.RIDER)
-        val driver = stack.client(DevAccount.DRIVER)
+        val rider = peer(DevAccount.E2E_RIDER)
+        val driver = stack.client(DevAccount.E2E_DRIVER)
         val coin = driver.brz
         val (fee, _, driverBond) = driver.tokenConfig(coin)
         freshDriver()
@@ -99,7 +99,7 @@ class DriverRideTest : Scenario() {
 
     @Test
     fun `the map stays where the driver put it while the car moves`() {
-        val rider = peer(DevAccount.RIDER)
+        val rider = peer(DevAccount.E2E_RIDER)
         freshDriver()
         app.goOnline.goOnline()
         val request = rider.ask(rider.route(Places.CATHEDRAL, Places.LAKE))
@@ -152,8 +152,8 @@ class DriverRideTest : Scenario() {
 
     @Test
     fun `requests are listed, and the one picked is the one on the map and the one quoted`() {
-        val ana = peer(DevAccount.RIDER)
-        val bia = peer(DevAccount.RIDER_2)
+        val ana = peer(DevAccount.E2E_RIDER)
+        val bia = peer(DevAccount.E2E_RIDER_2)
         freshDriver()
         app.goOnline.goOnline()
 
@@ -191,7 +191,7 @@ class DriverRideTest : Scenario() {
 
     @Test
     fun `a driver who declines gives the rider everything back`() {
-        val rider = peer(DevAccount.RIDER)
+        val rider = peer(DevAccount.E2E_RIDER)
         freshDriver()
         app.goOnline.goOnline()
         val before = rider.balance()
@@ -212,7 +212,7 @@ class DriverRideTest : Scenario() {
 
     @Test
     fun `the driver's own rules hide requests that pay too little per km`() {
-        val rider = peer(DevAccount.RIDER)
+        val rider = peer(DevAccount.E2E_RIDER)
         freshDriver()
         // A floor of R$ 10,00 per km: far more than any request in the fare guide's range pays.
         repeat(40) { app.autoSkip.raisePerKm() }

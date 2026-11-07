@@ -16,7 +16,7 @@ import kotlin.test.Test
 class MatchingTest : Scenario() {
     @Test
     fun `a rider's wait at each step of a match`() {
-        val driver = peer(DevAccount.DRIVER)
+        val driver = peer(DevAccount.E2E_DRIVER)
         freshRider()
         app.whereTo.ask()
         app.ask.search("Avenida Brasil")
@@ -65,14 +65,14 @@ class MatchingTest : Scenario() {
             waitUntil("the ride to complete", 60_000) { true.takeIf { driver.ride(ride.id).status == RideStatus.Completed } }
         }, "ms", 30_000)
         // The five stars picked before paying went on chain with the payment.
-        waitUntil("the rider's rating to be on chain", 60_000) { true.takeIf { stack.client(DevAccount.RIDER).hasRated(ride.id) } }
+        waitUntil("the rider's rating to be on chain", 60_000) { true.takeIf { stack.client(DevAccount.E2E_RIDER).hasRated(ride.id) } }
         driver.rate(ride.id, 5)
     }
 
     @Test
     fun `a driver's screen under a flood of requests`() {
-        val crowd = peer(DevAccount.RIDER)
-        val late = peer(DevAccount.RIDER_2)
+        val crowd = peer(DevAccount.E2E_RIDER)
+        val late = peer(DevAccount.E2E_RIDER_2)
         freshDriver()
         val idle = phone.memoryMb()
 

@@ -78,6 +78,8 @@ one contract Blockscout cannot verify ([testnet/explorer/verify.sh](testnet/expl
 `docker compose -f testnet/docker-compose.yml up` starts the chain along with the gossip bootstrap node and the
 bundler in one go. Run `make testnet` once first: it creates `testnet/.state` as you, so the chain can save
 its state there (the container runs as uid 1000 unless `KLIPPELGO_UID`/`KLIPPELGO_GID` say otherwise).
+The bundler deploys a simulation contract of its own when it starts. When the chain is reset under it, it sees
+that contract gone and restarts itself within seconds to deploy it again; until then it answers 500.
 
 The chain runs Osaka rules, which include the P-256 signature precompile at `0x100`. Polygon PoS has the same
 precompile (RIP-7212), and the apps rely on it so Secure Enclave and StrongBox keys can sign for the user's
@@ -105,6 +107,7 @@ phone accounts below instead.
 | 13 | Puts the EntryPoint in place | `testnet/entrypoint.sh` |
 | `DevAccount.RIDER`, `DRIVER` | First and second phone (smart accounts, device-key secrets `0xab001`, `0xab002`) | R$ 1.000 in each mock coin, both roles, R$ 100 stake, CNH credential (`script/SeedPhones.s.sol`) |
 | `DevAccount.RIDER_2`, `DRIVER_2` | Third and fourth phone (`0xab003`, `0xab004`) | The same, for trying four phones at once |
+| `DevAccount.E2E_RIDER` to `E2E_DRIVER_2` | The end-to-end tests' app and peers (`0xab011` to `0xab014`) | The same. Only the tests use them, so phones played by hand on the same chain never meet a test as the same person |
 
 ### Local governance settings
 

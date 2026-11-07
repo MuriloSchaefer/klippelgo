@@ -30,9 +30,9 @@ class ThreePhonesTest : Scenario() {
     private val firstDriver get() = App(stack.phones[1])
     private val secondDriver get() = App(stack.phones[2])
 
-    private val riderAccount by lazy { stack.client(DevAccount.RIDER) }
-    private val firstAccount by lazy { stack.client(DevAccount.DRIVER) }
-    private val secondAccount by lazy { stack.client(DevAccount.DRIVER_2) }
+    private val riderAccount by lazy { stack.client(DevAccount.E2E_RIDER) }
+    private val firstAccount by lazy { stack.client(DevAccount.E2E_DRIVER) }
+    private val secondAccount by lazy { stack.client(DevAccount.E2E_DRIVER_2) }
 
     @BeforeEach
     fun threePhones() {

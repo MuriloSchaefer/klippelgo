@@ -162,7 +162,7 @@ to it, and a ride locked on one waits Open for the driver to decline it by hand.
 | What | Where | Notes |
 | --- | --- | --- |
 | Where this account's event scans stopped and what they found (its rides, the registered drivers), with a block and its hash to recognise the chain | `SharedPreferences("klippelgo")`, `scans.<account>` | Thrown away and read again when that block's hash is not the chain's: a local testnet started again |
-| Role, RPC address, name, account choice, auto-skip settings | `SharedPreferences("klippelgo")` | The account choice is `device` (the chip's key) or a seeded account's name; `devAccounts` asks for the seeded ones, and only a debug build sets it |
+| Role, RPC address, name, account choice, auto-skip settings | `SharedPreferences("klippelgo")` | The account choice is `device` (the chip's key) or a seeded account's name; `devAccounts` asks for the seeded ones and `e2eAccounts` for the end-to-end tests' set of them; only a debug build sets either |
 | Driver: the quotes made void by accepting a ride, with the rider each was for | `SharedPreferences("klippelgo")`, `voidQuotes` | The newest 200. Kept so a ride locked on one after a restart is still declined |
 | The account's key | The phone's chip: Android Keystore, in StrongBox when there is one (`KeystoreDeviceKey`) | Never leaves it. Debug builds asked for `devAccounts` use the local testnet's seeded keys instead |
 | The session key and its certificate | `SharedPreferences("klippelgo")`, `session.*` | Signs gossip for a day; kept so a restart does not ask the account's key, and so the person, again |

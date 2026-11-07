@@ -11,8 +11,9 @@ import {IdentityRegistry} from "../src/IdentityRegistry.sol";
 import {AccountFactory} from "../src/account/AccountFactory.sol";
 import {MockBRL} from "../src/mocks/MockBRL.sol";
 
-/// @notice Sets up the four smart accounts the test phones and peers use on the local testnet, so that each can
-/// ride or drive: R$ 1.000 in each mock coin, both roles, R$ 100 staked and a CNH credential. Their device keys are
+/// @notice Sets up the eight smart accounts the test phones and peers use on the local testnet, so that each can
+/// ride or drive: R$ 1.000 in each mock coin, both roles, R$ 100 staked and a CNH credential. Four are for phones
+/// played by hand and four for the end-to-end tests, so the two never meet as the same person. Their device keys are
 /// P-256 secrets everyone knows (`DevAccount` in apps/android/chain): this script signs their operations with the
 /// same secrets, as a phone's chip would, and hands them to the EntryPoint itself, playing the bundler.
 ///
@@ -24,8 +25,10 @@ contract SeedPhones is Script, LocalAccounts {
     uint256 constant STAKE = 100e18;
     uint256 constant N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551;
 
-    /// @dev `DevAccount` RIDER, DRIVER, RIDER_2, DRIVER_2: the same secrets as the app's.
-    uint256[4] devKeys = [uint256(0xab001), 0xab002, 0xab003, 0xab004];
+    /// @dev `DevAccount` RIDER, DRIVER, RIDER_2, DRIVER_2, then E2E_RIDER to E2E_DRIVER_2: the same secrets as the
+    /// app's.
+    uint256[8] devKeys =
+        [uint256(0xab001), 0xab002, 0xab003, 0xab004, 0xab011, 0xab012, 0xab013, 0xab014];
 
     IdentityRegistry registry;
     AccountFactory factory;

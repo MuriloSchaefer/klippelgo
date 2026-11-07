@@ -228,7 +228,8 @@ driver of `make android-three-phones`). `contracts/script/SeedPhones.s.sol` give
 coin, both roles, R$ 100 staked and a CNH credential, so any phone can ride or drive. `make deploy` runs it, and
 so do the emulator scripts on a chain deployed before it existed. Which account a phone has is decided the first
 time it is opened and when a script launches it. Only a debug build uses the seeded accounts, and only on the
-local testnet.
+local testnet. The end-to-end tests launch the app with `e2eAccounts` as well, which picks four other seeded
+accounts (`E2E_RIDER` to `E2E_DRIVER_2`), so a test never takes a phone played by hand for one of its own.
 
 ## Troubleshooting
 

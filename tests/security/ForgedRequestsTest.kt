@@ -24,8 +24,8 @@ class ForgedRequestsTest : Scenario() {
     @Test
     fun `a driver is shown only requests that pass every check`() {
         val stranger = stranger()
-        val honest = peer(DevAccount.RIDER)
-        val victim = stack.client(DevAccount.RIDER_2)
+        val honest = peer(DevAccount.E2E_RIDER)
+        val victim = stack.client(DevAccount.E2E_RIDER_2)
         val coin = victim.brz
         freshDriver()
         app.goOnline.goOnline()
@@ -96,7 +96,7 @@ class ForgedRequestsTest : Scenario() {
     @Test
     fun `a rider Instituto Klippel blocked is not shown to a driver`() {
         val stranger = stranger()
-        val honest = peer(DevAccount.RIDER)
+        val honest = peer(DevAccount.E2E_RIDER)
         val blocked = blockedRider()
         freshDriver()
         app.goOnline.goOnline()
@@ -114,7 +114,7 @@ class ForgedRequestsTest : Scenario() {
         // The same trip from a rider in good standing, said alongside the blocked one. It is shown, so the app
         // is listening while the blocked rider's request keeps arriving, and the blocked one is still not listed.
         // (Other riders' requests from earlier tests may be listed too: only the blocked rider's is asked about.)
-        val victim = stack.client(DevAccount.RIDER_2)
+        val victim = stack.client(DevAccount.E2E_RIDER_2)
         val (wellFormed, message) = stranger.request(victim, victim.brz, fair, route)
         val saying = Thread {
             runCatching {
@@ -134,7 +134,7 @@ class ForgedRequestsTest : Scenario() {
     @Test
     fun `nobody but its rider can withdraw a request`() {
         val stranger = stranger()
-        val honest = peer(DevAccount.RIDER)
+        val honest = peer(DevAccount.E2E_RIDER)
         freshDriver()
         app.goOnline.goOnline()
 
@@ -143,12 +143,12 @@ class ForgedRequestsTest : Scenario() {
 
         // A withdrawal signed by someone else, and one signed by another registered rider.
         stranger.say(stranger.close(stranger.newKey(), request), seconds = 4)
-        stranger.say(stranger.close(stack.client(DevAccount.RIDER_2), request), seconds = 4)
+        stranger.say(stranger.close(stack.client(DevAccount.E2E_RIDER_2), request), seconds = 4)
         assertTrue(app.request.visible(), "a stranger made a rider's request disappear from the driver's screen")
 
         // The same message from the same stranger, signed with the rider's own key, does take it away: so the
         // two above were turned away for who signed them.
-        stranger.say(stranger.close(stack.client(DevAccount.RIDER), request), seconds = 4)
+        stranger.say(stranger.close(stack.client(DevAccount.E2E_RIDER), request), seconds = 4)
         app.request.gone()
     }
 }

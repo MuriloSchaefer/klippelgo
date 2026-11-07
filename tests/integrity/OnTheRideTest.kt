@@ -46,14 +46,14 @@ class OnTheRideTest : Scenario() {
 
     @Test
     fun `on a ride the rider hears the car every second and the road driven comes off the driver's map`() {
-        val rider = peer(DevAccount.RIDER_2)
+        val rider = peer(DevAccount.E2E_RIDER_2)
         phone.launch(fresh = true, role = "driver", pair = 2)
         phone.locate(Places.CENTRE.latE7 / 1e7, Places.CENTRE.lonE7 / 1e7)
         pastUnratedRides()
         app.goOnline.shown()
         app.mapNotice.download()
         app.goOnline.goOnline()
-        val driver = stack.client(DevAccount.DRIVER_2).address
+        val driver = stack.client(DevAccount.E2E_DRIVER_2).address
 
         val trip = rider.route(Places.CATHEDRAL, Places.LAKE)
         val request = rider.ask(trip)
@@ -109,7 +109,7 @@ class OnTheRideTest : Scenario() {
 
     @Test
     fun `on a ride the road the driver has driven comes off the rider's map`() {
-        val driver = peer(DevAccount.DRIVER_2)
+        val driver = peer(DevAccount.E2E_DRIVER_2)
         phone.launch(fresh = true, role = "rider", pair = 2)
         pastUnratedRides()
         app.whereTo.shown()
@@ -120,7 +120,7 @@ class OnTheRideTest : Scenario() {
         app.ask.pick(0)
         app.ask.submit()
         app.offers.shown()
-        val request = driver.awaitRequest(stack.client(DevAccount.RIDER_2).address)
+        val request = driver.awaitRequest(stack.client(DevAccount.E2E_RIDER_2).address)
         val offer = driver.offer(request, request.maxFare)
         app.offers.awaitOffer(driver.address)
         app.offers.pick(driver.address)

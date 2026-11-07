@@ -109,10 +109,14 @@ start_phone() { # index, headless|window
 }
 # Remembers that this script started something, so `down` stops it and leaves alone what was already there.
 started() { echo "$1" >>"$RUN/started"; }
-# Whether the bundler answers for the EntryPoint the accounts use.
+# Whether the bundler answers for the EntryPoint the accounts use, and can simulate on this chain: a bundler
+# started before the chain was reset still names the EntryPoint, but its simulation contract is gone and it answers
+# 500 to every operation (testnet/bundler/run.sh, which restarts it when it sees that).
+ALTO_SIMULATIONS=0x30ea6c4f2ca3f1D8c4Bd72fcD0035BA1418387cd
 bundler_up() {
   curl -s -m 3 -X POST "http://$HOST:4337/rpc" -H 'content-type: application/json' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"eth_supportedEntryPoints","params":[]}' 2>/dev/null | grep -qi 433709009b8330fda32311df1c2afa402ed8d009
+    -d '{"jsonrpc":"2.0","id":1,"method":"eth_supportedEntryPoints","params":[]}' 2>/dev/null | grep -qi 433709009b8330fda32311df1c2afa402ed8d009 \
+    && cast code --rpc-url "$RPC" "$ALTO_SIMULATIONS" 2>/dev/null | grep -q '^0x[0-9a-fA-F]'
 }
 
 wait_for() { # what, seconds, command...
@@ -155,10 +159,14 @@ up() {
   # ---- contracts
   # Deployed, and from the contracts as they are now: the tests would otherwise run the app against an older
   # protocol. What was deployed is remembered by the hash of the sources and the escrow it produced.
-  CONTRACTS_NOW="$(cd "$ROOT/contracts" && find src script -name '*.sol' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+  # The seeded accounts are not part of the protocol: adding one must not move every contract.
+  CONTRACTS_NOW="$(cd "$ROOT/contracts" && find src script -name '*.sol' ! -name SeedPhones.s.sol -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
   if [ -f "$DEPLOYMENT" ] && [ "$(cast code --rpc-url "$RPC" "$(jq -er .RideEscrow "$DEPLOYMENT")")" != 0x ] \
      && [ "$(cat "$RUN/contracts.deployed" 2>/dev/null)" = "$CONTRACTS_NOW $(jq -er .RideEscrow "$DEPLOYMENT")" ]; then
     say "contracts  already deployed ($(basename "$DEPLOYMENT"))"
+    # The tests' own accounts, on a chain deployed before they existed. It skips what is already done.
+    (cd "$ROOT/contracts" && forge script script/SeedPhones.s.sol --rpc-url "$RPC" --broadcast --slow --gas-estimate-multiplier 200) \
+      >"$RUN/seed.log" 2>&1 || die "Could not seed the test accounts. See tests/.run/seed.log"
   else
     say "contracts  deploying this code's contracts and seeding the test accounts"
     RPC_URL="$RPC" "$ROOT/testnet/deploy.sh" >"$RUN/deploy.log" 2>&1 || die "Deploy failed. See tests/.run/deploy.log"

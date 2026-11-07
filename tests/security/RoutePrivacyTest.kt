@@ -21,7 +21,7 @@ class RoutePrivacyTest : Scenario() {
     @Test
     fun `the cell never hears where the rider is or where they go`() {
         val stranger = stranger()
-        val driver = peer(DevAccount.DRIVER)
+        val driver = peer(DevAccount.E2E_DRIVER)
         freshRider()
         app.whereTo.ask()
         app.ask.search("Avenida Brasil")

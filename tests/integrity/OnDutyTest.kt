@@ -42,7 +42,7 @@ class OnDutyTest : Scenario() {
 
     @Test
     fun `off screen a driver on a ride goes on telling the rider where the car is`() {
-        val rider = peer(DevAccount.RIDER_2)
+        val rider = peer(DevAccount.E2E_RIDER_2)
         phone.launch(fresh = true, role = "driver", pair = 2)
         phone.locate(Places.CENTRE.latE7 / 1e7, Places.CENTRE.lonE7 / 1e7)
         pastUnratedRides()
@@ -62,7 +62,7 @@ class OnDutyTest : Scenario() {
         assertTrue(activities() == 1, "the notification opened a second activity")
         assertTrue(onDuty(), "coming back through the notification stopped the service")
         app.goOnline.shown()
-        val driver = stack.client(DevAccount.DRIVER_2).address
+        val driver = stack.client(DevAccount.E2E_DRIVER_2).address
 
         val trip = rider.route(Places.CATHEDRAL, Places.LAKE)
         val request = rider.ask(trip)
