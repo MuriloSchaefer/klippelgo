@@ -102,8 +102,10 @@ start_phone() { # index, headless|window
   local window=()
   [ "$mode" = headless ] && window=(-no-window -gpu swiftshader_indirect)
   nohup "$EMULATOR" -avd "$avd" -port "$port" -no-audio -no-boot-anim -no-snapshot-save "${window[@]}" >"$RUN/emulator-$port.log" 2>&1 &
-  echo "$mode" >"$RUN/emulator-$port.mode"
+  # Recorded first, so `down` still stops it if writing the files below fails (a full disk).
   started "emulator-$port"
+  echo $! >"$RUN/emulator-$port.pid"
+  echo "$mode" >"$RUN/emulator-$port.mode"
 }
 # Remembers that this script started something, so `down` stops it and leaves alone what was already there.
 started() { echo "$1" >>"$RUN/started"; }
@@ -117,6 +119,21 @@ wait_for() { # what, seconds, command...
   local what=$1 seconds=$2; shift 2
   for _ in $(seq 1 "$seconds"); do "$@" && return 0; sleep 1; done
   die "Timed out waiting for $what."
+}
+# Whether a phone has booted. An emulator this script started that has already exited never will (no disk
+# space, no KVM, a broken image), so stop at once with its reason instead of waiting out the timeout.
+phone_booted() { # serial
+  phone_up "$1" && return 0
+  local pid_file="$RUN/$1.pid"
+  if [ -f "$pid_file" ] && ! kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+    rm -f "$pid_file"
+    local why
+    why="$(grep -E 'FATAL|ERROR' "$RUN/$1.log" 2>/dev/null | tail -n 5)"
+    [ -n "$why" ] || why="$(tail -n 5 "$RUN/$1.log" 2>/dev/null)"
+    die "$1 exited before it booted. From tests/.run/$1.log:
+$why"
+  fi
+  return 1
 }
 
 up() {
@@ -215,8 +232,8 @@ up() {
   done
   for i in $(seq 1 "$PHONES"); do
     local serial; serial="$(serial_of "$i")"
-    "$ADB" -s "$serial" wait-for-device
-    wait_for "$serial to boot" 300 phone_up "$serial"
+    # No `adb wait-for-device` here: it has no timeout and blocks for good when the emulator has died.
+    wait_for "$serial to boot" 300 phone_booted "$serial"
     # The tests wipe the app again and again, and the UI agent lets adb drive the screen. That is for an
     # emulator, never for a phone someone uses.
     if [ "$("$ADB" -s "$serial" shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ] && [ "${KLIPPELGO_ALLOW_DEVICE:-0}" != 1 ]; then
@@ -257,7 +274,7 @@ down() {
   while read -r what; do
     case "$what" in
       emulator) "$ADB" -s "emulator-$EMULATOR_PORT" emu kill >/dev/null 2>&1 || true ;;
-      emulator-*) "$ADB" -s "$what" emu kill >/dev/null 2>&1 || true; rm -f "$RUN/$what.mode" ;;
+      emulator-*) "$ADB" -s "$what" emu kill >/dev/null 2>&1 || true; rm -f "$RUN/$what.mode" "$RUN/$what.pid" ;;
       valhalla) docker rm -f "$VALHALLA_CONTAINER" >/dev/null 2>&1 || true ;;
       gossip) docker compose -f "$ROOT/testnet/docker-compose.yml" stop gossip >/dev/null 2>&1 || true ;;
       bundler) docker compose -f "$ROOT/testnet/docker-compose.yml" stop bundler >/dev/null 2>&1 || true ;;

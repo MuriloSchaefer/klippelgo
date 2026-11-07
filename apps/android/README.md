@@ -248,9 +248,11 @@ local testnet.
   -d --build gossip`. A driver whose app restarted after quoting cannot open that ride's route either.
 - **The driver emulator closes by itself.** The emulator's graphics can crash when the app is killed while
   the map is on screen (`adb install`, force-stop). Press Home first, or just start the emulator again.
-- **A real phone on Wi-Fi.** Start the chain with `ANVIL_HOST=0.0.0.0 make testnet` and enter
+- **A real phone on Wi-Fi.** Start the chain with `ANVIL_HOST=0.0.0.0 make testnet` (or `make testnet-native`) and enter
   `http://<your computer's LAN IP>:8545` as the node address. Debug builds allow plain HTTP to any host. The
-  gossip node's port 4001 is already published on every interface.
+  gossip node's port 4001 is already published on every interface. Anyone on that network can then use the
+  chain and its funded accounts, whose keys are public; with `make testnet` Docker's port also goes around
+  the computer's firewall, so do this only on a network you trust.
 - **Contracts not found after a restart.** If you deployed twice on the same chain the addresses moved. Run
   `make testnet-reset`, restart `make testnet`, `make deploy`, and rebuild the app (it bundles
   `deployments/local.json`).

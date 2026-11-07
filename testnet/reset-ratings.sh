@@ -14,7 +14,7 @@ cd "$(dirname "$0")/../contracts"
 DEPLOYMENT=../deployments/local.json
 [ -f "$DEPLOYMENT" ] || { echo "Deploy first: testnet/deploy.sh" >&2; exit 1; }
 
-CHAIN_ID=$(cast chain-id --rpc-url "$RPC_URL") || { echo "No node at $RPC_URL. Run testnet/anvil.sh first." >&2; exit 1; }
+CHAIN_ID=$(cast chain-id --rpc-url "$RPC_URL") || { echo "No node at $RPC_URL. Run make testnet first." >&2; exit 1; }
 [ "$CHAIN_ID" = 31337 ] || { echo "Chain $CHAIN_ID is not the local testnet. Refusing to touch it." >&2; exit 1; }
 
 case "$WHO" in

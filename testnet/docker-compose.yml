@@ -1,24 +1,35 @@
 # The local network's services: `docker compose -f testnet/docker-compose.yml up`
 #
-#   anvil    the chain, an alternative to testnet/anvil.sh for people without Foundry installed
+#   anvil    the chain (`make testnet` runs only this one). The same node as testnet/anvil.sh, with the same
+#            variables: ANVIL_HOST=0.0.0.0 for a phone on Wi-Fi, ANVIL_PORT, BLOCK_TIME
 #   gossip   bootstrap node of the gossip network phones match through (`make gossip-node` runs only this one)
 #   bundler  the ERC-4337 bundler people's operations go through (`make bundler` runs only this one). It waits
 #            for the chain and for `make deploy` to put the EntryPoint in place
 services:
   anvil:
-    image: ghcr.io/foundry-rs/foundry:stable
+    # Pinned (v1.8.5), so everyone runs the same anvil: `stable` moves, and anvils of other versions cannot read
+    # each other's state file, so switching between this and testnet/anvil.sh needs the same version on both.
+    image: ghcr.io/foundry-rs/foundry@sha256:32c8ea9ef052a440cb1620175987a3f49eff8b068a0c6a3d09ebf7f5f9a0e043
     entrypoint: ["anvil"]
     command:
       - --host=0.0.0.0
       - --chain-id=31337
       - --hardfork=osaka
-      - --block-time=2
+      - --block-time=${BLOCK_TIME:-2}
       - --accounts=15
+      - --balance=10000
       - --state=/state/anvil.json
+    # Only this computer by default, as testnet/anvil.sh: the funded keys are public, and Docker's published
+    # ports go around the host firewall.
     ports:
-      - "8545:8545"
+      - "${ANVIL_HOST:-127.0.0.1}:${ANVIL_PORT:-8545}:8545"
+    # As the person running it (`make testnet` sets these), so testnet/.state stays theirs to read and delete.
+    user: "${KLIPPELGO_UID:-1000}:${KLIPPELGO_GID:-1000}"
     volumes:
       - ./.state:/state
+    # anvil writes the state file when it exits on Ctrl-C. It is large, so give it time.
+    stop_signal: SIGINT
+    stop_grace_period: 60s
 
   gossip:
     build: ../core

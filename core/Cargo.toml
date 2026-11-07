@@ -8,6 +8,15 @@ description = "Shared Rust core for the KlippelGo iOS and Android apps: gossip, 
 [workspace]
 members = ["bench", "proofs", "verify"]
 
+# Debug and test builds keep line numbers for this workspace's own code, so backtraces still point at a line,
+# and no debug info for dependencies: full debug info made target/ several times larger and nothing here
+# steps through libp2p in a debugger. `make clean-core` empties target/ when it is no longer needed.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [lib]
 crate-type = ["lib", "cdylib", "staticlib"]
 

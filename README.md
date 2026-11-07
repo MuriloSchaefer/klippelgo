@@ -41,11 +41,12 @@ skills and the security reviewer in `.claude/` use them.
 
 ## Local testnet
 
-Needs [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge`, `anvil`, `cast`).
+Needs Docker and [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge` and `cast`, which
+deploy and the scripts use; the chain itself runs in Docker).
 
 ```sh
 git clone --recurse-submodules <this repo>
-make testnet      # terminal 1: anvil on http://127.0.0.1:8545, chain id 31337
+make testnet      # terminal 1: anvil in Docker on http://127.0.0.1:8545, chain id 31337 (make testnet-native: without Docker)
 make deploy       # terminal 2: deploy contracts, mock BRLA/BRZ, seed accounts
 make bundler      # terminal 3: the ERC-4337 bundler every account's operations go through (Docker, port 4337)
 make demo         # run one R$ 23,40 ride: driver gets R$ 21,23, Instituto Klippel R$ 1,00, tax R$ 1,17
@@ -67,15 +68,16 @@ To watch the chain, `make explorer` starts [Otterscan](https://otterscan.io) on 
 hashes, transactions with their call traces, events and balances. `make explorer TOOL=blockscout` starts
 [Blockscout](https://www.blockscout.com) on http://localhost:5200 instead, and verifies the contracts in
 `deployments/local.json` on it, so their pages show the source, decode calls and events by name, and have read
-and write tabs. The first start pulls a few GB of images and takes a minute or two to index. After a
+and write tabs. `make explorer TOOL=all` starts both. The first start pulls a few GB of images and takes a minute or two to index. After a
 `make deploy`, `make explorer-verify` verifies the new contracts; after a `make testnet-reset`,
 `make explorer-reset` clears what Blockscout indexed of the old chain. `make explorer-down` stops either one.
 Phones' operations reach the chain as one `handleOps` call from the bundler to the EntryPoint; the ride itself
 is in that call's internal calls (Otterscan's trace tab, Blockscout's "Internal txns"). The EntryPoint is the
 one contract Blockscout cannot verify ([testnet/explorer/verify.sh](testnet/explorer/verify.sh) says why).
 
-No Foundry? `docker compose -f testnet/docker-compose.yml up` starts the same chain, along with the gossip
-bootstrap node and the bundler; deploy still needs `forge`.
+`docker compose -f testnet/docker-compose.yml up` starts the chain along with the gossip bootstrap node and the
+bundler in one go. Run `make testnet` once first: it creates `testnet/.state` as you, so the chain can save
+its state there (the container runs as uid 1000 unless `KLIPPELGO_UID`/`KLIPPELGO_GID` say otherwise).
 
 The chain runs Osaka rules, which include the P-256 signature precompile at `0x100`. Polygon PoS has the same
 precompile (RIP-7212), and the apps rely on it so Secure Enclave and StrongBox keys can sign for the user's
@@ -174,6 +176,7 @@ make test         # forge test + cargo test in core/ and mappack/
 make test-gov     # gov/klippel-gov against the running local testnet
 make e2e          # the real app on an emulator, against the real chain, gossip and map: integrity, security, performance
 make bench        # scalability: the model at 100k drivers and 1M riders, and a gossip load test through the real router
+make clean-core   # empty core/target, which only grows (it rebuilds on the next run)
 ```
 
 [core/bench](core/bench/README.md) explains the benchmark's parameters and how to compare runs.

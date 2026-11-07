@@ -1,4 +1,4 @@
-.PHONY: bench bench-model bench-gossip bench-build bundler explorer explorer-verify explorer-down explorer-reset test-hooks test-gov test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-three-phones android-four-phones android-apk android-test-chain e2e e2e-integrity e2e-security e2e-performance e2e-up e2e-down e2e-three-phones android-drive
+.PHONY: clean-core testnet-native bench bench-model bench-gossip bench-build bundler explorer explorer-verify explorer-down explorer-reset test-hooks test-gov test test-contracts test-core test-mappack testnet deploy demo testnet-reset reset-ratings gossip-node mappack publish-pack serve-packs android-two-phones android-three-phones android-four-phones android-apk android-test-chain e2e e2e-integrity e2e-security e2e-performance e2e-up e2e-down e2e-three-phones android-drive
 
 test: test-contracts test-core test-mappack
 
@@ -10,6 +10,11 @@ test-core:
 
 test-mappack:
 	cd mappack && cargo test
+
+## Empty core/target. Cargo never removes what it built for an older version of a dependency or of the code,
+## so the folder only grows. Everything in it builds again on the next cargo, Gradle or bench run.
+clean-core:
+	cd core && cargo clean
 
 ## Scalability benchmark (core/bench/README.md). Parameters go in ARGS: make bench-model ARGS="--drivers 20000"
 ##   make bench-model     the load 100k drivers and 1M riders put on every shared service, in a second
@@ -30,8 +35,14 @@ bench: bench-build
 	core/target/release/klippelgo-bench gossip --label light --driver-nodes 1 --rider-nodes 3 $(ARGS)
 	core/target/release/klippelgo-bench model --measured core/bench/runs/gossip-latest.json $(ARGS)
 
-## Start the local chain (foreground). Run deploy and demo from another terminal.
+## Start the local chain in Docker (foreground). Run deploy and demo from another terminal.
+## make testnet-native runs the same chain with the anvil Foundry installed here.
+COMPOSE_TESTNET = KLIPPELGO_UID=$$(id -u) KLIPPELGO_GID=$$(id -g) docker compose -f testnet/docker-compose.yml
 testnet:
+	mkdir -p testnet/.state
+	$(COMPOSE_TESTNET) up anvil
+
+testnet-native:
 	testnet/anvil.sh
 
 deploy:
@@ -44,13 +55,16 @@ bundler:
 demo:
 	testnet/demo-ride.sh
 
+## Stops the chain container first: it would write the old state back when it exits.
 testnet-reset:
+	$(COMPOSE_TESTNET) rm -sf anvil >/dev/null 2>&1 || true
 	rm -rf testnet/.state deployments/local.json
 
 ## A block explorer for the local testnet, in the background (see testnet/explorer/docker-compose.yml):
 ##   make explorer                     Otterscan on http://localhost:5100: blocks, hashes, traces, events
 ##   make explorer TOOL=blockscout     Blockscout on http://localhost:5200, with the contracts in
 ##                                     deployments/local.json verified: source, decoded calls, read/write tabs
+##   make explorer TOOL=all            both
 ## After a `make deploy`, `make explorer-verify` verifies the new contracts. After `make testnet-reset`,
 ## `make explorer-reset` clears what Blockscout indexed from the old chain.
 TOOL ?= otterscan

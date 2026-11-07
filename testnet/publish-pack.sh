@@ -18,7 +18,7 @@ MANIFEST="$PACK/manifest.json"
 DEPLOYMENT="${DEPLOYMENT:-$(dirname "$0")/../deployments/local.json}"
 [ -f "$DEPLOYMENT" ] || { echo "Deploy first: testnet/deploy.sh" >&2; exit 1; }
 
-CHAIN_ID=$(cast chain-id --rpc-url "$RPC_URL") || { echo "No node at $RPC_URL. Run testnet/anvil.sh first." >&2; exit 1; }
+CHAIN_ID=$(cast chain-id --rpc-url "$RPC_URL") || { echo "No node at $RPC_URL. Run make testnet first." >&2; exit 1; }
 [ "$CHAIN_ID" = 31337 ] || { echo "Chain $CHAIN_ID is not the local testnet. Refusing to touch it." >&2; exit 1; }
 MAPS=$(jq -er '.MapRegistry' "$DEPLOYMENT") || { echo "$DEPLOYMENT has no MapRegistry. Deploy again: make testnet-reset, make testnet, make deploy" >&2; exit 1; }
 

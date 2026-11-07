@@ -7,10 +7,13 @@
 #
 # Only those two ports are published, and only on 127.0.0.1. Blockscout's backend relays transactions to the chain
 # and runs an Erlang node whose cookie is the same in every copy of its image, so it stays on this compose
-# network, never on the host's. It reaches the chain through chain-relay, which is the one service on the host's
-# network: it listens on this network's gateway and serves only this network's containers, and it reaches anvil
-# on 127.0.0.1:8545 whether that runs from testnet/anvil.sh or from testnet/docker-compose.yml. If another network
-# on the computer already uses 172.30.249.0/24, `compose up` fails: change both here.
+# network, never on the host's. When the chain runs in Docker (`make testnet`), run.sh also joins the backend to
+# that chain's network, where it reads anvil:8545 and nothing on this computer's own ports is involved. When it
+# runs from testnet/anvil.sh, the backend reaches it through chain-relay, which is the one service on the host's
+# network: it listens on this network's gateway, serves only this network's containers, and forwards to
+# 127.0.0.1:8545. Some Docker versions drop containers' connections to the host's own ports (29.9 does), and then
+# Blockscout sees no block with the native chain: use the Docker one. If another network on the computer already
+# uses 172.30.249.0/24, `compose up` fails: change both here.
 name: klippelgo-explorer
 
 networks:
@@ -29,7 +32,7 @@ services:
     ports:
       - "127.0.0.1:5100:80"
 
-  # Port 18545, not 8545: the Docker anvil already holds 8545 on every address.
+  # Port 18545, not 8545: anvil already holds 8545 on this computer, from testnet/anvil.sh or the Docker one.
   chain-relay:
     profiles: [blockscout]
     image: alpine/socat:1.8.0.3
@@ -82,6 +85,9 @@ services:
       chain-relay:
         condition: service_started
     command: sh -c 'bin/blockscout eval "Elixir.Explorer.ReleaseTasks.create_and_migrate()" && bin/blockscout start'
+    # A chain restored from testnet/.state has no state for its older blocks, so Blockscout asks for their
+    # balances and internal calls, fails, and asks again without end. Unbounded, that takes every core.
+    cpus: "2"
     environment:
       # A single node: no Erlang distribution, so no epmd and no port that takes the image's built-in cookie.
       RELEASE_DISTRIBUTION: none
@@ -93,8 +99,9 @@ services:
       CHAIN_ID: "31337"
       ETHEREUM_JSONRPC_VARIANT: geth
       ETHEREUM_JSONRPC_TRANSPORT: http
-      ETHEREUM_JSONRPC_HTTP_URL: http://172.30.249.1:18545
-      ETHEREUM_JSONRPC_TRACE_URL: http://172.30.249.1:18545
+      # run.sh sets anvil:8545 when the chain runs in Docker, and joins the backend to that chain's network.
+      ETHEREUM_JSONRPC_HTTP_URL: ${BLOCKSCOUT_CHAIN_URL:-http://172.30.249.1:18545}
+      ETHEREUM_JSONRPC_TRACE_URL: ${BLOCKSCOUT_CHAIN_URL:-http://172.30.249.1:18545}
       # Internal calls are what a ride is made of: the bundler sends one handleOps to the EntryPoint, and the calls
       # to RideEscrow and the rest happen inside it.
       INDEXER_INTERNAL_TRANSACTIONS_TRACER_TYPE: call_tracer
@@ -104,6 +111,10 @@ services:
       ACCOUNT_ENABLED: "false"
       ADMIN_PANEL_ENABLED: "false"
       RE_CAPTCHA_DISABLED: "true"
+      # Every request reaches the backend from the proxy, as one client: the default limit (500 in a few minutes)
+      # is used up by the page and run.sh together, and the page then asks for a reCAPTCHA nothing here can show.
+      # The API is only on 127.0.0.1, and to the containers on the chain's network when run.sh joins it.
+      API_RATE_LIMIT_DISABLED: "true"
       MICROSERVICE_SC_VERIFIER_ENABLED: "true"
       MICROSERVICE_SC_VERIFIER_TYPE: sc_verifier
       MICROSERVICE_SC_VERIFIER_URL: http://blockscout-verifier:8050/
