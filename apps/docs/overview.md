@@ -180,7 +180,7 @@ to it, and a ride locked on one waits Open for the driver to decline it by hand.
 
 | What | Where | Notes |
 | --- | --- | --- |
-| Where this account's event scans stopped and what they found (its rides, the registered drivers), with a block and its hash to recognise the chain | `SharedPreferences("klippelgo")`, `scans.<account>` | Thrown away and read again when that block's hash is not the chain's: a local testnet started again |
+| Which blocks this account's event scans read and what they found (its rides, the registered drivers), with a block and its hash to recognise the chain | `SharedPreferences("klippelgo")`, `scans.<account>` | Thrown away and read again when that block's hash is not the chain's: a local testnet started again |
 | The shape of all of the above (`AppData.SCHEMA`, now 1) | `SharedPreferences("klippelgo")`, `schema` | Brought up to date at start, one step per shape, so an update never needs a fresh install. Data a newer release wrote is left alone |
 | A downloaded update, while it waits for the installer | `cacheDir/updates/` | Emptied before each download; a file the registry does not name is deleted at once. The FileProvider shares this folder only |
 | Role, RPC address, name, account choice, auto-skip settings | `SharedPreferences("klippelgo")` | The account choice is `device` (the chip's key) or a seeded account's name; `devAccounts` asks for the seeded ones and `e2eAccounts` for the end-to-end tests' set of them; only a debug build sets either |

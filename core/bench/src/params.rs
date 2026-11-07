@@ -194,8 +194,8 @@ pub const PARAMS: &[Param] = &[
     ),
     p(
         "logs_per_poll",
-        4.0,
-        "code: eth_getLogs calls in changedSince's batch",
+        7.0,
+        "code: eth_getLogs calls in changedSince's batch, four of them on the escrow",
     ),
     p(
         "events_per_ride",

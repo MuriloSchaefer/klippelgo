@@ -5,6 +5,19 @@ import org.klippelgo.core.Coordinate
 import org.klippelgo.core.regionBounds
 import java.io.File
 import org.web3j.crypto.Hash
+import java.util.Optional
+import org.web3j.abi.FunctionEncoder
+import org.web3j.abi.datatypes.Address
+import org.web3j.abi.datatypes.Function
+import org.web3j.abi.datatypes.generated.Uint256
+import org.web3j.protocol.Web3j
+import org.web3j.protocol.core.DefaultBlockParameterName
+import org.web3j.protocol.core.Request
+import org.web3j.protocol.core.methods.request.Transaction
+import org.web3j.protocol.core.methods.response.TransactionReceipt
+import org.web3j.protocol.core.methods.response.VoidResponse
+import org.web3j.protocol.http.HttpService
+import org.web3j.utils.Numeric
 import java.math.BigDecimal
 import java.math.BigInteger
 import kotlin.test.Test
@@ -70,11 +83,34 @@ class ChainReadsTest {
     }
 
     @Test
+    fun aScanForTheNewestRidesStopsThereAndCanBeFinishedLater() {
+        if (rpc.isBlank()) return println("KLIPPELGO_RPC not set, skipping")
+        val all = KlippelGoClient(rpc, DevAccount.RIDER.key(), deployment).ridesAsRider()
+        if (all.isEmpty()) return println("the rider has no rides yet, skipping")
+        // Asked for the newest one, a new phone finds it, and only rides at least as new as some it kept.
+        val phone = KlippelGoClient(rpc, DevAccount.RIDER.key(), deployment)
+        val newest = phone.ridesAsRider(1)
+        assertEquals(all.first(), newest.first())
+        assertTrue(newest.all { it in all })
+        // Restarted with what it read so far, and asked for everything, it goes on back to the start.
+        val again = KlippelGoClient(rpc, DevAccount.RIDER.key(), deployment)
+        again.restoreScans(phone.savedScans())
+        assertEquals(all, again.ridesAsRider())
+        // What an earlier version saved, which has no `from`, had read from the start and is taken as whole.
+        val old = KlippelGoClient(rpc, DevAccount.RIDER.key(), deployment)
+        old.restoreScans(again.savedScans().replace(Regex(",?\"from\":-?\\d+"), ""))
+        assertEquals(all, old.ridesAsRider())
+    }
+
+    @Test
     fun theChangeCheckSeesThisAccountsEventsAndNoOneElses() {
         if (rpc.isBlank()) return println("KLIPPELGO_RPC not set, skipping")
         val me = KlippelGoClient(rpc, DevAccount.RIDER_2.key(), deployment)
         val someoneElse = KlippelGoClient(rpc, DevAccount.DRIVER_2.key(), deployment)
         val before = me.blockNumber().toLong()
+        // What happened before the test, such as a map pack published just before, is taken in first: the check
+        // reads the blocks before `before` again, and would count it.
+        me.changedSince(before - 1, emptySet(), setOf(me.address))
         // Nothing new is no change.
         assertFalse(me.changedSince(me.blockNumber().toLong(), emptySet(), setOf(me.address)).second)
         someoneElse.mint(someoneElse.brz, someoneElse.brz.toBaseUnits(BigDecimal.ONE))
@@ -96,6 +132,7 @@ class ChainReadsTest {
         val before = rider.blockNumber().toLong()
         val id = rider.openRide(driver.address, rider.brz, rider.brz.toBaseUnits(BigDecimal("10.00")), Hash.sha3("ride for the change check ${System.nanoTime()}".toByteArray()))
         assertTrue(onlooker().changedSince(before, emptySet(), setOf(driver.address)).second, "a ride opened naming a watched account is a change")
+        assertTrue(onlooker().changedSince(before, emptySet(), setOf(rider.address)).second, "so is one a watched account opened as the rider")
         assertFalse(onlooker().changedSince(before, emptySet(), setOf(nobody)).second, "a ride opened naming others is not")
         val opened = rider.blockNumber().toLong()
         rider.cancel(id)
@@ -105,5 +142,35 @@ class ChainReadsTest {
         val asker = onlooker()
         assertTrue(asker.changedSince(opened, setOf(id), setOf(nobody)).second)
         assertFalse(asker.changedSince(opened, setOf(id), setOf(nobody)).second)
+    }
+
+    @Test
+    fun theChangeCheckSeesAChangeOfTheEscrowsSettings() {
+        if (rpc.isBlank()) return println("KLIPPELGO_RPC not set, skipping")
+        val me = KlippelGoClient(rpc, DevAccount.RIDER_2.key(), deployment)
+        val before = me.blockNumber().toLong()
+        me.changedSince(before - 1, emptySet(), setOf(me.address))
+        // The governor sets a coin's cap to what it already is: a `CapSet` that changes nothing else.
+        val web3 = Web3j.build(HttpService(rpc))
+        fun anvil(method: String, vararg params: Any) =
+            Request(method, params.toList(), HttpService(rpc), VoidResponse::class.java).send()
+        val capOf = FunctionEncoder.encode(Function("cap", listOf(Address(deployment.brz)), emptyList()))
+        val cap = Numeric.toBigInt(web3.ethCall(Transaction.createEthCallTransaction(null, deployment.escrow, capOf), DefaultBlockParameterName.LATEST).send().value)
+        val setCap = FunctionEncoder.encode(Function("setCap", listOf(Address(deployment.brz), Uint256(cap)), emptyList()))
+        anvil("anvil_setBalance", deployment.governor, "0xde0b6b3a7640000")
+        anvil("anvil_impersonateAccount", deployment.governor)
+        try {
+            val tx = web3.ethSendTransaction(Transaction.createFunctionCallTransaction(deployment.governor, null, null, BigInteger.valueOf(200_000), deployment.escrow, setCap)).send()
+            assertFalse(tx.hasError(), tx.error?.message)
+            var receipt: Optional<TransactionReceipt>
+            do {
+                Thread.sleep(250)
+                receipt = web3.ethGetTransactionReceipt(tx.transactionHash).send().transactionReceipt
+            } while (receipt.isEmpty)
+            assertTrue(receipt.get().isStatusOK)
+        } finally {
+            anvil("anvil_stopImpersonatingAccount", deployment.governor)
+        }
+        assertTrue(me.changedSince(before, emptySet(), setOf(me.address)).second, "a change of the escrow's settings is a change for every phone")
     }
 }

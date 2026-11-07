@@ -28,7 +28,7 @@ flowchart LR
 
 | Dependency | Load per phone | Grows with |
 | --- | --- | --- |
-| Chain RPC | While the app is on screen, a driver is online, or a ride is under way: the newest block every 2 s; when it is new, one batch of four log queries over the new blocks; a full read (about ten requests, the rides and ratings in one batch each, plus two or three for the release's status, and for each earlier release's escrow in the deployment file one batch (what it owes in each coin, and each of this account's rides there not yet seen settled) and its incremental log scans) when those show something about this account, after each action, and every 30 s. A few more reads before each operation (nonce, block, balances, allowance). Nothing while the app is off screen with no ride and not online | Number of open apps |
+| Chain RPC | While the app is on screen, a driver is online, or a ride is under way: the newest block every 2 s; when it is new, one batch of seven log queries over the new blocks, which return only events about this phone's rides and account; a full read (about ten requests, the rides and ratings in one batch each, plus two or three for the release's status, and for each earlier release's escrow in the deployment file one batch (what it owes in each coin, and each of this account's rides there not yet seen settled) and its incremental log scans) when those show something about this account, after each action, and every 30 s. A few more reads before each operation (nonce, block, balances, allowance). Nothing while the app is off screen with no ride and not online | Number of open apps |
 | Bundler | Two operations per ride per side (the rider's `open` and `complete`, the driver's `accept` and `start`), each an estimate, a send and a receipt polled every half second | Rides |
 | Gossip router | The messages of the cells the phone hears: a driver's own and the eight around it, a rider's only those of their own requests. A rider also receives their own ride's positions, a driver sends them. Every phone hears the router join and leave each ride's topic, about 9 MB an hour at the target | How busy those cells are |
 | Pack mirror | One download per region per release, resumable, only changed files | Releases |
@@ -51,7 +51,7 @@ flowchart LR
 flowchart TB
     a[More open apps] --> b[One block-number read per app every 2 s]
     a --> c[More gossip in busy cells]
-    d[More rides on chain] --> e[More escrow logs per new block for each phone to filter]
+    d[A longer chain] --> e[Longer first scans of accounts with few rides, and of drivers]
     b --> f{{RPC provider is the first bottleneck}}
     e --> f
     c --> g{{One router for every cell}}
@@ -59,8 +59,7 @@ flowchart TB
 
 | # | Limit | Where it is | Lever |
 | --- | --- | --- | --- |
-| S10 | **First scans from the deploy block.** A new phone, or a rider waiting for a driver it never looked at, reads every 2 000-block range since `deployBlock` one after another before it shows those rides. Registered drivers are scanned from `dataDeployBlock`, which stays where the data contracts were deployed as releases follow, and each earlier release's escrow from its own deploy block | `KlippelGoClient.scan` | Scan backwards from the head and stop at the account's first ride, or start from a checkpoint the app ships |
-| S12 | **Every poll downloads the escrow's events of 17 blocks.** `changedSince` reads all escrow logs from 16 blocks before the last read to the head, for every phone on screen, and filters on the phone. At 14 rides a second that is about 1 900 logs, 2.4 GB an hour per phone | `KlippelGoClient.changedSince` | Filter by the indexed rider and driver topics on the node; read only the new blocks and the reorganised ones |
+| S10 | **Some first scans still go back to the deploy block.** A new phone reads an account's rides newest first and stops at the tenth, but an account with fewer than ten rides on this release, a new one included, is read back to `deployBlock`. Registered drivers are read back to `dataDeployBlock`, which stays where the data contracts were deployed as releases follow, and each earlier release's escrow back to its own deploy block. Each is 2 000 blocks a query and 20 queries a request, about 400 requests for a year of 2 s blocks | `KlippelGoClient.scan` | Start from a checkpoint the app ships; stop an account's scan at the block it was created in |
 
 None of these is a redesign.
 
@@ -101,26 +100,27 @@ Fifty offers are ranked differently: by the policy and the fare, after the signa
 
 The refresh loop runs every 2 s. Each time it takes in gossip, which needs no chain, and asks
 `KlippelGoClient.changedSince` whether anything this screen shows happened since the block the last full read
-started at: one `eth_blockNumber`, and only when there is a new block, one JSON-RPC batch of four `eth_getLogs` over
-the new blocks (the escrow's events, money arriving in this account, governance changes to policies, tariff and
-packs, the registry's events about this account). The escrow's events are filtered on the phone: a change is an
-event about a ride the screen shows that can still change, or about another unfinished ride of the driver a waiting
-rider is behind, a ride opened naming this account or that driver, money held for this account, or a change to the
-escrow's settings. The 16 blocks before the new ones are read again each time, and an event counts once, so one
-a lagging node left out is still seen. A full read follows such a change, every action, coming back on screen, a failed check, and in
-any case 30 s after the last one, which is when a rating someone else gave, for one, reaches the screen.
+started at: one `eth_blockNumber`, and only when there is a new block, one JSON-RPC batch of seven `eth_getLogs`
+over the new blocks. Four are on the escrow and the node chooses their events by indexed topic: rides opened naming
+this account or the driver a waiting rider is behind (as rider, then as driver), any event of a ride the screen
+shows that can still change or that driver is busy with (a hundred ride ids a query), and payments held for anyone
+together with changes to the escrow's settings, both rare. The other three are money arriving in this account,
+governance changes to policies, tariff, packs and releases, and the registry's events about this account. What
+comes back is checked again on the phone, so a node that ignores the topics costs bandwidth, not a full read every
+tick. The 16 blocks before the new ones are read again each time, and an event counts once, so one a lagging node
+left out is still seen. A full read follows such a change, every action, coming back on screen, a failed check, and
+in any case 30 s after the last one, which is when a rating someone else gave, for one, reaches the screen. A driver
+accepting another ride before the waiting rider's own is accepted is also seen then.
 
 | Read | How |
 | --- | --- |
-| Rides of an account (`RideOpened`) and drivers (`Registered`) | `KlippelGoClient.scan`: from the deployment's `deployBlock`, in ranges of 2 000 blocks, then only the blocks after the last one read, the last 64 again in case of a reorganisation. What it found is kept in `SharedPreferences` per account, with a block and its hash to tell after a restart whether the chain is still the same one |
-| Rides on screen, and every unfinished ride of a driver | `KlippelGoClient.rides`: those in a final state from memory, the rest in one batch |
+| Rides of an account (`RideOpened`), drivers (`Registered`), this account's rides on earlier escrows | `KlippelGoClient.scan`: the blocks after the last one read, the last 64 again in case of a reorganisation, then older blocks newest first, in ranges of 2 000 blocks sent 20 to a request. An account's rides stop at the ten newest; the others go back to their start block (S10). What it found and how far back it read is kept in `SharedPreferences` per account, with a block and its hash to tell after a restart whether the chain is still the same one |
+| The rides a driver is busy with | `KlippelGoClient.underWay`: the escrow's `onTripOf` and `pickupOf` for that driver in one batch, then those rides |
+| Rides on screen | `KlippelGoClient.rides`: those in a final state from memory, the rest in one batch |
 | Ratings, drivers' roles and reputations | One batch each; a ride once rated is not asked again |
 
-What is left grows with the escrow's use, not with this phone's: every phone downloads every escrow event of the
-blocks it checks to filter them. At ten thousand rides a day that is about one event per block.
-
-A scan's first run is slow on a long chain (S10). The scans keep
-every ride id of this account, and of the driver a rider waits for until they stop waiting: a driver's grows with
+What a phone downloads in its checks grows with its own rides, not with the escrow's use. A scan's first run can
+still be slow on a long chain (S10). A scan keeps every ride id it found of this account: a driver's grows with
 their rides and with rides anyone opens naming them (P12).
 
 ## Depending on fewer shared services
@@ -174,8 +174,8 @@ These figures were measured before the check replaced reading everything every 2
 [`core/bench`](../../core/bench/README.md) models what 100 000 drivers and 1 000 000 riders put on each shared
 service and on each phone, and measures the gossip part through the real router. Its findings for the app: in
 the busiest cell a driver's phone would receive about 52 gossip messages a second, 255 MB an hour, a thirtieth of
-its inbox, hold about 33 requests of its 200, and poll 2.4 GB an hour of escrow events (S12); RPC nodes would answer
-about 230 000 requests a second (S12). `make bench-model` reruns the model at any scale. Past GossipSub's mesh a
+its inbox, hold about 33 requests of its 200, and poll 0.2 MB an hour of escrow events; RPC nodes would answer
+about 330 000 requests a second, mostly the seven log queries of each check. `make bench-model` reruns the model at any scale. Past GossipSub's mesh a
 message arrives by lazy gossip: requests reach 97% of drivers with 46 phones on a cell, but take 15 s at p95 where they
 take 2 s inside the mesh, and a busy cell at the target has about 6 000 phones (K11 in
 [core security](../../core/docs/security.md)).

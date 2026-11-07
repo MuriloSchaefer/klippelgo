@@ -318,45 +318,49 @@ class KlippelGoClient(
      * is above zero the driver is busy with someone else and this ride waits its turn. Anyone can read this off
      * the chain.
      */
-    fun ridesAhead(ride: Ride): Int = underWay(ride.driver).count { turn.compare(it, ride) < 0 }
+    fun ridesAhead(ride: Ride, underWay: List<Ride> = underWay(ride.driver)): Int = underWay.count { turn.compare(it, ride) < 0 }
 
     /**
      * The rides a driver accepted and has not finished, in the order they take them: a ride that started comes
      * before one only accepted, then the order the riders locked them. The first is the one the driver is on.
      * A ride in dispute is frozen and takes no turn.
      *
-     * It looks at every ride that names the driver, not at the newest few: anyone can open rides naming a
-     * driver, and a window of recent ones could be filled with those to push a real ride out of sight. Rides
-     * that ended are remembered, so each is read from the chain once, and the rest are read in one batch.
+     * The escrow keeps them itself: a driver has at most one ride waiting for its pickup (`pickupOf`) and one
+     * under way (`onTripOf`), and a frozen ride is in neither. So this is two reads and one batch for the rides,
+     * however many rides name the driver, and rides anyone opens naming them cannot push a real one out of sight.
      */
-    fun underWay(driver: String = address): List<Ride> = rides(rideIds(driver = driver))
-        // After a reorganisation of the chain an id found earlier can belong to someone else's ride.
-        .filter { it.driver.equals(driver, ignoreCase = true) }
-        .filter { it.status == RideStatus.Accepted || it.status == RideStatus.Started }
-        .sortedWith(turn)
+    fun underWay(driver: String = address): List<Ride> {
+        val out = callAll(
+            listOf("onTripOf", "pickupOf").map { deployment.escrow to fn(it, listOf(Address(driver)), listOf(uint256Ref)) },
+        )
+        return rides(out.map { uint(it[0]) }.filter { it.signum() > 0 })
+            .filter { it.driver.equals(driver, ignoreCase = true) }
+            .filter { it.status == RideStatus.Accepted || it.status == RideStatus.Started }
+            .sortedWith(turn)
+    }
 
     private val turn = compareBy<Ride>({ it.status != RideStatus.Started }, { it.id })
 
-    /** Ride ids where this account is the driver, newest first. */
-    fun ridesAsDriver(): List<BigInteger> = rideIds(driver = address)
+    /** Ride ids where this account is the driver, newest first: at least the `newest` most recent, or all of them. */
+    fun ridesAsDriver(newest: Int? = null): List<BigInteger> = rideIds(driver = address, newest = newest)
 
-    /** Ride ids where this account is the rider, newest first. */
-    fun ridesAsRider(): List<BigInteger> = rideIds(rider = address)
+    /** Ride ids where this account is the rider, newest first: at least the `newest` most recent, or all of them. */
+    fun ridesAsRider(newest: Int? = null): List<BigInteger> = rideIds(rider = address, newest = newest)
 
-    /** Rides naming `driver` that this client has not seen reach a final state: the ones that can still change. */
-    fun unfinished(driver: String): Set<BigInteger> = rideIds(driver = driver).filterNotTo(HashSet(), finished::containsKey)
-
-    private fun rideIds(rider: String? = null, driver: String? = null): List<BigInteger> {
+    private fun rideIds(rider: String? = null, driver: String? = null, newest: Int? = null): List<BigInteger> {
         val topics = listOf(RIDE_OPENED_TOPIC, null, rider?.let(::topicOf), driver?.let(::topicOf))
         val key = "opened/" + (rider?.lowercase() ?: "") + "/" + (driver?.lowercase() ?: "")
-        return scan(key, deployment.escrow, topics) { Numeric.toBigInt(it.topics[1]).toString() }
+        return scan(key, deployment.escrow, topics, enough = newest) { Numeric.toBigInt(it.topics[1]).toString() }
             .map(::BigInteger).sortedDescending()
     }
 
     // ---------------------------------------------------------------- event scans
 
-    /** What one kind of event scan has found, and the newest block it has looked at. */
-    private class Scan(@Volatile var to: Long, val found: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet())
+    /**
+     * What one kind of event scan has found, and the blocks it has looked at: all of `from` to `to`. A `from` at
+     * or below the scan's start block means it has read everything back to the start.
+     */
+    private class Scan(@Volatile var to: Long, @Volatile var from: Long = to + 1, val found: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet())
 
     private val scans = java.util.concurrent.ConcurrentHashMap<String, Scan>()
 
@@ -368,18 +372,22 @@ class KlippelGoClient(
     @Volatile private var anchorChecked = false
 
     /**
-     * Everything `pick` takes from the logs of `contract` matching `topics` (null for any), from `startBlock`:
-     * the block this release's contracts were deployed in, or an earlier one for data contracts and earlier
-     * releases' escrows, which are older than the release. Each call reads only the blocks after the last one it read, in ranges a public
-     * node accepts, and the last few again in case the chain reorganised. What it found is kept, and can be kept
-     * on the phone across restarts ([savedScans]). Each kind is scanned by one caller at a time; different kinds
-     * at once, so a long first scan of one does not hold up the others.
+     * What `pick` takes from the logs of `contract` matching `topics` (null for any), back to `startBlock`: the
+     * block this release's contracts were deployed in, or an earlier one for data contracts and earlier releases'
+     * escrows, which are older than the release. Each call reads the blocks after the last one it read, the last
+     * few again in case the chain reorganised, and then older blocks, newest first, until it has `enough` or has
+     * reached `startBlock` (always, when `enough` is null). So a new phone that wants an account's latest rides
+     * reads back only as far as they go, and a caller that wants them all later picks up where that stopped.
+     * Ranges are ones a public node accepts, sent [BATCH] to a request. What it found is kept, and can be kept on
+     * the phone across restarts ([savedScans]). Each kind is scanned by one caller at a time; different kinds at
+     * once, so a long first scan of one does not hold up the others.
      */
     private fun scan(
         key: String,
         contract: String,
         topics: List<String?>,
         startBlock: Long = deployment.startBlock,
+        enough: Int? = null,
         pick: (EthLog.LogObject) -> String,
     ): Set<String> {
         val head = blockNumber().toLong()
@@ -393,22 +401,27 @@ class KlippelGoClient(
                 // Only once the comparison was made: a read that failed asks again next time.
                 anchorChecked = true
             }
-            scans.getOrPut(key) { Scan(startBlock - 1) }
+            scans.getOrPut(key) { Scan(head) }
         }
         synchronized(s) {
-            // A chain that went backwards is another chain: read it from the start.
+            // A chain that went backwards is another chain: read it again.
             if (s.to > head) {
-                s.to = startBlock - 1
+                s.to = head
+                s.from = head + 1
                 s.found.clear()
             }
-            var from = maxOf(startBlock, s.to - REORG_BLOCKS + 1)
-            while (from <= head) {
-                val to = minOf(head, from + LOG_RANGE - 1)
-                val filter = EthFilter(DefaultBlockParameter.valueOf(BigInteger.valueOf(from)), DefaultBlockParameter.valueOf(BigInteger.valueOf(to)), contract)
-                topics.forEach { if (it == null) filter.addNullTopic() else filter.addSingleTopic(it) }
-                getLogs(filter).forEach { if (!it.isRemoved) s.found += pick(it) }
-                s.to = to
-                from = to + 1
+            // Forward: the new blocks, and the last few again.
+            val forward = maxOf(startBlock, s.to - REORG_BLOCKS + 1)
+            ranges(forward, head).chunked(BATCH).forEach { chunk ->
+                logsIn(contract, topics, chunk).forEach { it.forEach { log -> if (!log.isRemoved) s.found += pick(log) } }
+                s.to = chunk.last().last
+                s.from = minOf(s.from, forward)
+            }
+            // Backward: older blocks, newest first, until there is enough.
+            while (s.from > startBlock && (enough == null || s.found.size < enough)) {
+                val chunk = ranges(startBlock, s.from - 1).asReversed().take(BATCH)
+                logsIn(contract, topics, chunk).forEach { it.forEach { log -> if (!log.isRemoved) s.found += pick(log) } }
+                s.from = chunk.last().first
             }
             // Deep enough that a reorganisation will not change it.
             if (anchor == null && head > 0) maxOf(1, head - REORG_BLOCKS).let { n -> blockHash(n)?.let { anchor = n to it } }
@@ -416,9 +429,27 @@ class KlippelGoClient(
         }
     }
 
+    /** `from` to `to` cut into ranges one log query may cover, oldest first. */
+    private fun ranges(from: Long, to: Long): List<LongRange> =
+        (from..to step LOG_RANGE).map { it..minOf(to, it + LOG_RANGE - 1) }
+
+    /** The logs of `contract` matching `topics` in each of `ranges`, in one batch of queries. */
+    private fun logsIn(contract: String, topics: List<String?>, ranges: List<LongRange>): List<List<EthLog.LogObject>> =
+        batch(
+            ranges.map { r ->
+                val filter = EthFilter(DefaultBlockParameter.valueOf(BigInteger.valueOf(r.first)), DefaultBlockParameter.valueOf(BigInteger.valueOf(r.last)), contract)
+                topics.forEach { if (it == null) filter.addNullTopic() else filter.addSingleTopic(it) }
+                web3.ethGetLogs(filter)
+            },
+        ).map { r ->
+            if (r.hasError()) throw ChainException(r.error.message)
+            r.logs.map { it.get() as EthLog.LogObject }
+        }
+
     /**
-     * Forgets the scans of rides naming anyone but `accounts`: a rider stops keeping the rides of a driver they
-     * no longer wait for, which anyone could have filled with rides opened naming that driver.
+     * Forgets the scans of rides naming anyone but `accounts`. Scans of other accounts' rides are no longer made,
+     * but a phone may have kept one from an earlier version, which anyone could have filled with rides opened
+     * naming that driver.
      */
     fun keepScansOf(accounts: Set<String>) {
         val keep = accounts.mapTo(HashSet()) { it.lowercase() }
@@ -437,7 +468,7 @@ class KlippelGoClient(
             mapOf(
                 "escrow" to deployment.escrow.lowercase(),
                 "anchor" to listOf(a.first, a.second),
-                "scans" to scans.mapValues { (_, s) -> mapOf("to" to s.to, "found" to s.found.toList()) },
+                "scans" to scans.mapValues { (_, s) -> mapOf("to" to s.to, "from" to s.from, "found" to s.found.toList()) },
             ),
         )
     }
@@ -451,7 +482,8 @@ class KlippelGoClient(
             val a = n.get("anchor") ?: return
             synchronized(scans) {
                 n.get("scans").fields().forEach { (key, s) ->
-                    scans[key] = Scan(s.get("to").asLong()).apply { s.get("found").forEach { found += it.asText() } }
+                    // Saved before scans went newest first, a scan had read everything from the start.
+                    scans[key] = Scan(s.get("to").asLong(), s.get("from")?.asLong() ?: 0).apply { s.get("found").forEach { found += it.asText() } }
                 }
                 anchor = a.get(0).asLong() to a.get(1).asText()
                 anchorChecked = false
@@ -547,6 +579,10 @@ class KlippelGoClient(
      * identity store's and stake vault's events about this account. Changes it does not cover, such as a rating someone else gave, wait for a full read.
      * A chain that went backwards, or more new blocks than one query covers, count as a change.
      *
+     * The escrow's events are chosen by the node, on their indexed topics, so what comes back is about this
+     * screen and not every ride on the network. They are checked again here, so a node that ignores the topics
+     * costs bandwidth, not a full read every tick.
+     *
      * The last [RECHECK_BLOCKS] blocks before the new ones are read again each time, and an event counts once:
      * an event a node behind the others left out, or that a short reorganisation of the chain put in later, is
      * still seen at a later check, as long as it is no older than that.
@@ -558,8 +594,23 @@ class KlippelGoClient(
         val from = DefaultBlockParameter.valueOf(BigInteger.valueOf(maxOf(deployment.startBlock, after - RECHECK_BLOCKS + 1)))
         val to = DefaultBlockParameter.valueOf(BigInteger.valueOf(head))
         val me = topicOf(address)
-        val filters = listOf(
-            EthFilter(from, to, deployment.escrow),
+        val watched = accounts.mapTo(HashSet()) { topicOf(it) }
+        val escrow = deployment.escrow
+        val escrowFilters = buildList {
+            if (watched.isNotEmpty()) {
+                // Opened naming a watched account as the rider, then as the driver.
+                add(EthFilter(from, to, escrow).addSingleTopic(RIDE_OPENED_TOPIC).addNullTopic().addOptionalTopics(*watched.toTypedArray()))
+                add(EthFilter(from, to, escrow).addSingleTopic(RIDE_OPENED_TOPIC).addNullTopic().addNullTopic().addOptionalTopics(*watched.toTypedArray()))
+            }
+            // Every ride event names the ride first.
+            rides.map { Numeric.toHexStringWithPrefixZeroPadded(it, 64) }.chunked(RIDES_PER_QUERY).forEach { ids ->
+                add(EthFilter(from, to, escrow).addOptionalTopics(*(RIDE_EVENTS + RIDE_OPENED_TOPIC).toTypedArray()).addOptionalTopics(*ids.toTypedArray()))
+            }
+            // Payments held for anyone, and changes of the escrow's settings, in one query: both are rare, a
+            // payment held only when a transfer fails. Which payments are this account's is checked below.
+            add(EthFilter(from, to, escrow).addOptionalTopics(*(PAYMENT_EVENTS + SETTINGS_EVENTS).toTypedArray()))
+        }
+        val filters = escrowFilters + listOf(
             EthFilter(from, to, listOf(deployment.brz, deployment.brla)).addSingleTopic(TRANSFER_TOPIC).addNullTopic().addSingleTopic(me),
             EthFilter(from, to, listOf(deployment.governor, deployment.fares, deployment.maps, deployment.releases)),
             EthFilter(from, to, listOf(deployment.identities, deployment.stakes)).addNullTopic().addSingleTopic(me),
@@ -568,18 +619,19 @@ class KlippelGoClient(
             if (r.hasError()) throw ChainException(r.error.message)
             r.logs.map { it.get() as EthLog.LogObject }
         }
-        val watched = accounts.mapTo(HashSet()) { topicOf(it) }
-        val escrow = logs[0].filter { log ->
+        val escrowLogs = logs.take(escrowFilters.size).flatten().filter { it.address.equals(escrow, ignoreCase = true) }
+        val escrowEvents = escrowLogs.filter { log ->
             val t = log.topics
             when (t.firstOrNull()) {
                 RIDE_OPENED_TOPIC -> Numeric.toBigInt(t[1]) in rides || t[2] in watched || t[3] in watched
                 in RIDE_EVENTS -> Numeric.toBigInt(t[1]) in rides
                 in PAYMENT_EVENTS -> t.getOrNull(2) == me
-                // Anything else the escrow says is a change of its settings: tax, coins, caps.
-                else -> true
+                // A change of its settings: tax, coins, caps.
+                in SETTINGS_EVENTS -> true
+                else -> false
             }
         }
-        val fresh = (escrow + logs.drop(1).flatten()).filter { !it.isRemoved }.map { it.blockHash + ":" + it.logIndex }
+        val fresh = (escrowEvents + logs.drop(escrowFilters.size).flatten()).filter { !it.isRemoved }.map { it.blockHash + ":" + it.logIndex }
             .filter { synchronized(reported) { reported.add(it) } }
         synchronized(reported) { while (reported.size > REPORTED_KEPT) reported.remove(reported.first()) }
         return head to fresh.isNotEmpty()
@@ -940,11 +992,6 @@ class KlippelGoClient(
         return receipt
     }
 
-    private fun getLogs(filter: EthFilter): List<EthLog.LogObject> {
-        val res = web3.ethGetLogs(filter).send()
-        if (res.hasError()) throw ChainException(res.error.message)
-        return res.logs.map { it.get() as EthLog.LogObject }
-    }
 
     companion object {
         /**
@@ -1020,6 +1067,15 @@ class KlippelGoClient(
         /** The escrow's events about money held for someone, which name them second. */
         private val PAYMENT_EVENTS: Set<String> = listOf("PaymentHeld(address,address,uint256)", "Withdrawn(address,address,uint256)")
             .mapTo(HashSet(), Hash::sha3String)
+
+        /** The escrow's events about its own settings, which change what every ride on it costs. */
+        private val SETTINGS_EVENTS: Set<String> = listOf(
+            "TokenConfigured(address,uint256,uint256,uint256)", "ModulesSet(address,address,address)",
+            "CompletionTimeoutSet(uint64)", "TaxSet(uint16,address)", "CapSet(address,uint256)",
+        ).mapTo(HashSet(), Hash::sha3String)
+
+        /** Ride ids one log query of the change check names at most, within what public nodes accept. */
+        private const val RIDES_PER_QUERY = 100
 
         /** Blocks one log query covers at most: under what public nodes accept. */
         private const val LOG_RANGE = 2_000L

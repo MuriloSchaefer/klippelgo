@@ -275,12 +275,13 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
         have: p.get("rpc_node_rps"),
         unit: "req/s",
         scales_out: true,
-        lever: "apps scalability S10 and 'Reading the chain': an event stream or indexer instead of polling",
+        lever: "apps scalability 'Reading the chain': an event stream or indexer instead of polling",
     });
-    // Each poll reads every escrow event of the new blocks and the 16 before them.
+    // Each poll reads the escrow events of the new blocks and the 16 before them, but only those the node
+    // matches on the phone's own rides and account. At most, a phone on a ride the whole time it is on screen.
     let blocks_per_poll =
         p.get("recheck_blocks") + (p.get("poll_s") / p.get("block_time_s")).max(1.0);
-    let events_per_block = d.rides_per_s * p.get("events_per_ride") * p.get("block_time_s");
+    let events_per_block = p.get("events_per_ride") * p.get("block_time_s") / p.get("ride_s");
     let log_bytes_per_phone_s =
         new_block_polls * blocks_per_poll * events_per_block * p.get("log_bytes");
     rows.push(Row {
@@ -290,13 +291,12 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
         have: p.get("rpc_node_mbps") * 1e6 / 8.0,
         unit: "B/s",
         scales_out: true,
-        lever:
-            "filter escrow logs by rider and driver topics; stop re-reading 16 blocks every poll",
+        lever: "an event stream instead of polling",
     });
     facts.push((
         "Escrow events in each poll of each phone".into(),
         format!(
-            "{:.0} ({:.0} blocks of {:.0})",
+            "{:.2} ({:.0} blocks of {:.3})",
             blocks_per_poll * events_per_block,
             blocks_per_poll,
             events_per_block
@@ -304,7 +304,7 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
     ));
     facts.push((
         "Mobile data a phone uses on chain polling".into(),
-        format!("{:.0} MB an hour", log_bytes_per_phone_s * 3600.0 / mb),
+        format!("{:.1} MB an hour", log_bytes_per_phone_s * 3600.0 / mb),
     ));
 
     // ------------------------------------------------------------- gossip, one phone
@@ -340,7 +340,7 @@ pub fn evaluate(p: &Params, measured: Option<&Measured>) -> Report {
         have: p.get("phone_mb_hour_ok"),
         unit: "MB/h",
         scales_out: false,
-        lever: "apps S12 and 'Reading the chain'",
+        lever: "gossip: smaller cells, a cost for posting",
     });
     facts.push((
         "Gossip a driver's phone receives in the busiest cell".into(),

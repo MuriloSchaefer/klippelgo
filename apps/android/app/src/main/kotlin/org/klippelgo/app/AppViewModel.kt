@@ -1232,7 +1232,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // position may still go out for a ride counts from here.
             val readAt = android.os.SystemClock.elapsedRealtime()
             val underWay = if (role == Role.DRIVER) c.underWay() else emptyList()
-            val recent = (if (role == Role.RIDER) c.ridesAsRider() else c.ridesAsDriver()).take(MAX_RIDES)
+            // Only as far back as the newest few go: a new phone does not read the whole chain first.
+            val recent = (if (role == Role.RIDER) c.ridesAsRider(MAX_RIDES) else c.ridesAsDriver(MAX_RIDES)).take(MAX_RIDES)
             val ids = (recent + underWay.map { it.id }).distinct().sortedDescending()
             // One batch of reads; after a reorganisation of the chain an id found earlier can be someone else's.
             val rides = c.rides(ids).filter { if (role == Role.RIDER) it.rider == c.address else it.driver == c.address }
@@ -1255,8 +1256,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val rideRoutes = if (role == Role.DRIVER) rideRoutes(c, m, rides) else ownRoutes(c, rides)
             // Rider: is the driver still busy with someone else, and if not, where are they.
             val mine = rides.firstOrNull { it.status.isActive }.takeIf { role == Role.RIDER }
+            val driverRides = mine?.let { runCatching { c.underWay(it.driver) }.getOrNull() }
             // A read that failed says nothing: keep what was known, never "nobody ahead".
-            val ridesAhead = mine?.let { runCatching { c.ridesAhead(it) }.getOrDefault(_state.value.ridesAhead) } ?: 0
+            val ridesAhead = mine?.let { r -> driverRides?.let { c.ridesAhead(r, it) } ?: _state.value.ridesAhead } ?: 0
             val driverAt = mine?.takeIf { ridesAhead == 0 }?.let { m?.driverPosition(it.quoteHash) }?.let { Coordinate(it.latE7, it.lonE7) }
             // Only for the session this refresh belongs to: one left behind by a change of account must not
             // hand its ride to the next.
@@ -1269,9 +1271,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             // What would change this screen: the rides on it that can still change, and for a waiting rider the
-            // other rides of their driver, any of which can come before theirs; and rides opened naming either.
+            // rides their driver is busy with, which come before theirs; and rides opened naming either. The
+            // driver taking on another ride before this rider's is accepted shows at the next full read.
             val unfinished = rides.filter { !it.status.isFinal }.map { it.id }.toSet() + underWay.map { it.id } +
-                (mine?.let { runCatching { c.unfinished(it.driver) }.getOrNull() }.orEmpty())
+                driverRides.orEmpty().map { it.id }
             val accounts = setOfNotNull(c.address, mine?.driver)
             // Only for the session this read belongs to: a read left running by a change of account must not
             // tell the next one that it is up to date.
