@@ -12,12 +12,18 @@ class Welcome(phone: Phone) : Component(phone, Tags.WELCOME) {
 
 /** Name, role and node address, before the app connects. */
 class CreateAccount(phone: Phone) : Component(phone, Tags.CREATE_ACCOUNT) {
-    /** `role` is rider or driver. An empty `rpc` keeps the address the screen proposes. */
-    fun fill(name: String, role: String, rpc: String = "") {
+    /**
+     * `role` is rider or driver. An empty `rpc` keeps the address the screen proposes; `checkRpc` is the second
+     * provider every full read is checked against, left as it is when empty.
+     */
+    fun fill(name: String, role: String, rpc: String = "", checkRpc: String = "") {
         phone.type(Tags.CREATE_NAME, name)
         phone.tap(if (role.equals("driver", ignoreCase = true)) Tags.CREATE_ROLE_DRIVER else Tags.CREATE_ROLE_RIDER)
         if (rpc.isNotBlank()) phone.type(Tags.CREATE_RPC, rpc)
+        if (checkRpc.isNotBlank()) phone.type(Tags.CREATE_CHECK_RPC, checkRpc)
     }
+
+    fun checkRpc(): String = read(Tags.CREATE_CHECK_RPC)
 
     fun name(): String = read(Tags.CREATE_NAME)
 

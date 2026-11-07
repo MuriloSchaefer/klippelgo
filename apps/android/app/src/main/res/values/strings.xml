@@ -251,4 +251,9 @@
     <string name="previous_rides">Você tem %1$d corrida(s) por terminar numa versão anterior do app. Elas terminam no contrato em que começaram.</string>
     <string name="previous_owed">Uma versão anterior do app guarda %1$s para você.</string>
     <string name="previous_withdraw">Sacar</string>
+    <string name="check_rpc_label">Segundo nó para conferir (opcional)</string>
+    <string name="check_rpc_hint">Outro provedor, independente do primeiro. O app compara o que os dois dizem.</string>
+    <string name="providers_disagree">Os dois nós não concordam sobre o que esta tela mostra: um deles pode estar mentindo. Corridas em andamento continuam, mas nenhuma corrida nova começa até que concordem.</string>
+    <string name="providers_disagree_refused">Os dois nós não concordam. Nenhuma corrida nova começa até que concordem.</string>
+    <string name="providers_unchecked">Não foi possível conferir com o segundo nó nas últimas leituras. O app está acreditando só no primeiro.</string>
 </resources>

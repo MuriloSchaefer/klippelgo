@@ -197,6 +197,7 @@ What a build is pinned to:
 | The network | `-Pklippelgo.network=<name>` copies `deployments/<name>.json` into the APK as `deployment.json`. A build for any network but `local` fails without that file, or when its `version` is not `/VERSION` | `local`, which falls back to a fresh testnet's addresses when `deployments/local.json` is missing |
 | The version | `versionName` is `/VERSION`; `versionCode` is major × 1 000 000 + minor × 1 000 + patch | |
 | The update mirror | `-Pklippelgo.apkMirror=<url>`: where the app fetches `klippelgo-<version>-<abi or universal>.apk` | The map packs' host and port |
+| The second RPC provider | `-Pklippelgo.checkRpc=<url>`: the provider every full read is checked against until the person sets another on the create-account screen ([apps security](../docs/security.md), A18) | None: nothing is checked |
 | Signing | `KLIPPELGO_RELEASE_KEYSTORE`, `KLIPPELGO_RELEASE_STORE_PASSWORD`, `KLIPPELGO_RELEASE_KEY_ALIAS`, `KLIPPELGO_RELEASE_KEY_PASSWORD`, from the environment or Gradle properties | Unsigned. The release key is held like the production deployer's key: on hardware, used in a ceremony, never in CI ([docs/releases-and-data.md](../../docs/releases-and-data.md)) |
 
 The build leaves out the VCS and dependency metadata that would make two builds of one tag differ.

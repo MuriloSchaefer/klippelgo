@@ -1,7 +1,7 @@
 # Apps: security
 
 The app is where an attacker actually meets KlippelGo: it takes messages from strangers, downloads map data
-from a mirror, holds the keys, and shows the user what to believe. The numbered invariants (`A1` to `A17`) are
+from a mirror, holds the keys, and shows the user what to believe. The numbered invariants (`A1` to `A18`) are
 what the [security reviewer](../../.claude/agents/security-reviewer.md) checks a change against.
 
 Related: [overview.md](overview.md), [core security](../../core/docs/security.md),
@@ -54,11 +54,11 @@ flowchart LR
     classDef trusted fill:#dfd,stroke:#080
 ```
 
-Gossip and mirrors are hostile by assumption. The RPC provider is the weak point: the app believes what it
-reads from it (see limit P3). The bundler takes the account's signed operations to the chain; it cannot change
+Gossip and mirrors are hostile by assumption. The RPC provider is the weak point: the app
+believes what it reads from it, checked against a second provider when one is set (A18, limit P3). The bundler takes the account's signed operations to the chain; it cannot change
 one, and the phone never takes from it the account's address or an operation's hash (A15), but it is believed
 for the gas an operation needs, which the phone caps, and for the receipt the phone reads a ride's id from. Its
-address comes from the RPC address, so P2 and P3 cover it too.
+address comes from the RPC address, so P3 covers it too.
 
 ## Gossip messages and their checks
 
@@ -155,6 +155,9 @@ Every signed message also carries its session key's certificate: the account, th
 when it expires. Nothing there was not already learnable from the signature, but it means every message an
 account sends in a day names the same session key.
 
+The RPC provider sees the phone's IP address with its account and the ids of the rides it reads. With a second
+provider set (A18), that one learns the same every full read, and for a waiting rider their driver's address.
+
 The driver's position is sealed to a key the rider sent inside the signed `route` message, and the driver's
 phone sends it only for the ride it is on now: of all the rides it accepted and has not finished, the one
 that started, or else the one locked first. A ride in dispute is frozen and takes no turn, so the next rider's
@@ -193,9 +196,10 @@ number of rides opened naming the driver can displace.
   when it was read, or from the last check of the new blocks that found no event about the rides on screen, so
   sending stops within that of the ride ending, and as soon as a full read or a check is seen to fail or the
   driver signs out. Each check reads the 16 blocks before the new ones again, so an event a lagging node left out,
-  or a short reorganisation added, still ends the belief at a later check. A full read that a node behind the
-  others answers after a check reported the event can miss it, and then the belief holds until the next full
-  read, at most 30 s.
+  or a short reorganisation added, still ends the belief at a later check. A full read made at a block before the
+  newest one a check found something in (a node behind the others answered it, or it was pinned there, A18) does
+  not renew the belief, and another full read follows at the next tick, so sending pauses until a read catches up.
+  Only a chain that went backwards, one whose block 64 below that change has another hash or none, clears it.
 - **A11. Memory taken by strangers is bounded**: caps on requests and on offers per request, topic names of a
   fixed length and a router's topics capped (K12), and requests expire. At a cap, something is given up only for a newcomer whose signature and limits passed (A1), and never
   this phone's own request, a request it quoted, or its own quote. Limit P13 lists what is not bounded yet.
@@ -224,7 +228,31 @@ number of rides opened naming the driver can displace.
 - **A17. Only an APK the release registry names is handed to the installer.** `Updater` keeps a download only if
   its SHA-256 is one `ReleaseRegistry.isApk` names for that release; anything else is deleted unread. A download
   is capped at 400 MB, lives in `cacheDir/updates/`, the only folder the FileProvider shares, and Android
-  installs it only after the person confirms and only if it is signed with the app's own key.
+  installs it only after the person confirms and only if it is signed with the app's own key. With a second
+  provider set (A18), that provider must name it too; one that cannot be asked installs nothing.
+- **A18. With a second provider set, what a full read gave the app must be told by both, or nothing new starts.**
+  With `checkRpc` set, a full read is pinned to one block (`KlippelGoClient.at`, `pinFor`): the second provider's
+  newest block when it is up to 30 blocks behind the main one's, so the main one cannot name a block the second does
+  not have yet, and the main one's otherwise, so the second cannot wind the screen back by naming an old head. The
+  second's head is never used below a block an earlier full read was pinned to. It can still hold reads on one block
+  for up to 30 blocks; a read made before a block the change check found something in does not renew what the app
+  believes of the ride under way (A10), so a ride that ended there stops getting the driver's position within
+  seconds, as when the chain cannot be read. The
+  tariff and the tax are read again inside it, and only there: the app prices on those, however old, until the next
+  full read. `crossCheck` then asks the second provider about
+  that block, and compares each answer with the value the app holds and uses, never with the main provider asked
+  again: the chain id and the block's hash; the rides on screen, this account's balances, each coin's fee and
+  bonds; the tax and the tariff; this release's status and the latest one's; for a driver, the permission to
+  accept; the rides the driver, or the rider's driver, is busy with (`onTripOf`, `pickupOf`); and the proof root of
+  the map pack open. A ride a later block ended is not given to a read pinned before it. Any difference is a
+  disagreement: the app shows `ProvidersNotice` and the guard of A16 refuses every new ride until a full read
+  finds them agreeing. A second provider that does not answer, is a few blocks behind, or has another hash for the
+  block once, is unknown and refuses nothing, and so is a full read that failed (a disagreement stands through it);
+  after three such reads in a row the app says, quietly, that it is not checking. More than 30 blocks behind, another hash twice in a row, or a main provider that cannot give its own
+  block's hash, is a disagreement. Writes are never pinned. The second provider is `checkRpc`, set on the
+  create-account screen (an `http://` or `https://` address), or else the build's `CHECK_RPC`; with neither, nothing
+  is pinned and nothing is checked. It learns what the main provider does from these reads: the phone's IP
+  address, the account, the ids of its rides on screen, and for a waiting rider their driver's address.
 - **A14. Money shown is money locked.** The amounts on the confirmation screen are computed from the same
   values passed to `open`, including fee, bonds and the tax rate read from the chain. The tax shown is the sum
   the escrow does at `open`, at a rate read again every ten seconds, and it is inside the fare: it changes what
@@ -238,8 +266,7 @@ Real today. A change touching one should close it or leave it no worse, and say 
 
 | # | Limit | Consequence | What closes it |
 | --- | --- | --- | --- |
-| P2 | `MainActivity` is exported and reads `role`, `rpc` and `pair` extras | Another app on the device could start KlippelGo with a role and an RPC it controls, and the RPC is saved, so it outlasts that launch. The seeded test accounts, and the `devAccounts` and `e2eAccounts` extras, work in debug builds only. Through that RPC it can also reach everything P3 lists, and so the case there of a service kept running. | Accept the remaining extras only in debug builds too |
-| P3 | The app believes its RPC provider | A lying RPC can show a fake tariff, pack root, ride state or balance. A ride once reported finished is remembered as finished until the app restarts. The event scans and the check for changes believe its logs too: one that leaves out a ride's events keeps the screen up to 30 s behind, and one that leaves out a `RideOpened` keeps that ride off the screen, as a fake ride state could. Reporting a ride under way keeps `OnDutyService`, its wake lock and the phone's GPS going off screen, on a phone that came on screen once. The RPC's host also names the gossip router (K12). | Light-client proofs or several independent RPCs; at minimum a user-chosen RPC |
+| P3 | The app believes its RPC provider, checked against a second one only where A18 says, and only when one is set | With no second provider, a lying RPC can show a fake tariff, pack root, ride state or balance. With one, a lie about what A18 compares must be told by both, or the app says so and starts nothing new; until the next full read (30 s at most) the lie is on screen, and an action taken in that time goes through. Reads outside the full read (before each action, of a pack when the map opens) are believed until then; the tariff and tax are read only inside full reads, and the pack root the app opened with is compared at the next one. The pack in use is checked for its root, not for being the region's latest or still active: a lying main provider can keep the app on a retired pack that still has its root. What A18 does not compare is still believed: the event scans and the check for changes (one that leaves out a ride's events keeps the screen up to 30 s behind, and one that leaves out a `RideOpened` keeps that ride off the screen), the drivers listed and their reputations, and the gossip router the RPC's host names (K12). Before the first full read after connecting nothing has been compared. A ride once reported finished is remembered as finished until the app restarts. Reporting a ride under way keeps `OnDutyService`, its wake lock and the phone's GPS going off screen, on a phone that came on screen once. The main RPC can make a check come back unknown, never agree: by giving another block hash every other read, when the screen shows what it says for that read, or by failing reads; three unknown reads in a row are said on screen. A second provider that is down, or that the person never set, checks nothing, and two that collude agree. A lying or unreachable second provider can stop new rides and hold back updates (A17); the person clears it by signing out and creating the account again without it | Compare the logs too; light-client proofs; more than two providers, with a majority; edit the second provider in the profile |
 | P4 | In `receiveOffer`, the token's fee is read from the chain (`tokenConfig`) before the signature is checked. A request from an account that confirms its certificate on chain costs one `hasPermission` read, and one more every five minutes while it keeps posting; the answers are kept per key and never pruned. Each request naming a new pack costs a `packIsActive` read (two calls), under the matchmaker's lock, with no limit per tick, and the answer is kept (P13). Requests under a certificate not yet confirmed, and the `canAcceptRides` reads of offers making room, share 64 per tick, charged even when `certified` then answers without a read. Offers, closes, routes and positions under forged certificates are outside that count, a read each. A rider whose certificate this phone already confirmed spends none of the 64 until their daily key change, so only an overflowing inbox (about 2 000 messages a second) can drop their announcements. A rider new to this phone competes with whatever came first in the drain: about 32 messages a second under one forged certificate use up the 64, at no read, and can keep that rider off that phone for as long as they last. Every message's certificate costs one `isValidSignature` read the first time it is seen; the same certificate again costs nothing (four lookups a minute per session key, answers kept bounded at 4 096). A stranger can send forged certificates with fresh session keys, one read each | A flood of offers for a known request, of requests from fresh keys, or of messages under forged certificates makes each phone do RPC calls, one per forgery. It cannot use up an honest session key's lookups with forged ones. A `position` the driver really signed, sent again with junk certificate bytes, is charged to that driver's session: until a phone has confirmed the certificate (its first read failed, or around the daily key change) such copies can keep its positions off that rider's screen. No money is at stake | Check the signature first; cache the fee like the tariff; a cost or a limit per gossip sender |
 | P5 | Offers are stored from any key until 50 arrive. Past that an offer takes the slot of an account that may not accept, or of a dearer offer, so `canAcceptRides` is read only then: once per driver in five minutes, up to 1 024 answers kept, within the 64 per tick (P4); with none left a new driver's offer is dropped until announced again. Those reads hold the matchmaker's lock. An offer evicted loses its sequence number, so an older unexpired quote of that driver can be replayed into its place | Throwaway keys hold slots only until real drivers need them, while reads are left: with none, a real driver takes the dearest offer's slot instead. Fifty accounts that may accept, quoting at the floor, keep dearer drivers' offers out until theirs expire. The rider's screen hides offers from accounts that cannot accept, so no funds are at risk | A cost for quoting; a limit per gossip sender |
 | P8 | Routes, quotes and rider keys on disk are not encrypted beyond Android's app sandbox | A rooted or seized phone reveals past rides | Encrypted database, retention limit |
@@ -258,7 +285,7 @@ Real today. A change touching one should close it or leave it no worse, and say 
 | P21 | Losing the phone loses the account: recovery by a passkey (designed in docs/accounts-and-pix.md, accepted by the account's WebAuthn signers) has no screen yet | Android passkeys need a domain that serves `assetlinks.json` | The domain, then the setup screen that adds the passkey as a second signer |
 | P22 | A closed request stops being announced, and a phone that never heard it close has nothing telling it so | A peer can replay a closed request's signed message to a driver who missed the close or arrived later, and it shows as open for as long as the replay goes on, up to its expiry. The rider's phone answers what it hears with the close, at most every 10 s, while it is online and in that cell, which also tells any peer that this rider's phone is still there. An offer on it goes nowhere: the rider no longer listens for it. No money is at stake | The ride channel; a cost for relaying |
 | P23 | Anyone can join a ride's topic and publish there, as on any topic | They see when a driver's positions go out, sealed. Each forged position costs the rider's phone one signature recovery, and a read for a new certificate, with no limit per tick (P4). It cannot be believed or stop the route | A topic name only the two phones know, sent inside the sealed route; a limit per gossip sender |
-| P24 | The release status and an APK's hash are what the RPC says. A lying RPC can call this build's release revoked, and the app starts no ride until the person changes provider or the lie stops. It can also call a release active that the registry revoked, with `isApk` true: whoever runs both the RPC and the APK mirror (by default the mirror is the host next to the chain node) can then serve that release's genuine APK, signed with the release key, as the update, and Android installs it once the person confirms | The registry is read like any other contract (P3) | A revoked status stops only new rides, never money (A16). The app offers only a higher version than its own, so it is never taken back to an older release. A stranger's own APK still needs the release key, which Android checks. An escrow closed on chain refuses rides whatever the RPC says. A second source for the latest release's status, light-client proofs or several RPCs, as for P3 |
+| P24 | The release status and an APK's hash are what the RPC says. A lying RPC can call this build's release revoked, and the app starts no ride until the person changes provider or the lie stops. It can also call a release active that the registry revoked, with `isApk` true: whoever runs both the RPC and the APK mirror (by default the mirror is the host next to the chain node) can then serve that release's genuine APK, signed with the release key, as the update, and Android installs it once the person confirms | The registry is read like any other contract (P3) | A revoked status stops only new rides, never money (A16). The app offers only a higher version than its own, so it is never taken back to an older release. A stranger's own APK still needs the release key, which Android checks. An escrow closed on chain refuses rides whatever the RPC says. With a second provider set, the release status is compared at each full read and an APK must be named by both (A17, A18); without one, a second source for the latest release's status, as for P3 |
 | P25 | A ride left on an earlier release's escrow cannot be finished from the app: it lists the ride and withdraws money owed there, but sends `start`, `complete`, `cancel`, receipts and timeouts only to its own release's escrow | Not built | The app holds an update back until the chain was read once and while a ride of the account in its current role is accepted, started, disputed, or open and locked by this account; it checks again before opening the installer, so a ride started during the download keeps the checked file waiting. An Open ride someone else opened naming the driver does not hold it: it holds no bond of the driver's, and its rider takes it back on the old escrow. Not covered: a ride of the account in its other role, a ride left behind another way (the app reinstalled at a newer release, the other party updating). Those need their transactions sent by hand. Closes when the app can act on `previousEscrows` |
 
 ## How it is tested
@@ -280,6 +307,7 @@ through.
 | `RoutePrivacyTest` | A9; "Who learns what" | Everything said in the cell, and on the ride's own topic, during a ride is recorded: the request has the documented fields and no more, and no point of the route or of the driver appears in the clear, nor inside the sealed fields once their base64 is undone |
 | `ReleaseTest` (integrity) | A16 | A revoked release refuses a rider's request and a driver's quote and says why, and works again once put back; a deprecated one goes on; an update to a newer release waits until the driver's ride is over. `ReleaseCheckTest` (`:chain`) pins that only a revoked status refuses, that an update goes only to a higher active release, and that an unreadable registry or a release published with other code contracts is unknown and refuses nothing |
 | `ReleaseUpdatesTest` | A17 | Against the chain, not the screen: a release published naming one APK file; that file is accepted, an altered copy and the same file under another version are refused |
+| `ProvidersTest` | A18 | The rider's second provider lies about the tariff: the notice shows, asking for a ride is refused and says why, and once the lie stops the notice leaves and a driver hears the next request. `CrossCheckTest` (`:chain`) pins that two honest providers agree; that a lie by the second about the tariff, a ride's status, a balance or the tax is named; that a lie by the main one told once, about the tariff or the release, is caught, since what the app got is compared and not the main provider asked again; that a main one lying only to reads of the newest block has its tariff replaced by the full read's; that a screen showing another ride state than the chain's disagrees; that a ride ended after the pinned block is read as it was there; that another block hash is unknown once and a disagreement twice; that a provider that does not answer is unknown; and that an APK is accepted only when both providers name it |
 | `RevealedRouteTest` | A5 | A drivable route in the right regions that is not the one locked in the escrow is never shown as checked, and the same trip revealed honestly is. A ride a stranger opened with the honest quote's hash, driver, coin and fare is never shown with that route, while the honest ride beside it is. It stops short of P14 |
 | `ThreePhonesTest` (integrity) | The honest path of A4 and A5 between real apps | Three copies of the app, a rider and two drivers: the driver not picked gets no ride and no route, and the one picked is shown the route as checked |
 | `RiderRideTest` (integrity) | A14, and the honest path of A4 | The amounts on the confirmation screen are the amounts the escrow holds after the lock |

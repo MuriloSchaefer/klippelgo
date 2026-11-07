@@ -76,8 +76,11 @@ class KlippelGoClient(
 
     fun rolesOf(who: String = address): Int = uint(call(deployment.identities, rolesFn(who))[0]).toInt()
 
-    /** Rides that reached a final state, by id. They never change again. */
-    private val finished = java.util.concurrent.ConcurrentHashMap<BigInteger, Ride>()
+    /**
+     * Rides that reached a final state, by id, with the block they were read at (the newest when not pinned). They
+     * never change again, but a read pinned to an older block must not be given what a later block says ([at]).
+     */
+    private val finished = java.util.concurrent.ConcurrentHashMap<BigInteger, Pair<Ride, Long>>()
 
     /** One ride as it is now, read from the chain. */
     fun ride(id: BigInteger): Ride = rideOf(id, call(deployment.escrow, rideFn(id)))
@@ -87,10 +90,12 @@ class KlippelGoClient(
      * reads, so a screen of rides costs one round trip to the node however many it shows.
      */
     fun rides(ids: List<BigInteger>): List<Ride> {
-        val unknown = ids.filterNot(finished::containsKey).distinct()
+        val pin = pinned.get()
+        fun known(id: BigInteger): Ride? = finished[id]?.takeIf { pin == null || it.second <= pin }?.first
+        val unknown = ids.filter { known(it) == null }.distinct()
         val read = callAll(unknown.map { deployment.escrow to rideFn(it) }).mapIndexed { i, out -> rideOf(unknown[i], out) }.associateBy { it.id }
-        read.values.filter { it.status.isFinal }.forEach { finished[it.id] = it }
-        return ids.map { finished[it] ?: read.getValue(it) }
+        read.values.filter { it.status.isFinal }.forEach { r -> finished.merge(r.id, r to (pin ?: Long.MAX_VALUE)) { a, b -> if (a.second <= b.second) a else b } }
+        return ids.map { read[it] ?: known(it)!! }
     }
 
     private fun rideFn(id: BigInteger) = fn(
@@ -129,7 +134,7 @@ class KlippelGoClient(
      */
     fun taxBps(): Int {
         val now = System.currentTimeMillis()
-        if (now - taxReadAt > TAX_FRESH_MS) {
+        if (now - taxReadAt > TAX_FRESH_MS && (taxReadAt == 0L || mayReadRates())) {
             taxRate = uint(call(deployment.escrow, fn("taxBps", emptyList(), listOf(uint16Ref)))[0]).toInt()
             taxReadAt = now
         }
@@ -458,6 +463,9 @@ class KlippelGoClient(
         }
     }
 
+    /** The hash of block `number` on the main provider, or null when it has none. */
+    fun hashOf(number: Long): String? = blockHash(number)
+
     private fun blockHash(number: Long): String? =
         web3.ethGetBlockByNumber(DefaultBlockParameter.valueOf(BigInteger.valueOf(number)), false).send().block?.hash
 
@@ -501,21 +509,23 @@ class KlippelGoClient(
      * that release. Any failure to read is [ReleaseStatus.Unknown], never a refusal: the app works as it did
      * without the registry, so that the RPC cannot switch it off (docs/releases-and-data.md).
      */
-    fun releaseCheck(): ReleaseCheck {
+    fun releaseCheck(): ReleaseCheck = runCatching { releaseCheckWith(::callAll) }
+        .getOrElse { ReleaseCheck(ReleaseStatus.Unknown, deployment.versionKey, 0, ReleaseStatus.Unknown) }
+
+    /** [releaseCheck] with the registry read through `read`, so a second provider can be asked it the same way. */
+    private fun releaseCheckWith(read: (List<Pair<String, Function>>) -> List<List<Type<*>>>): ReleaseCheck {
         val mine = deployment.versionKey
         if (deployment.releases.isBlank() || mine == 0L) return ReleaseCheck(ReleaseStatus.Unknown, mine, 0, ReleaseStatus.Unknown)
-        return runCatching {
-            val releaseFn = { v: Long -> fn("release", listOf(Uint48(v)), listOf(bytes32Ref, uint8Ref, uint64Ref)) }
-            val (own, latestOut) = callAll(listOf(deployment.releases to releaseFn(mine), deployment.releases to fn("latest", emptyList(), listOf(uint48Ref))))
-            val latest = uint(latestOut[0]).toLong()
-            val ownStatus = if ((own[0] as Bytes32).value.contentEquals(deployment.releaseContracts)) ReleaseStatus.of(uint(own[1]).toInt()) else ReleaseStatus.Unknown
-            val latestStatus = when {
-                latest == 0L -> ReleaseStatus.Unknown
-                latest == mine -> ownStatus
-                else -> ReleaseStatus.of(uint(call(deployment.releases, releaseFn(latest))[1]).toInt())
-            }
-            ReleaseCheck(ownStatus, mine, latest, latestStatus)
-        }.getOrElse { ReleaseCheck(ReleaseStatus.Unknown, mine, 0, ReleaseStatus.Unknown) }
+        val releaseFn = { v: Long -> fn("release", listOf(Uint48(v)), listOf(bytes32Ref, uint8Ref, uint64Ref)) }
+        val (own, latestOut) = read(listOf(deployment.releases to releaseFn(mine), deployment.releases to fn("latest", emptyList(), listOf(uint48Ref))))
+        val latest = uint(latestOut[0]).toLong()
+        val ownStatus = if ((own[0] as Bytes32).value.contentEquals(deployment.releaseContracts)) ReleaseStatus.of(uint(own[1]).toInt()) else ReleaseStatus.Unknown
+        val latestStatus = when {
+            latest == 0L -> ReleaseStatus.Unknown
+            latest == mine -> ownStatus
+            else -> ReleaseStatus.of(uint(read(listOf(deployment.releases to releaseFn(latest)))[0][1]).toInt())
+        }
+        return ReleaseCheck(ownStatus, mine, latest, latestStatus)
     }
 
     /** Whether the registry names `sha256` as an APK of release `version`: how a downloaded update is checked. */
@@ -526,9 +536,134 @@ class KlippelGoClient(
      * Whether `file` is, byte for byte, an APK the registry names for release `version`. Where the file came from
      * does not matter: any mirror may serve it, and only this answer lets it be installed.
      */
-    fun publishedApk(version: Long, file: java.io.File): Boolean {
+    fun publishedApk(version: Long, file: java.io.File, checkRpc: String = ""): Boolean {
         if (version == 0L || deployment.releases.isBlank()) return false
-        return isApk(version, sha256Of(file))
+        val sha = sha256Of(file)
+        if (!isApk(version, sha)) return false
+        if (checkRpc.isBlank()) return true
+        // A second provider must say so too: one that cannot be asked installs nothing, since the update can wait.
+        val f = fn("isApk", listOf(Uint48(version), Bytes32(sha)), listOf(boolRef))
+        return runCatching { (decode(ethCall(deployment.releases, f, provider(checkRpc), DefaultBlockParameterName.LATEST).send(), f)[0] as Bool).value }
+            .getOrDefault(false)
+    }
+
+    // ---------------------------------------------------------------- a second provider
+
+    private val providers = java.util.concurrent.ConcurrentHashMap<String, Web3j>()
+
+    private fun provider(url: String): Web3j = providers.getOrPut(url.trim()) { Web3j.build(HttpService(url.trim())) }
+
+    /** Full reads in a row whose block the second provider had another hash for. */
+    @Volatile private var hashMismatches = 0
+
+    /** The newest block the provider at `rpc` has. */
+    fun headOf(rpc: String): Long = provider(rpc).ethBlockNumber().send().blockNumber.toLong()
+
+    /**
+     * The block a full read checked against `checkRpc` is pinned to, given the main provider's `head`: that
+     * provider's head when it is a little behind, so it is never asked about a block it does not have, and `head`
+     * otherwise. Never further back: a second provider must not be able to wind the screen back to old state by
+     * naming an old head, and one far behind then disagrees ([crossCheck]). Nor below a block an earlier full read
+     * was pinned to: what the app has seen never goes back, so a second provider kept a few blocks behind cannot
+     * make a ride that ended look under way again. It is then asked about a block it may not have, and is unknown.
+     */
+    fun pinFor(checkRpc: String, head: Long): Long {
+        val other = runCatching { headOf(checkRpc) }.getOrNull()
+        val block = if (other != null && head - other in 0..BEHIND_BLOCKS && other >= newestPinned) other else head
+        newestPinned = maxOf(newestPinned, block)
+        return block
+    }
+
+    /** The newest block a full read was pinned to ([pinFor]). */
+    @Volatile private var newestPinned = 0L
+
+    /**
+     * Asks the provider at `checkRpc` about `block`, the block a full read was pinned to ([at]), and says whether
+     * what that read gave the app (`shown`) is what this provider says too. Compared, each with the value the app
+     * holds and goes on using, never with the main provider asked again: the block's hash and the chain; the rides
+     * on screen; this account's balances and each coin's fee and bonds; the tax and the tariff; this release's
+     * status and the latest release's; whether this account may accept rides; the rides each watched driver is
+     * busy with; and the proof root of the map pack in use.
+     * The caller pins the read at no later than this provider's head ([headOf]), so it is never asked about a block
+     * it does not have yet. It being behind anyway, or unreachable, is [ProviderCheck.Unreachable]: nothing is
+     * known. Far behind, the main provider unable to give its own block's hash, or another hash for `block` twice in
+     * a row, is a disagreement.
+     */
+    fun crossCheck(checkRpc: String, block: Long, shown: Shown): ProviderCheck {
+        val other = provider(checkRpc)
+        fun unknown(e: Exception) = ProviderCheck.Unreachable(e.message ?: "no answer")
+        val (chainId, otherHead) = try {
+            other.ethChainId().send().chainId.toLong() to other.ethBlockNumber().send().blockNumber.toLong()
+        } catch (e: Exception) {
+            return unknown(e)
+        }
+        if (chainId != deployment.chainId) return ProviderCheck.Disagree(block, listOf("chain"))
+        if (otherHead < block) {
+            return if (block - otherHead > BEHIND_BLOCKS) ProviderCheck.Disagree(block, listOf("block"))
+            else ProviderCheck.Unreachable("the second provider is ${block - otherHead} blocks behind")
+        }
+        val at = DefaultBlockParameter.valueOf(BigInteger.valueOf(block))
+        val mine = runCatching { web3.ethGetBlockByNumber(at, false).send().block?.hash }.getOrNull()
+            ?: return ProviderCheck.Disagree(block, listOf("block"))
+        val theirs = try { other.ethGetBlockByNumber(at, false).send().block?.hash } catch (e: Exception) { return unknown(e) }
+        if (!mine.equals(theirs, ignoreCase = true)) {
+            // A reorganisation can put two honest providers on different blocks for a moment: once is not yet a lie.
+            return if (++hashMismatches >= 2) ProviderCheck.Disagree(block, listOf("block"))
+            else ProviderCheck.Unreachable("the providers have different blocks at $block")
+        }
+        hashMismatches = 0
+
+        val what = mutableListOf<String>()
+        val read = { calls: List<Pair<String, Function>> -> callAllOn(other, at, calls) }
+        try {
+            val rides = read(shown.rides.map { deployment.escrow to rideFn(it.id) })
+            shown.rides.forEachIndexed { i, r -> if (rideOf(r.id, rides[i]) != r) what += "ride ${r.id}" }
+
+            val coinsShown = shown.balances.keys.toList()
+            val coinOut = read(
+                coinsShown.flatMap { coin ->
+                    listOf(
+                        coin.address to fn("balanceOf", listOf(Address(address)), listOf(uint256Ref)),
+                        deployment.escrow to fn("tokenConfig", listOf(Address(coin.address)), listOf(uint256Ref, uint256Ref, uint256Ref)),
+                    )
+                },
+            )
+            coinsShown.forEachIndexed { i, coin ->
+                if (uint(coinOut[2 * i][0]) != shown.balances[coin]) what += "balance ${coin.symbol}"
+                val c = coinOut[2 * i + 1]
+                if (shown.configs[coin] != null && Triple(uint(c[0]), uint(c[1]), uint(c[2])) != shown.configs[coin]) what += "fees ${coin.symbol}"
+            }
+
+            val drivers = shown.busy.keys.toList()
+            val rates = read(
+                listOf(
+                    deployment.escrow to fn("taxBps", emptyList(), listOf(uint16Ref)),
+                    deployment.fares to fn("tariff", emptyList(), listOf(uint32Ref, uint32Ref, uint32Ref, uint32Ref, uint16Ref, uint16Ref)),
+                    deployment.governor to fn("hasPermission", listOf(Address(address), Address(deployment.escrow), Bytes4(selector("accept(uint256)"))), listOf(boolRef)),
+                ) + drivers.flatMap { d -> listOf("onTripOf", "pickupOf").map { deployment.escrow to fn(it, listOf(Address(d)), listOf(uint256Ref)) } } +
+                    listOfNotNull(shown.packId?.let { deployment.maps to fn("proofRootOf", listOf(Bytes32(it)), listOf(bytes32Ref)) }),
+            )
+            if (uint(rates[0][0]).toInt() != shown.taxBps) what += "tax"
+            val t = rates[1]
+            if (Tariff(uint(t[0]).toLong(), uint(t[1]).toLong(), uint(t[2]).toLong(), uint(t[3]).toLong(), uint(t[4]).toInt(), uint(t[5]).toInt()) != shown.tariff) what += "tariff"
+            if (shown.canAccept != null && (rates[2][0] as Bool).value != shown.canAccept) what += "permission"
+            drivers.forEachIndexed { i, d ->
+                val ids = listOf(rates[3 + 2 * i], rates[4 + 2 * i]).map { uint(it[0]) }.filter { it.signum() > 0 }.toSet()
+                if (ids != shown.busy[d]) what += "rides of $d"
+            }
+            if (shown.packId != null && !(rates.last()[0] as Bytes32).value.contentEquals(shown.packRoot)) what += "map pack"
+
+            if (shown.release != null && releaseCheckWith(read) != shown.release) what += "release"
+        } catch (e: Exception) {
+            return unknown(e)
+        }
+        return if (what.isEmpty()) ProviderCheck.Agree(block) else ProviderCheck.Disagree(block, what)
+    }
+
+    /** Reads on another provider at one block, decoded; a read it refuses fails the whole batch. */
+    private fun callAllOn(on: Web3j, block: DefaultBlockParameter, calls: List<Pair<String, Function>>): List<List<Type<*>>> {
+        val responses = batch(calls.map { (to, f) -> ethCall(to, f, on, block) }, on)
+        return calls.mapIndexed { i, (_, f) -> decode(responses[i], f) }
     }
 
     // ---------------------------------------------------------------- earlier releases
@@ -668,7 +803,7 @@ class KlippelGoClient(
             // A monotonic clock: a phone's wall clock can step backwards and keep a stale tariff fresh.
             val now = System.nanoTime()
             val last = tariffRead
-            if (last != null && now - last.second <= TARIFF_FRESH_MS * 1_000_000) return last.first
+            if (last != null && (now - last.second <= TARIFF_FRESH_MS * 1_000_000 || !mayReadRates())) return last.first
             val read = try {
                 val t = call(
                     deployment.fares,
@@ -684,6 +819,25 @@ class KlippelGoClient(
         }
 
     @Volatile private var tariffRead: Pair<Tariff, Long>? = null
+
+    /**
+     * Reads the tariff and the tax again now, whatever their age: inside a full read pinned to a block ([at]), so
+     * the values the app goes on pricing with are the ones a second provider is asked about.
+     */
+    fun refreshRates() {
+        tariffRead = null
+        taxReadAt = 0L
+        tariff
+        taxBps()
+    }
+
+    /**
+     * With a second provider set, the tariff and the tax are read only by [refreshRates], inside a checked full
+     * read, and kept however old until the next: a read of the newest block between full reads is not checked.
+     */
+    @Volatile var ratesFromFullReads = false
+
+    private fun mayReadRates(): Boolean = !ratesFromFullReads || pinned.get() != null
 
     /** Whether `price` is one a rider may ask for a trip of this length. */
     fun riderMayAsk(coin: Coin, price: BigInteger, route: RouteSummary): Boolean {
@@ -898,10 +1052,40 @@ class KlippelGoClient(
 
     private fun call(to: String, function: Function): List<Type<*>> = decode(ethCall(to, function).send(), function)
 
-    private fun ethCall(to: String, function: Function) = web3.ethCall(
+    private fun ethCall(to: String, function: Function, on: Web3j = web3, block: DefaultBlockParameter = readBlock()) = on.ethCall(
         Transaction.createEthCallTransaction(address, to, FunctionEncoder.encode(function)),
-        DefaultBlockParameterName.LATEST,
+        block,
     )
+
+    /** The block contract reads on this thread are made at: the one [at] pinned, or the newest. */
+    private val pinned = ThreadLocal<Long?>()
+
+    private fun readBlock(): DefaultBlockParameter =
+        pinned.get()?.let { DefaultBlockParameter.valueOf(BigInteger.valueOf(it)) } ?: DefaultBlockParameterName.LATEST
+
+    /**
+     * Runs `reads` with every contract read it makes on this thread done at `block` rather than the newest, so
+     * that a second provider can be asked about the very same state ([crossCheck]). Writes are never pinned.
+     */
+    fun <T> at(block: Long, reads: () -> T): T {
+        val before = pinned.get()
+        pinned.set(block)
+        try {
+            return reads()
+        } finally {
+            pinned.set(before)
+        }
+    }
+
+    private fun <T> unpinned(f: () -> T): T {
+        val before = pinned.get() ?: return f()
+        pinned.set(null)
+        try {
+            return f()
+        } finally {
+            pinned.set(before)
+        }
+    }
 
     private fun decode(res: EthCall, function: Function): List<Type<*>> {
         if (res.hasError() || res.isReverted) throw ChainException(describeRevert(res.error?.data, res.error?.message ?: res.revertReason))
@@ -916,8 +1100,8 @@ class KlippelGoClient(
     }
 
     /** Sends requests to the node in batches and gives each its own answer, matched by id, in the order asked. */
-    private fun <R : Response<*>> batch(requests: List<Request<*, R>>): List<R> = requests.chunked(BATCH).flatMap { chunk ->
-        val b = web3.newBatch()
+    private fun <R : Response<*>> batch(requests: List<Request<*, R>>, on: Web3j = web3): List<R> = requests.chunked(BATCH).flatMap { chunk ->
+        val b = on.newBatch()
         chunk.forEach { b.add(it) }
         val byId = b.send().responses.associateBy { it.id }
         @Suppress("UNCHECKED_CAST")
@@ -933,7 +1117,9 @@ class KlippelGoClient(
      * first, so a call that would revert fails here with the contract's error name and costs nothing.
      */
     @Synchronized
-    fun sendCalls(calls: List<Call>, gasCoin: Coin? = null): Bundler.Receipt {
+    fun sendCalls(calls: List<Call>, gasCoin: Coin? = null): Bundler.Receipt = unpinned { sendNow(calls, gasCoin) }
+
+    private fun sendNow(calls: List<Call>, gasCoin: Coin?): Bundler.Receipt {
         val coin = gasCoin?.takeIf { balanceOf(it).signum() > 0 } ?: coins.maxByOrNull { it.toReais(balanceOf(it)) }
             ?.takeIf { balanceOf(it).signum() > 0 }
             ?: throw ChainException("This account has no reais to pay the network with. Add money first.")
@@ -1073,6 +1259,9 @@ class KlippelGoClient(
             "TokenConfigured(address,uint256,uint256,uint256)", "ModulesSet(address,address,address)",
             "CompletionTimeoutSet(uint64)", "TaxSet(uint16,address)", "CapSet(address,uint256)",
         ).mapTo(HashSet(), Hash::sha3String)
+
+        /** How far behind the block asked about a second provider may be before that counts as disagreeing. */
+        private const val BEHIND_BLOCKS = 30L
 
         /** Ride ids one log query of the change check names at most, within what public nodes accept. */
         private const val RIDES_PER_QUERY = 100

@@ -202,5 +202,41 @@ data class ReleaseCheck(val status: ReleaseStatus, val version: Long, val latest
     val mayStartRides: Boolean get() = status != ReleaseStatus.Revoked
 }
 
+/**
+ * What a second, independent RPC provider says of the reads a screen is built on, compared with what the main one
+ * says at the same block ([KlippelGoClient.crossCheck]). A lie must then be told by both to reach the screen.
+ */
+sealed interface ProviderCheck {
+    /** Both gave the same block and the same answers. */
+    data class Agree(val block: Long) : ProviderCheck
+
+    /** They differ: on another chain, on the block itself, or on the reads named in `what`. Nothing new starts. */
+    data class Disagree(val block: Long, val what: List<String>) : ProviderCheck
+
+    /** The second provider did not answer. Nothing is known either way, and nothing is refused for it. */
+    data class Unreachable(val reason: String) : ProviderCheck
+}
+
+/**
+ * What a full read gave the app and the app goes on using, to be checked against a second provider
+ * ([KlippelGoClient.crossCheck]).
+ */
+data class Shown(
+    val rides: List<Ride>,
+    val balances: Map<Coin, java.math.BigInteger>,
+    val configs: Map<Coin, Triple<java.math.BigInteger, java.math.BigInteger, java.math.BigInteger>>,
+    val taxBps: Int,
+    val tariff: Tariff,
+    /** Null when the registry was not read. */
+    val release: ReleaseCheck?,
+    /** Whether this account may accept rides, for a driver; null for a rider. */
+    val canAccept: Boolean?,
+    /** The rides each watched driver is busy with, by driver: the ids `onTripOf` and `pickupOf` gave. */
+    val busy: Map<String, Set<java.math.BigInteger>>,
+    /** The map pack in use and its proof root, or null before one is open. */
+    val packId: ByteArray? = null,
+    val packRoot: ByteArray? = null,
+)
+
 /** What an earlier release's escrow still holds for this account: rides not finished there, and payments owed. */
 data class LeftOnEscrow(val escrow: String, val unfinished: List<java.math.BigInteger>, val owed: Map<Coin, java.math.BigInteger>)

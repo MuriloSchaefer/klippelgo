@@ -250,4 +250,9 @@
     <string name="previous_rides">Tienes %1$d viaje(s) por terminar en una versión anterior de la app. Terminan en el contrato en que empezaron.</string>
     <string name="previous_owed">Una versión anterior de la app guarda %1$s para ti.</string>
     <string name="previous_withdraw">Retirar</string>
+    <string name="check_rpc_label">Segundo nodo para comprobar (opcional)</string>
+    <string name="check_rpc_hint">Otro proveedor, independiente del primero. La app compara lo que dicen los dos.</string>
+    <string name="providers_disagree">Los dos nodos no coinciden sobre lo que muestra esta pantalla: uno de ellos puede estar mintiendo. Los viajes en curso siguen, pero ningún viaje nuevo empieza hasta que coincidan.</string>
+    <string name="providers_disagree_refused">Los dos nodos no coinciden. Ningún viaje nuevo empieza hasta que coincidan.</string>
+    <string name="providers_unchecked">No se pudo comprobar con el segundo nodo en las últimas lecturas. La app está creyendo solo al primero.</string>
 </resources>

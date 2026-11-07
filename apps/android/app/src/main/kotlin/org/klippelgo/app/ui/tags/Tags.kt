@@ -13,6 +13,11 @@ object Tags {
     const val ERROR_MESSAGE = "error.message"
     const val ERROR_DISMISS = "error.dismiss"
     const val NETWORK_NOTICE = "network-notice"
+    /** Shown while the second RPC provider disagrees with the main one. */
+    const val PROVIDERS_NOTICE = "providers-notice"
+    const val PROVIDERS_NOTICE_TEXT = "providers-notice.text"
+    /** Shown, quieter, when several full reads in a row could not be checked against the second provider. */
+    const val PROVIDERS_UNCHECKED = "providers-unchecked"
     const val BACK = "back"
 
     /** `language.pt`, `language.en`, `language.es`. */
@@ -70,6 +75,7 @@ object Tags {
     const val CREATE_ROLE_RIDER = "create-account.role.rider"
     const val CREATE_ROLE_DRIVER = "create-account.role.driver"
     const val CREATE_RPC = "create-account.rpc"
+    const val CREATE_CHECK_RPC = "create-account.check-rpc"
     const val CREATE_CONTINUE = "create-account.continue"
 
     // ---------------------------------------------------------------- rider

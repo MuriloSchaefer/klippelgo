@@ -89,6 +89,26 @@ class MapView(phone: Phone) : Component(phone, Tags.MAP) {
     fun zoomOut() = phone.tap(Tags.MAP_ZOOM_OUT)
 }
 
+/** The red notice that the second RPC provider disagrees with the main one, above every screen. */
+class ProvidersNotice(phone: Phone) : Component(phone, Tags.PROVIDERS_NOTICE) {
+    fun text(): String? = readOrNull(Tags.PROVIDERS_NOTICE_TEXT)
+
+    /** Waits until the notice is up, as the next full read finds the two providers disagreeing. */
+    fun awaitShown(timeoutMs: Long = 90_000): Boolean {
+        phone.awaitTag(tag, timeoutMs)
+        return true
+    }
+
+    /** Whether the quieter notice is up instead: several full reads in a row could not be checked. */
+    fun unchecked(): Boolean = phone.find(Tags.PROVIDERS_UNCHECKED) != null
+
+    /** Waits until the notice has left, as a full read finds them agreeing again. */
+    fun awaitGone(timeoutMs: Long = 90_000): Boolean {
+        phone.awaitGone(tag, timeoutMs)
+        return true
+    }
+}
+
 /** What the release registry says of the app's release, above every screen, with the button to update. */
 class ReleaseNotice(phone: Phone) : Component(phone, Tags.RELEASE_NOTICE) {
     /** `revoked`, `deprecated`, `update` (a newer release is out), or `none` when there is no notice. */

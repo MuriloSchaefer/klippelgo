@@ -110,11 +110,11 @@ abstract class Scenario {
      * The app as it is on the day it was installed, taken through onboarding by hand as a rider standing in the
      * centre of Cascavel, up to the home screen with the map pack on the phone and the pickup pin on the rider.
      */
-    fun freshRider(name: String = "Ana") {
+    fun freshRider(name: String = "Ana", checkRpc: String = "") {
         phone.launch(fresh = true)
         phone.locate(Places.CENTRE.latE7 / 1e7, Places.CENTRE.lonE7 / 1e7)
         app.welcome.start()
-        app.createAccount.fill(name, "rider", stack.rpcFromPhone)
+        app.createAccount.fill(name, "rider", stack.rpcFromPhone, checkRpc)
         app.createAccount.submit()
         app.funding.skip()
         app.whereTo.shown()

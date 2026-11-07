@@ -250,4 +250,9 @@
     <string name="previous_rides">You have %1$d ride(s) to finish on an earlier version of the app. They finish on the contract they started on.</string>
     <string name="previous_owed">An earlier version of the app holds %1$s for you.</string>
     <string name="previous_withdraw">Withdraw</string>
+    <string name="check_rpc_label">Second node to check against (optional)</string>
+    <string name="check_rpc_hint">Another provider, independent of the first. The app compares what the two say.</string>
+    <string name="providers_disagree">The two nodes disagree about what this screen shows: one of them may be lying. Rides under way go on, but no new ride starts until they agree.</string>
+    <string name="providers_disagree_refused">The two nodes disagree. No new ride starts until they agree.</string>
+    <string name="providers_unchecked">The second node could not be checked against in the last reads. The app is believing the first one alone.</string>
 </resources>

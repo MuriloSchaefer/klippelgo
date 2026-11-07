@@ -13,7 +13,7 @@ file disagree, the doc wins; if the code and a doc disagree, stop and tell the u
 1. Read `apps/docs/overview.md`, section "Structure and patterns". The table "Where code goes" decides the
    file. If the code must give the same answer on iOS or for a juror, it belongs in the core: switch to the
    `change-core` skill.
-2. Read `apps/docs/security.md`: the message table, invariants A1 to A17, and the known limits. Name the
+2. Read `apps/docs/security.md`: the message table, invariants A1 to A18, and the known limits. Name the
    invariants your change touches before you write it. Anything that receives from gossip, a mirror or an
    intent is covered there.
 3. If the change adds a chain read, a gossip message, a timer or stored data, read `apps/docs/scalability.md`,

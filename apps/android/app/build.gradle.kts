@@ -51,6 +51,8 @@ android {
         buildConfigField("boolean", "LOCAL_NETWORK", (network == "local").toString())
         // Where updates are downloaded from. Empty: the mirror next to the chain node, where the map packs are.
         buildConfigField("String", "APK_MIRROR", "\"${(findProperty("klippelgo.apkMirror") as String?).orEmpty()}\"")
+        // A second RPC provider every full read is checked against (P3). Empty: none until the person sets one.
+        buildConfigField("String", "CHECK_RPC", "\"${(findProperty("klippelgo.checkRpc") as String?).orEmpty()}\"")
 
         // No tests run on the phone. This is what starts the UI agent the test harness talks to (tests/README.md).
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

@@ -52,6 +52,7 @@ import org.klippelgo.app.UiState
 import org.klippelgo.app.UpdateState
 import org.klippelgo.app.setAppLanguage
 import org.klippelgo.app.ui.tags.Tags
+import org.klippelgo.chain.ProviderCheck
 import org.klippelgo.chain.Coin
 import org.klippelgo.chain.Deployment
 import org.klippelgo.chain.ReleaseStatus
@@ -75,6 +76,7 @@ fun KlippelGoApp(vm: AppViewModel) {
         Column(Modifier.safeDrawingPadding().imePadding()) {
             if (state.role != null) {
                 ReleaseNotice(state, vm::update)
+                ProvidersNotice(state)
                 PreviousRelease(state, vm::withdrawPrevious)
             }
             Box(Modifier.weight(1f)) {
@@ -179,10 +181,11 @@ fun IconTile(icon: ImageVector) {
  * signs with the seeded test accounts, so this screen picks which one to be and where the test network is.
  */
 @Composable
-private fun CreateAccount(state: UiState, onBack: () -> Unit, onContinue: (String, Role, String) -> Unit) {
+private fun CreateAccount(state: UiState, onBack: () -> Unit, onContinue: (String, Role, String, String) -> Unit) {
     var name by rememberSaveable { mutableStateOf(state.name) }
     var role by rememberSaveable { mutableStateOf(Role.RIDER) }
     var rpc by rememberSaveable { mutableStateOf(state.rpcUrl.ifBlank { DEFAULT_RPC }) }
+    var checkRpc by rememberSaveable { mutableStateOf(state.checkRpc) }
     ScrollScreen(Tags.CREATE_ACCOUNT) {
         BackButton(onBack, Modifier.padding(start = 12.dp, top = 20.dp))
         Column(Modifier.padding(start = 20.dp, top = 8.dp, end = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -220,6 +223,17 @@ private fun CreateAccount(state: UiState, onBack: () -> Unit, onContinue: (Strin
                     modifier = Modifier.fillMaxWidth().testTag(Tags.CREATE_RPC),
                 )
             }
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                FieldLabel(stringResource(R.string.check_rpc_label))
+                OutlinedTextField(
+                    value = checkRpc,
+                    onValueChange = { checkRpc = it },
+                    supportingText = { Text(stringResource(R.string.check_rpc_hint)) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().testTag(Tags.CREATE_CHECK_RPC),
+                )
+            }
         }
         KCard(Modifier.padding(start = 20.dp, top = 20.dp, end = 20.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -233,8 +247,9 @@ private fun CreateAccount(state: UiState, onBack: () -> Unit, onContinue: (Strin
         Spacer(Modifier.weight(1f))
         PrimaryButton(
             stringResource(R.string.continue_label),
-            onClick = { onContinue(name, role, rpc) },
-            enabled = rpc.isNotBlank(),
+            onClick = { onContinue(name, role, rpc, checkRpc) },
+            // A second node that cannot be one would check nothing without anyone knowing.
+            enabled = rpc.isNotBlank() && (checkRpc.isBlank() || checkRpc.trim().let { it.startsWith("https://") || it.startsWith("http://") }),
             modifier = Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 32.dp).testTag(Tags.CREATE_CONTINUE),
         )
     }
@@ -260,6 +275,30 @@ fun NetworkNotice(state: UiState, modifier: Modifier = Modifier) {
     }
     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.error, modifier = modifier.testTag(Tags.NETWORK_NOTICE)) {
         Text(text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 13.sp, lineHeight = 18.sp)
+    }
+}
+
+/**
+ * Says so while the second RPC provider disagrees with the main one about what the screen shows (P3): one of them
+ * may be lying, and no new ride starts. Quieter, when it could not be asked several full reads in a row: the app is
+ * then believing one provider again. Nothing when they agree or when none is set.
+ */
+@Composable
+fun ProvidersNotice(state: UiState) {
+    val disagree = state.providers is ProviderCheck.Disagree
+    if (!disagree && !state.providersUnchecked) return
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (disagree) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.padding(start = 12.dp, top = 8.dp, end = 12.dp).fillMaxWidth()
+            .testTag(if (disagree) Tags.PROVIDERS_NOTICE else Tags.PROVIDERS_UNCHECKED),
+    ) {
+        Text(
+            stringResource(if (disagree) R.string.providers_disagree else R.string.providers_unchecked),
+            Modifier.padding(horizontal = 14.dp, vertical = 10.dp).testTag(Tags.PROVIDERS_NOTICE_TEXT),
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+        )
     }
 }
 
