@@ -31,6 +31,7 @@ object KIcons {
     )
     val Person = icon("M8 8a4 4 0 1 0 8 0a4 4 0 1 0 -8 0", "M4 21c1.5 -4 4.5 -6 8 -6s6.5 2 8 6")
     val Check = icon("M5 12l5 5L20 7", width = 2.4f)
+    val Clock = icon("M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0", "M12 7v5l3 2")
     val Star = icon(STAR, width = 1.5f)
     val StarFilled = icon(STAR, width = 1.5f, filled = true)
 }
