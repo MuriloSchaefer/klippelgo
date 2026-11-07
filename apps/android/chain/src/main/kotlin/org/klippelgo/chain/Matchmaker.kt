@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.klippelgo.core.Bounds
 import org.klippelgo.core.Coordinate
+import org.klippelgo.core.GossipMessage
 import org.klippelgo.core.GossipNode
 import org.klippelgo.core.regionBounds
 import org.klippelgo.core.regionCell
@@ -71,13 +72,40 @@ class Matchmaker(
     private val closed = HashMap<BigInteger, ByteArray?>()
     /** Requests forgotten once closed, until they expire, so that a replay does not bring them back. The newest [MAX_GONE]. */
     private val gone = LinkedHashMap<BigInteger, Long>()
-    /** Whether the policy lets each rider open a ride, and when the chain was last asked. */
-    private val riders = HashMap<String, Pair<Boolean, Long>>()
-    private val packs = HashMap<String, Boolean>()
-    /** Whether the policy lets each driver accept, and when the chain was last asked. Only asked at the offer cap. */
+    /** Whether the policy lets each rider open a ride, and when the chain was last asked. The newest [MAX_ACCOUNTS_KNOWN]. */
+    private val riders = LinkedHashMap<String, Pair<Boolean, Long>>()
+    /** Whether governance activated each pack, and when the chain was last asked. The newest [MAX_PACKS_KNOWN]. */
+    private val packs = LinkedHashMap<String, Pair<Boolean, Long>>()
+    /** Whether the policy lets each driver accept, and when the chain was last asked. The newest [MAX_ACCOUNTS_KNOWN]. */
     private val drivers = LinkedHashMap<String, Pair<Boolean, Long>>()
-    /** Chain reads a stranger's new request or offer may still cost before the next [tick]. */
-    private var checksLeft = MAX_CHECKS_PER_TICK
+
+    /**
+     * What a message needs the chain to say before it is believed. Each is asked outside the lock, once per tick
+     * however many messages need it, and only while that tick's reads last ([tick]).
+     */
+    private sealed interface Fact {
+        /**
+         * Whether the account confirms this session key's certificate. `known`: one of a known request's parties.
+         * The same certificate in two messages is one fact: compared by what it says, not by its byte array.
+         */
+        class Certificate(val certificate: SessionCertificate, val known: Boolean) : Fact {
+            private val id = listOf(certificate.account.lowercase(), certificate.session.lowercase(), certificate.expiresAt, Numeric.toHexString(certificate.signature), known)
+            override fun equals(other: Any?) = other is Certificate && other.id == id
+            override fun hashCode() = id.hashCode()
+        }
+        data class MayOpen(val rider: String) : Fact
+        data class MayAccept(val driver: String) : Fact
+        data class PackActive(val pack: String) : Fact
+    }
+
+    /** Thrown by a check that needs a [Fact] nobody has asked for yet: the message waits for the answer. */
+    private class Waiting(val fact: Fact) : Exception(null, null, false, false)
+
+    /** What the chain said this tick, for the messages that were waiting on it. */
+    private val answered = HashMap<Fact, Boolean>()
+
+    /** Offers given up to make room, by request and driver: their sequence number, so a replay cannot take it back. */
+    private val evicted = LinkedHashMap<String, Long>()
     /** Where this phone is, for telling near requests from far ones. It stays on the phone. */
     private var here: Coordinate? = null
 
@@ -171,17 +199,127 @@ class Matchmaker(
     }
 
     /** Takes in what peers gossiped since the last call and announces this account's own messages again. */
-    @Synchronized
-    fun tick() {
-        for (message in node.drain()) {
-            val cell = message.topic.removePrefix(matchPrefix)
-            if (message.topic.startsWith(matchPrefix) && cell in subscribed) {
-                runCatching { receive(cell, message.data) }.onFailure { note("a message in $cell failed: ${it.message}") }
-            } else if (message.topic in rideTopics) {
-                runCatching { receiveOnRide(message.topic, message.data) }.onFailure { note("a position failed: ${it.message}") }
+    fun tick() = synchronized(ticking) {
+        // Every check that needs no chain first, under the lock; then what the chain must say, outside it, so a flood
+        // of messages that need reads never holds up the screen; then the messages whose answer came, under the lock
+        // again. A message can need a second fact once the first is known (a certificate, then the rider's role): a
+        // few rounds. One tick at a time, however many loops call it, so the reads per tick bound the reads.
+        var waiting = synchronized(this) { node.drain().mapNotNull { m -> take(m, last = false)?.let { m to it } } }
+        var reads = MAX_CHECKS_PER_TICK
+        var knownReads = MAX_KNOWN_CHECKS_PER_TICK
+        val answers = HashMap<Fact, Boolean>()
+        for (round in 1..FACT_ROUNDS) {
+            if (waiting.isEmpty()) break
+            val facts = waiting.map { it.second }.distinct()
+            // The facts that have waited longest first, then at random: an honest party announces again every few
+            // seconds, so their certificate waits tick after tick, while a forgery with a fresh key waits once. Nor
+            // can the order a flood arrives in put it first.
+            val order = synchronized(this) {
+                if (round == 1) {
+                    val nowMs = System.currentTimeMillis()
+                    // A fact not seen for longer than anyone waits between two announcements is forgotten: a forgery
+                    // sent once drops out, while an honest party keeps its count. When the record is full, newcomers
+                    // are not added: those that have waited keep their place, and a flood cannot wipe it.
+                    waitedFor.values.removeIf { nowMs - it.second > LIVE_FOR_MS }
+                    for (f in facts) {
+                        val w = waitedFor[f]
+                        if (w != null) waitedFor[f] = w.first + 1 to nowMs
+                        else if (waitedFor.size < MAX_WAITING_KNOWN) waitedFor[f] = 1 to nowMs
+                    }
+                }
+                val ranked = facts.shuffled().sortedByDescending { waitedFor[it]?.first ?: 0 }
+                // A few reads go to facts drawn at random from all that wait, so the order is never worse than chance:
+                // not for a newcomer a full record left out, nor against forgeries sent again as often as it is.
+                val drawn = facts.shuffled().take(RANDOM_READS)
+                drawn + ranked.filterNot { it in drawn }
+            }
+            for (fact in order) {
+                if (fact in answers) continue
+                val budget = if (fact is Fact.Certificate && fact.known) knownReads else reads
+                if (budget <= 0) continue
+                if (fact is Fact.Certificate && fact.known) knownReads-- else reads--
+                runCatching { ask(fact) }.onSuccess { answers[fact] = it }
+            }
+            waiting = synchronized(this) {
+                answered.putAll(answers)
+                answers.keys.forEach { waitedFor.remove(it) }
+                // Only what an answer came for is taken again; the rest is dropped now, and taken when announced again.
+                waiting.mapNotNull { (m, fact) ->
+                    if (fact !in answers) { note("a message dropped: no reads left for ${fact::class.simpleName}"); null }
+                    else take(m, last = round == FACT_ROUNDS)?.let { m to it }
+                }
             }
         }
-        checksLeft = MAX_CHECKS_PER_TICK
+        synchronized(this) {
+            answered.clear()
+            housekeep()
+        }
+    }
+
+    /** Serialises [tick]: separate from the lock the screen's reads take, which a tick lets go while it asks the chain. */
+    private val ticking = Any()
+
+    /**
+     * Facts that waited for a read and did not get one: in how many ticks, and when they were last seen. The
+     * longest-waiting are asked first.
+     */
+    private val waitedFor = HashMap<Fact, Pair<Int, Long>>()
+
+    /** Takes in one gossiped message. Returns the fact it waits for, or null once it was taken in or dropped. */
+    private fun take(message: GossipMessage, last: Boolean): Fact? {
+        val cell = message.topic.removePrefix(matchPrefix)
+        try {
+            if (message.topic.startsWith(matchPrefix) && cell in subscribed) receive(cell, message.data)
+            else if (message.topic in rideTopics) receiveOnRide(message.topic, message.data)
+        } catch (w: Waiting) {
+            if (!last) return w.fact
+            note("a message in $cell dropped: no reads left for ${w.fact::class.simpleName}")
+        } catch (e: Exception) {
+            note("a message in $cell failed: ${e.message}")
+        }
+        return null
+    }
+
+    /** What the chain says of `fact`. Called outside the lock. */
+    private fun ask(fact: Fact): Boolean = when (fact) {
+        is Fact.Certificate -> client.certified(fact.certificate)
+        is Fact.MayOpen -> client.canOpenRides(fact.rider)
+        is Fact.MayAccept -> client.canAcceptRides(fact.driver)
+        is Fact.PackActive -> client.packIsActive(Numeric.hexStringToByteArray(fact.pack))
+    }
+
+    /**
+     * The answer to `fact` this phone has, or [Waiting] to ask the chain. Answers about accounts and packs are kept
+     * a few minutes, and only so many of them; a certificate's, by the client for good ([KlippelGoClient.certified]).
+     */
+    private fun know(fact: Fact): Boolean {
+        val now = System.currentTimeMillis()
+        val kept: LinkedHashMap<String, Pair<Boolean, Long>>? = when (fact) {
+            // A certificate the client can answer without the chain (confirmed, refused a moment ago, or its session
+            // key's lookups used up) costs no read: a forgery sent again is free to drop.
+            is Fact.Certificate -> client.certifiedWithoutReading(fact.certificate)?.let { return it } ?: null
+            is Fact.MayOpen -> riders
+            is Fact.MayAccept -> drivers
+            is Fact.PackActive -> packs
+        }
+        val key = when (fact) {
+            is Fact.MayOpen -> fact.rider
+            is Fact.MayAccept -> fact.driver
+            is Fact.PackActive -> fact.pack
+            else -> ""
+        }
+        kept?.get(key)?.takeIf { now - it.second < ACCOUNT_CHECK_MS }?.let { return it.first }
+        val answer = answered[fact] ?: throw Waiting(fact)
+        if (kept != null) {
+            kept.remove(key)
+            kept[key] = answer to now
+            while (kept.size > (if (fact is Fact.PackActive) MAX_PACKS_KNOWN else MAX_ACCOUNTS_KNOWN)) kept.remove(kept.keys.first())
+        }
+        return answer
+    }
+
+    /** Forgets what expired and announces this account's own messages again. */
+    private fun housekeep() {
         val nowS = now()
         val nowMs = System.currentTimeMillis()
         requests.entries.removeIf { (id, seen) -> seen.request.expiresAt <= nowS || forgettable(id, seen, nowMs) }
@@ -480,15 +618,12 @@ class Matchmaker(
         if (full && leastWanted()?.let { band(middle) > band(it.middle) } != false) return
         // The rider's price must be within the fare guide's range for a trip of the stated length.
         if (!client.riderMayAsk(client.coinFor(token), maxFare, route)) return
-        if (!speaksFor(m, id, rider, charged = true)) return
+        if (!speaksFor(m, id, rider)) return
         // Whoever could not lock the ride anyway (no rider role, or blocked by Instituto Klippel) is not shown.
         // The answer is kept for a few minutes, not for good, so a block or an unblock reaches a running phone.
-        val asked = System.currentTimeMillis()
-        val mayOpen = riders[rider]?.takeIf { asked - it.second < RIDER_CHECK_MS }
-            ?: (client.canOpenRides(rider) to asked).also { riders[rider] = it }
-        if (!mayOpen.first) return
+        if (!know(Fact.MayOpen(rider))) return
         // A route means something only on a map governance activated: anyone can check it against that pack.
-        if (!packs.getOrPut(route.packId) { client.packIsActive(Numeric.hexStringToByteArray(route.packId)) }) return
+        if (!know(Fact.PackActive(route.packId.lowercase()))) return
         // Only now, with the newcomer proved: nothing unsigned can push a request out (A1).
         if (full) leastWanted()?.let { requests.remove(it.request.id) }
         requests[key] = Seen(RideRequest(key, rider, token, maxFare, expiresAt, route), data, System.currentTimeMillis(), middle)
@@ -504,9 +639,9 @@ class Matchmaker(
 
     private fun receiveOffer(m: JsonNode, data: ByteArray) {
         val id = BigInteger(1, m.bytes("request", 32))
-        // Offers for other riders' requests are most of what a rider hears: only those for a request this phone
-        // knows are worth a line.
-        val request = requests[id]?.request ?: return
+        // Offers for other riders' requests are most of what a rider hears, and a driver shows only their own:
+        // only those for this phone's own request are worth checking.
+        val request = requests[id]?.request?.takeIf { it.rider == client.address } ?: return
         val driver = m.address("driver")
         val fare = BigInteger(m.text("fare"))
         val expiresAt = m.get("expiresAt").asLong()
@@ -515,6 +650,8 @@ class Matchmaker(
         val forRequest = quotes.getOrPut(request.id) { LinkedHashMap() }
         val known = forRequest[driver]
         if (known != null && known.seq >= seq) return
+        // An offer given up to make room cannot come back as the same or an older quote.
+        if (known == null && (evicted["${request.id}/$driver"] ?: Long.MIN_VALUE) >= seq) return drop("given up for room")
         if (expiresAt <= now() || expiresAt > request.expiresAt) return drop("expiry $expiresAt")
         if (!client.driverMayQuote(request, fare)) return drop("outside the driver's band")
         // The escrow refuses a fare that the fee and the tax would eat whole.
@@ -522,45 +659,35 @@ class Matchmaker(
         val quoteHash = client.quoteHash(request, driver, fare, expiresAt)
         val routeKey = m.bytes("routeKey", 32)
         if (!speaksFor(m, offerHash(quoteHash, seq, routeKey), driver)) return drop("signature or certificate")
-        if (known == null && !roomFor(forRequest, driver, fare)) return drop("the request has $MAX_OFFERS_PER_REQUEST offers")
+        // Only a driver the policy lets accept holds a slot: one needs the role, the stake and the score, so filling
+        // the slots takes real accounts, not throwaway keys (P5).
+        if (!know(Fact.MayAccept(driver))) return drop("the policy does not let this driver accept")
+        if (known == null && !roomFor(request.id, forRequest, fare)) return drop("the request has $MAX_OFFERS_PER_REQUEST offers")
         val offer = Offer(request.id, driver, fare, expiresAt, Numeric.toHexString(quoteHash), m.text("sig"), Numeric.toHexString(routeKey))
         forRequest[driver] = Quote(offer, seq, data)
         note("offer from $driver for ${short(id)} at $fare taken")
     }
 
     /**
-     * Whether a signed offer from a new driver fits, making room if it must. Expired offers go first; then, for a
-     * driver who may accept rides, one from an account that may not; then, for a cheaper one, the dearest. So
-     * throwaway keys hold only slots nobody else wants. This phone's own quote is never given up.
+     * Whether a signed offer from a new driver who may accept fits, making room if it must: expired offers go first,
+     * then, for a cheaper offer, the dearest. Whatever is given up keeps its sequence number in [evicted], so it
+     * cannot be replayed back. It needs no read: every offer held already passed [Fact.MayAccept].
      */
-    private fun roomFor(offers: MutableMap<String, Quote>, driver: String, fare: BigInteger): Boolean {
+    private fun roomFor(request: BigInteger, offers: MutableMap<String, Quote>, fare: BigInteger): Boolean {
         val now = now()
-        offers.values.removeIf { it.offer.expiresAt <= now && it.offer.driver != client.address }
+        offers.values.removeIf { it.offer.expiresAt <= now }
         if (offers.size < MAX_OFFERS_PER_REQUEST) return true
-        if (mayAccept(driver) != true) return false
-        val others = offers.values.filter { it.offer.driver != client.address }
-        val out = others.firstOrNull { mayAccept(it.offer.driver) == false } ?: others.maxByOrNull { it.offer.fare }?.takeIf { it.offer.fare > fare } ?: return false
+        val out = offers.values.maxByOrNull { it.offer.fare }?.takeIf { it.offer.fare > fare } ?: return false
         offers.remove(out.offer.driver)
+        evicted["$request/${out.offer.driver}"] = out.seq
+        while (evicted.size > MAX_EVICTED) evicted.remove(evicted.keys.first())
         return true
-    }
-
-    /** Whether the policy lets `driver` accept, or null when it is not known and this tick has no reads left. */
-    private fun mayAccept(driver: String): Boolean? {
-        val asked = System.currentTimeMillis()
-        val known = drivers[driver]?.takeIf { asked - it.second < RIDER_CHECK_MS }
-        if (known != null) return known.first
-        if (checksLeft <= 0) return null
-        checksLeft--
-        val answer = client.canAcceptRides(driver)
-        drivers[driver] = answer to asked
-        while (drivers.size > MAX_DRIVERS_KNOWN) drivers.remove(drivers.keys.first())
-        return answer
     }
 
     private fun receiveClose(m: JsonNode, data: ByteArray) {
         val request = requests[BigInteger(1, m.bytes("request", 32))]?.request ?: return
         if (request.id in closed) return
-        if (!speaksFor(m, closeHash(request.id), request.rider)) return
+        if (!speaksFor(m, closeHash(request.id), request.rider, known = true)) return
         closed[request.id] = if (request.rider == client.address) data else null
     }
 
@@ -571,7 +698,7 @@ class Matchmaker(
         val secret = routeKeys[request.id]?.secret ?: return
         val sealed = Base64.getDecoder().decode(m.text("sealed"))
         val riderKey = m.bytes("key", 32)
-        if (!speaksFor(m, routeHash(request.id, client.address, sealed, riderKey), request.rider)) return
+        if (!speaksFor(m, routeHash(request.id, client.address, sealed, riderKey), request.rider, known = true)) return
         // The rider took one of this phone's quotes for the request, not necessarily the last: it opens for that one.
         for (quoteHash in myQuotes[request.id].orEmpty()) {
             if (quoteHash in revealed) return
@@ -591,7 +718,7 @@ class Matchmaker(
         val watch = watching[quoteHash] ?: return
         val quote = Numeric.hexStringToByteArray(quoteHash)
         val sealed = Base64.getDecoder().decode(m.text("sealed"))
-        if (!speaksFor(m, positionHash(quote, sealed), watch.driver)) return
+        if (!speaksFor(m, positionHash(quote, sealed), watch.driver, known = true)) return
         val parts = runCatching { openRoute(watch.key.secret, quote, sealed) }.getOrNull()?.split(',') ?: return
         if (parts.size != 3) return
         val position = runCatching { DriverPosition(parts[0].toInt(), parts[1].toInt(), parts[2].toLong()) }.getOrNull() ?: return
@@ -672,10 +799,12 @@ class Matchmaker(
     /**
      * Whether `m` was signed over `hash` for `account`: its signature recovers a session key, and its certificate
      * says that key speaks for that account, which the account itself confirms on chain ([KlippelGoClient.certified]).
-     * `charged` makes a certificate not yet confirmed spend one of this tick's reads, and fail when none are left,
-     * so a flood of forgeries costs a bounded number of reads and a rider this phone knows gets through it.
+     * Everything here but that confirmation needs no chain. A certificate this phone has not confirmed yet waits for
+     * one of the tick's reads ([Fact.Certificate]): of the requests' and offers' reads, or, for a party of a request
+     * this phone already holds (`known`: closes, routes, positions), of a smaller share of their own. So a flood of
+     * forgeries costs a bounded number of reads, and an account this phone knows gets through it.
      */
-    private fun speaksFor(m: JsonNode, hash: ByteArray, account: String, charged: Boolean = false): Boolean {
+    private fun speaksFor(m: JsonNode, hash: ByteArray, account: String, known: Boolean = false): Boolean {
         val session = KlippelGoClient.signerOf(hash, m.bytes("sig", 65)) ?: return false
         val c = m.get("cert")?.takeIf { it.isObject } ?: return false
         val certificate = runCatching {
@@ -687,11 +816,10 @@ class Matchmaker(
             )
         }.getOrNull() ?: return false
         if (!certificate.account.equals(account, ignoreCase = true) || !certificate.session.equals(session, ignoreCase = true)) return false
-        if (charged && !client.confirmed(certificate)) {
-            if (checksLeft <= 0) return false
-            checksLeft--
-        }
-        return client.certified(certificate)
+        // Expired, or claiming too long a life: refused without asking anyone.
+        val nowS = now()
+        if (certificate.expiresAt <= nowS || certificate.expiresAt > nowS + 2 * SessionKey.LIFETIME_SECONDS) return false
+        return know(Fact.Certificate(certificate, known))
     }
 
     private fun JsonNode.text(key: String): String = get(key)?.takeIf { it.isTextual }?.asText() ?: error("missing $key")
@@ -741,13 +869,29 @@ class Matchmaker(
 
         /** Closed requests remembered: twice what the busiest cells at the target announce in a request's life. */
         private const val MAX_GONE = 2_048
-        private const val MAX_DRIVERS_KNOWN = 1_024
+        /** Riders and drivers whose permission this phone keeps, each. */
+        private const val MAX_ACCOUNTS_KNOWN = 1_024
+        private const val MAX_PACKS_KNOWN = 64
+        /** Offers given up for room whose sequence number is kept: 50 per request for 80 requests. */
+        private const val MAX_EVICTED = 4_096
 
         /** Far more riders new to this phone than nine busy cells bring between two ticks; what a flood gets through. */
         private const val MAX_CHECKS_PER_TICK = 64
 
-        /** How long what the chain said of a rider is believed before it is asked again. */
-        private const val RIDER_CHECK_MS = 5 * 60_000L
+        /** Reads a tick may spend confirming certificates of a held request's parties: its close, route and positions. */
+        private const val MAX_KNOWN_CHECKS_PER_TICK = 16
+
+        /** Facts remembered as waiting, to ask the longest-waiting first, and for how many ticks unseen. */
+        private const val MAX_WAITING_KNOWN = 4_096
+
+        /** Reads a tick gives to facts drawn at random, before the longest-waiting. */
+        private const val RANDOM_READS = 8
+
+        /** How many facts one message may wait on in a tick: a certificate, a permission, a pack. */
+        private const val FACT_ROUNDS = 3
+
+        /** How long what the chain said of an account or a pack is believed before it is asked again. */
+        private const val ACCOUNT_CHECK_MS = 5 * 60_000L
         private const val MAX_OFFERS_PER_REQUEST = 50
 
         // Signed by a session key since these versions, with its certificate alongside (A2: a new version).

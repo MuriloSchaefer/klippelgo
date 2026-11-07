@@ -1307,11 +1307,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The full read itself, with its reads pinned to `head` by [refreshChain]. */
     private fun readChain(c: KlippelGoClient, m: Matchmaker?, role: Role, head: Long, checkRpc: String?) {
         val startedAt = android.os.SystemClock.elapsedRealtime()
+        // At the pinned block, and kept for pricing until the next read: what the second provider is asked about.
+        if (checkRpc != null) c.refreshRates()
         val balances = c.coins.associateWith { c.balanceOf(it) }
         val configs = c.coins.associateWith { c.tokenConfig(it) }
         val fees = configs.mapValues { it.value.first }
-        // At the pinned block, and kept for pricing until the next read: what the second provider is asked about.
-        if (checkRpc != null) c.refreshRates()
         val taxBps = c.taxBps()
         val infrastructure = infrastructureEstimate(c, role)
         val bonds = configs.mapValues { it.value.second to it.value.third }

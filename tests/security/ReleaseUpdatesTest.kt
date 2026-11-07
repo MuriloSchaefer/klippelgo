@@ -19,7 +19,8 @@ class ReleaseUpdatesTest : Scenario() {
         val gov = governance()
         val dir = kotlin.io.path.createTempDirectory("klippelgo-apk").toFile()
         try {
-            val published = File(dir, "published.apk").apply { writeBytes(ByteArray(4096) { (it * 31).toByte() }) }
+            // Contents of its own each run: the chain is not fresh, and an earlier run may have named a fixed file.
+            val published = File(dir, "published.apk").apply { writeBytes(ByteArray(4096).also { java.security.SecureRandom().nextBytes(it) }) }
             val version = Deployment.packVersion(gov.publishNextRelease(published))
 
             // A mirror serving the same file with one byte changed: refused.

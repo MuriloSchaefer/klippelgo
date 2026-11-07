@@ -223,8 +223,20 @@ class TwoPhonesRideTest {
         // Gossip meshes take a moment; a rider announces again anyway.
         val request = rider.requestRide(coin, coin.toBaseUnits(BigDecimal("25.00")), route)
         all("both drivers to hear the request") { driver.openRequests().isNotEmpty() && bystander.openRequests().isNotEmpty() }
+        // An account the policy does not let accept, with a real certificate, quotes lower: its offer is never held.
+        // The seeded accounts all hold the driver role and stake, so it is a new one, registered as a rider only:
+        // its account is on chain, so its certificate is good, but it has no driver role, stake or score.
+        val notADriver = KlippelGoClient(rpc, SoftwareDeviceKey(BigInteger(1, ByteArray(32).also { SecureRandom().nextBytes(it) })), deployment)
+        notADriver.mint(notADriver.brz, notADriver.brz.toBaseUnits(BigDecimal("5.00")))
+        notADriver.ensureRegistered(KlippelGoClient.ROLE_RIDER)
+        check(!notADriver.canAcceptRides())
+        spy.publish(topic, signedOffer(notADriver, request, coin.toBaseUnits(BigDecimal("21.00")), 1))
         driver.sendOffer(request, coin.toBaseUnits(BigDecimal("23.40")))
         val offer = poll("the offer") { tickAll(); rider.offers(request).firstOrNull() }
+        repeat(4) { tickAll(); Thread.sleep(500) }
+        assertTrue(rider.offers(request).none { it.driver == notADriver.address }, "an offer from an account that may not accept is not held")
+        // A driver's phone keeps no other driver's offers: it shows only its own.
+        assertTrue(bystander.offers(request).isEmpty(), "a bystander driver holds no one's offers")
         val routeJson = "{\"pickup\":[${PICKUP.latE7},${PICKUP.lonE7}],\"dropoff\":[${DROPOFF.latE7},${DROPOFF.lonE7}]}"
         val id = rider.acceptOffer(request, offer, routeJson)
 

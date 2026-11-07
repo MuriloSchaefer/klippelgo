@@ -42,7 +42,7 @@ flowchart LR
 | Address search | SQLite full-text and R-tree lookup, debounced 150 ms | Region size |
 | Route | One Valhalla search plus one verification | Trip length |
 | Checking a revealed route (driver) | One verification | Trip length |
-| Gossip intake | Parse, a few cached chain lookups and one signature recovery per new message, and one `isValidSignature` read per certificate not seen before | 200 requests, 50 offers per request, 64 reads per tick for requests under certificates not yet confirmed; certificate lookups four a minute per session key, answers kept up to 4 096 |
+| Gossip intake | Parse, cached lookups and one signature recovery per new message; one `isValidSignature` read per certificate not seen before, and one per account or pack not known in the last five minutes, made outside the matchmaker's lock. A driver's phone checks no other driver's offers | 200 requests, 50 offers per request; 64 reads per tick for requests and offers and 16 for the parties of held requests; certificate lookups four a minute per session key, answers kept up to 4 096; permissions of 1 024 riders and 1 024 drivers, 64 packs |
 | Drawing | PMTiles read from disk | Screen |
 | Storage | One pack per region in use; older packs of the region are deleted on update | Region size |
 
@@ -169,7 +169,38 @@ what a phone will do.
 | Memory added by 150 open requests | 31 MB | 300 MB |
 
 What moves a ride along is the two-second check for a new block and the block time, not the phone's own work.
-These figures were measured before the check replaced reading everything every 2 s.
+
+### Gossip intake under a flood
+
+`MatchmakerLoadTest` (`:chain`, run with `KLIPPELGO_BENCH=1`) puts one phone's matchmaker behind a gossip router of
+its own and a proxy that counts its chain requests, ticks it every 2 s as the app does, and publishes offers for a
+rider's request: three each from two of the testnet's real drivers, announced again every 2.5 s as their phones do,
+and three each from throwaway accounts nobody registered. Those go out once, all at the start ("at once"), at a rate
+for 20 s ("per second"), or again every tick for 20 s ("every tick"). Meanwhile it asks the matchmaker what the screen
+shows every 5 ms and times the answer. Measured on 2026-11-07 against the local chain, before (the matchmaker of the
+previous commit: reads under the lock, the fee read for every offer, offers' certificates outside the budget, every
+phone checking every offer) and after:
+
+| Phone | Throwaway accounts | Chain requests | Longest tick | Screen waited at most | Real drivers' offers held after |
+| --- | --- | --- | --- | --- | --- |
+| Rider | none | 9 → 6 | 0.40 s → 0.28 s | 0.40 s → 0.07 s | 0.4 s → 0.3 s |
+| Driver | none | 9 → 0 | 0.34 s → 0.01 s | 0.32 s → 0.00 s | 0.3 s → 2.0 s |
+| Rider | 100, at once | 611 → 104 | 23.2 s → 2.9 s | 23.2 s → 0.09 s | 26.8 s → 6.9 s |
+| Driver | 100, at once | 618 → 0 | 27.5 s → 0.16 s | 27.2 s → 0.00 s | 29.5 s → 6.0 s |
+| Rider | 400, at once | 2 422 → 128 | 88.3 s → 3.0 s | 88.3 s → 0.22 s | 106.7 s → 5.8 s |
+| Driver | 400, at once | 2 422 → 0 | 94.7 s → 0.27 s | 94.7 s → 0.00 s | 13.5 s → 6.0 s |
+| Rider | 50 per second (200 → 700 sent) | 1 215 → 458 | 26.6 s → 2.9 s | 26.6 s → 0.08 s | 0.5 s → 0.5 s |
+| Rider | 200 per second (800 → 2 400 sent) | 2 743 → 452 | 103.8 s → 3.1 s | 103.8 s → 0.26 s | 18.3 s → 11.1 s |
+| Rider | 100, every tick | 1 315 → 408 | 39.8 s → 3.4 s | 39.8 s → 0.10 s | 44.5 s → 14.1 s |
+| Rider | 400, every tick | 4 837 → 519 | 175.8 s → 3.3 s | 175.8 s → 0.44 s | 213.2 s → 25.0 s |
+
+Before, every forged offer cost two reads, made while the screen waited, so a flood froze the screen for as long as
+the reads took and the real offers came after them. After, the reads stop at the budget and are made with the lock
+free, and a driver's phone reads nothing for others' offers. What the budget costs is the wait for an honest
+newcomer in a flood: some ticks, 6 s for forgeries sent once and up to 25 s for 400 accounts whose forgeries are sent
+again every tick, which wait as long as it does. In the rate rows the before code ticked so slowly that the run sent
+it only a third of what it sent after. In the driver rows the last column is the time on the rider's phone that ran
+alongside, whose requests are not counted: it says the flood reached the rider too, not how the driver's phone did.
 
 ## At a hundred thousand drivers
 

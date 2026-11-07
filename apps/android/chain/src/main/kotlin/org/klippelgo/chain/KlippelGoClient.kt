@@ -198,12 +198,19 @@ class KlippelGoClient(
 
     /** Fee, rider bond and driver bond for a coin on the allow-list. */
     fun tokenConfig(coin: Coin): Triple<BigInteger, BigInteger, BigInteger> {
+        // Kept like the tariff: every offer a phone checks needs the fee, and a stranger's offers must not each
+        // cost a read (P4). A pinned full read always reads it, so a second provider is asked about what is used.
+        val now = System.nanoTime()
+        val kept = tokenConfigs[coin.address.lowercase()]
+        if (kept != null && pinned.get() == null && (now - kept.second <= TARIFF_FRESH_MS * 1_000_000 || !mayReadRates())) return kept.first
         val out = call(
             deployment.escrow,
             fn("tokenConfig", listOf(Address(coin.address)), listOf(uint256Ref, uint256Ref, uint256Ref)),
         )
-        return Triple(uint(out[0]), uint(out[1]), uint(out[2]))
+        return Triple(uint(out[0]), uint(out[1]), uint(out[2])).also { tokenConfigs[coin.address.lowercase()] = it to now }
     }
+
+    private val tokenConfigs = java.util.concurrent.ConcurrentHashMap<String, Pair<Triple<BigInteger, BigInteger, BigInteger>, Long>>()
 
     fun hasPermission(subject: String, target: String, selector: ByteArray): Boolean =
         (call(
@@ -918,6 +925,24 @@ class KlippelGoClient(
     fun confirmed(certificate: SessionCertificate): Boolean {
         val id = Numeric.toHexString(Hash.sha3(certificate.hash(deployment.chainId) + certificate.signature))
         return synchronized(certified) { id in certified }
+    }
+
+    /**
+     * What [certified] would answer without asking the chain: true when confirmed, false when refused a moment ago
+     * or when its session key's lookups are used up, and null when it would have to ask. So a forgery sent again
+     * costs a peer no read and none of its budget.
+     */
+    fun certifiedWithoutReading(certificate: SessionCertificate): Boolean? {
+        val id = Numeric.toHexString(Hash.sha3(certificate.hash(deployment.chainId) + certificate.signature))
+        if (synchronized(certified) { id in certified }) return true
+        val now = System.currentTimeMillis()
+        synchronized(refused) { refused[id]?.let { if (now - it < REFUSAL_KEPT_MS) return false } }
+        val session = certificate.account.lowercase() + "/" + certificate.session.lowercase()
+        synchronized(lookups) {
+            val recent = lookups[session] ?: return null
+            if (recent.count { now - it <= LOOKUP_WINDOW_MS } >= LOOKUPS_PER_WINDOW) return false
+        }
+        return null
     }
 
     /**
