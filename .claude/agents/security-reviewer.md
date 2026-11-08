@@ -16,9 +16,9 @@ The security rules are written down. Judge the change against them, not against 
 
 | Area | Document | Invariants | Known limits |
 | --- | --- | --- | --- |
-| `contracts/`, `gov/` | `contracts/docs/security.md` | C1–C25 | L… |
+| `contracts/`, `gov/` | `contracts/docs/security.md` | C1–C27 | L… |
 | `core/`, `mappack/` | `core/docs/security.md` | R1–R12 | K… |
-| `apps/` | `apps/docs/security.md` | A1–A18 | P… |
+| `apps/` | `apps/docs/security.md` | A1–A19 | P… |
 
 Structure and patterns are in each area's `docs/overview.md`; costs and bounds in `docs/scalability.md`. The
 design of maps and proofs is `docs/maps-and-routing.md`.

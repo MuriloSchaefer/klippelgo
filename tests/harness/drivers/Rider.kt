@@ -120,6 +120,9 @@ class Profile(phone: Phone) : Component(phone, Tags.PROFILE) {
 
     fun driverMode() = phone.tap(Tags.PROFILE_DRIVER_MODE)
 
+    /** Opens the account screen: devices, guardian, recovery. */
+    fun account() = phone.tap(Tags.PROFILE_ACCOUNT)
+
     fun signOut() = phone.tap(Tags.PROFILE_SIGN_OUT)
 }
 

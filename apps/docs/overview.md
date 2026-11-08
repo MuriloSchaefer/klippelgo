@@ -59,9 +59,10 @@ flowchart TB
 | `MapStore` | [`Maps.kt`](../android/app/src/main/kotlin/org/klippelgo/app/Maps.kt) | Finds the region's active pack on chain, downloads it, verifies it, opens it |
 | `Updater` | [`Updater.kt`](../android/app/src/main/kotlin/org/klippelgo/app/Updater.kt) | Downloads the latest release's APK from a mirror, keeps it only if the release registry names its SHA-256, and hands it to Android's installer |
 | `AppData` | [`AppData.kt`](../android/app/src/main/kotlin/org/klippelgo/app/AppData.kt) | The schema of what the app keeps, and the steps that bring older data up to it, run at start before anything reads it |
+| `SealedFiles` | [`SealedFiles.kt`](../android/app/src/main/kotlin/org/klippelgo/app/SealedFiles.kt) | Each ride's quote, route and rider key on disk, sealed under a key in the Android Keystore and deleted 30 days after last use |
 | `Matchmaker` | [`Matchmaker.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/Matchmaker.kt) | Every gossip message: building, signing, validating, expiring. Which cells to subscribe to: a request's messages go to its pickup's cell, a driver hears the cells around them |
 | `KlippelGoClient` | [`KlippelGoClient.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/KlippelGoClient.kt) | Every contract read and write, the session key and the check of others' certificates, the fare band rules. Writes are the account's operations (`sendCalls`): built, hashed and signed here, sent through a bundler |
-| Accounts | [`SmartAccount.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/SmartAccount.kt), [`DeviceKey.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/DeviceKey.kt), [`SessionKey.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/SessionKey.kt), [`Bundler.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/Bundler.kt) | The account's address and encodings, the user operation and its EIP-712 hash, the device key interface and its software form, session keys and certificates, the bundler's JSON-RPC |
+| Accounts | [`SmartAccount.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/SmartAccount.kt), [`DeviceKey.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/DeviceKey.kt), [`SessionKey.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/SessionKey.kt), [`Bundler.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/Bundler.kt), [`AccountKeys.kt`](../android/chain/src/main/kotlin/org/klippelgo/chain/AccountKeys.kt) | The account's address (its own key's, or the one it joined) and encodings, the user operation and its EIP-712 hash, the device key interface and its software form, session keys and certificates, the bundler's JSON-RPC, the account's keys, changes and recovery as the screens show them, and the key code a new device shows with its fingerprint |
 | `KeystoreDeviceKey` | [`KeystoreDeviceKey.kt`](../android/app/src/main/kotlin/org/klippelgo/app/KeystoreDeviceKey.kt) | The account's key in the phone's chip |
 | Core | [`core/`](../../core/docs/overview.md) | Hashes, route checks, sealing, the gossip transport, address search |
 | Tags | [`ui/tags/Tags.kt`](../android/app/src/main/kotlin/org/klippelgo/app/ui/tags/Tags.kt) | The name of every piece of UI a person reads or touches. The end-to-end tests compile this same file |
@@ -107,6 +108,24 @@ An action that starts a ride reads the release first if no read has yet. What th
 | Deprecated, or a higher active release published | Works, and a notice offers the update (`Updater`), held back while a ride of the account is unfinished |
 | Revoked | Refuses to ask for a ride, change its price, take an offer, quote or accept; a ride under way finishes, and money owed can be withdrawn. The notice offers the update |
 | Unknown: not published, published with other code contracts, or the chain cannot be read | Works as without the registry, so the RPC cannot switch the app off |
+
+**The account's keys.** A full read also reads the account's keys (`KlippelGoClient.keys`) when the change check saw an
+event of the account itself, while the account screen is open, and every five minutes otherwise: the devices, the
+changes to them waiting for a majority, the guardian and a guardian's recovery. `AccountNotice` says over every
+screen when a recovery is waiting, a change waits for this phone, or this phone was taken off. The account screen
+(from the profile or the driver's home) adds a device by the code it shows, takes one off, approves what another
+device proposed, names the guardian, cancels a recovery, and, for the accounts that named this one their guardian,
+starts and finishes a recovery to the code a friend's new phone shows. It also shows this phone's own code as a QR code and as text,
+with icons to copy and share it, and the name it carries (the phone's model unless the person named it); adding a
+device reads the other phone's QR code with the camera (ZXing, no Google services) or takes its code pasted, and
+asks for confirmation with the device's fingerprint and name. The account screen shows this phone's code only on request; for 30 minutes
+after it was shown, copied or shared, an account that adds this phone from then on makes it ask, over any screen,
+whether to join (not during a ride or request); joining makes both phones list the same devices. The screen also
+lists the other accounts this phone's key was added to, to sign for one of them instead
+(or for its own again). A new phone joins an account from the
+create-account screen: it shows its code and fingerprint, looks every five seconds for an account its key was
+added to, and signs for the one the person picks (`joined`, A19). The design is in
+[docs/accounts-and-pix.md](../../docs/accounts-and-pix.md), "Recovery".
 
 The build is pinned: `-Pklippelgo.network=<name>` picks `deployments/<name>.json` (default `local`), copied into
 the APK as `deployment.json`. Only a local build falls back to the addresses a fresh local testnet gets; any
@@ -181,14 +200,18 @@ to it, and a ride locked on one waits Open for the driver to decline it by hand.
 | What | Where | Notes |
 | --- | --- | --- |
 | Which blocks this account's event scans read and what they found (its rides, the registered drivers), with a block and its hash to recognise the chain | `SharedPreferences("klippelgo")`, `scans.<account>` | Thrown away and read again when that block's hash is not the chain's: a local testnet started again |
-| The shape of all of the above (`AppData.SCHEMA`, now 1) | `SharedPreferences("klippelgo")`, `schema` | Brought up to date at start, one step per shape, so an update never needs a fresh install. Data a newer release wrote is left alone |
+| The shape of all of the above (`AppData.SCHEMA`, now 2) | `SharedPreferences("klippelgo")`, `schema` | Brought up to date at start, one step per shape, so an update never needs a fresh install. Data a newer release wrote is left alone |
 | A downloaded update, while it waits for the installer | `cacheDir/updates/` | Emptied before each download; a file the registry does not name is deleted at once. The FileProvider shares this folder only |
 | Role, RPC address, second RPC address (`checkRpc`), name, account choice, auto-skip settings | `SharedPreferences("klippelgo")` | The account choice is `device` (the chip's key) or a seeded account's name; `devAccounts` asks for the seeded ones and `e2eAccounts` for the end-to-end tests' set of them; only a debug build sets either |
+| Accounts that already asked this phone to join | `SharedPreferences("klippelgo")`, `offered` | So each asks once; they stay under "other accounts" |
+| This phone's name, and the names of keys it added, by signer | `SharedPreferences("klippelgo")`, `deviceName`, `keyNames` | Labels only, from the codes that added them (the newest 64); never on chain, never checked. Other phones list a key by fingerprint until they learn its name the same way |
+| The account this phone joined, when it signs for one another device made or a guardian recovered to it | `SharedPreferences("klippelgo")`, `joined.<the key's own account>` | Per key, so a debug build that changes seeded account does not carry the choice. Set on the join screen or the account screen once the person picks the account by its address (A19); removed by "use a new account on this phone" or by picking the key's own account again |
 | Driver: the quotes made void by accepting a ride, with the rider each was for | `SharedPreferences("klippelgo")`, `voidQuotes` | The newest 200. Kept so a ride locked on one after a restart is still declined |
 | The account's key | The phone's chip: Android Keystore, in StrongBox when there is one (`KeystoreDeviceKey`) | Never leaves it. Debug builds asked for `devAccounts` use the local testnet's seeded keys instead |
 | The session key and its certificate | `SharedPreferences("klippelgo")`, `session.*` | Signs gossip for a day; kept so a restart does not ask the account's key, and so the person, again |
-| The quote behind each ride this phone asked for | `filesDir/rides/<rideId>.quote.json` | The rider's evidence |
-| Routes revealed to this driver, and each rider's position key | `filesDir/rides/<quoteHash>.route.json`, `.riderkey` | So a ride survives the app closing |
+| The quote behind each ride this phone asked for | `filesDir/rides/<rideId>.quote.json`, sealed | The rider's evidence. Deleted 30 days after it was last written or read |
+| Routes revealed to this driver, and each rider's position key | `filesDir/rides/<quoteHash>.route.json`, `.riderkey`, sealed | So a ride survives the app closing. Deleted 30 days after last use. A debug build on a seeded account also keeps the checked route in the clear in `filesDir/debug-routes/`, for `klippelgo drive` |
+| The key the rides' files are sealed with | The phone's chip: Android Keystore, `klippelgo.files.v1` | AES-256-GCM, needs no screen unlock (A12) |
 | Map packs | App storage, one directory per pack id | Verified on download and on open |
 | Open requests, offers, offer secrets, the rider's key for the driver's position | Memory only, in `Matchmaker` | Gone when the app closes; requests expire by themselves. A rider who restarts the app mid-ride gets no more positions for that ride |
 

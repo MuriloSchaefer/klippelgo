@@ -7,6 +7,7 @@ import org.web3j.abi.FunctionReturnDecoder
 import org.web3j.abi.TypeReference
 import org.web3j.abi.datatypes.Address
 import org.web3j.abi.datatypes.Bool
+import org.web3j.abi.datatypes.DynamicArray
 import org.web3j.abi.datatypes.DynamicBytes
 import org.web3j.abi.datatypes.Function
 import org.web3j.abi.datatypes.Type
@@ -55,9 +56,11 @@ class KlippelGoClient(
     key: DeviceKey,
     val deployment: Deployment,
     bundlerUrl: String = defaultBundler(rpcUrl),
+    /** The account another device made that this key was added to, or null for the key's own account. */
+    joined: String? = null,
 ) {
     private val web3: Web3j = Web3j.build(HttpService(rpcUrl))
-    val account = SmartAccount(key, deployment)
+    val account = SmartAccount(key, deployment, joined)
     val address: String = account.address.lowercase()
     private val bundler = Bundler(bundlerUrl, deployment.entryPoint)
 
@@ -717,8 +720,10 @@ class KlippelGoClient(
      * Whether anything this account's screen shows may have changed on chain since block `after`, and the newest
      * block looked at. One batch of log queries over the new blocks: the escrow's events (rides in `rides` or
      * opened naming one of `accounts`, payments to this account, a change of its settings), money arriving in
-     * this account, any governance change to policies, the tariff, the map packs or the releases, and the
-     * identity store's and stake vault's events about this account. Changes it does not cover, such as a rating someone else gave, wait for a full read.
+     * this account, any governance change to policies, the tariff, the map packs or the releases, the
+     * identity store's and stake vault's events about this account, and the account's own events, which are all
+     * about its keys: a change proposed or approved, a guardian's recovery ([keysMoved]). Changes it does not cover,
+     * such as a rating someone else gave, wait for a full read.
      * A chain that went backwards, or more new blocks than one query covers, count as a change.
      *
      * The escrow's events are chosen by the node, on their indexed topics, so what comes back is about this
@@ -756,6 +761,7 @@ class KlippelGoClient(
             EthFilter(from, to, listOf(deployment.brz, deployment.brla)).addSingleTopic(TRANSFER_TOPIC).addNullTopic().addSingleTopic(me),
             EthFilter(from, to, listOf(deployment.governor, deployment.fares, deployment.maps, deployment.releases)),
             EthFilter(from, to, listOf(deployment.identities, deployment.stakes)).addNullTopic().addSingleTopic(me),
+            EthFilter(from, to, address),
         )
         val logs = batch(filters.map { web3.ethGetLogs(it) }).map { r ->
             if (r.hasError()) throw ChainException(r.error.message)
@@ -773,11 +779,15 @@ class KlippelGoClient(
                 else -> false
             }
         }
-        val fresh = (escrowEvents + logs.drop(escrowFilters.size).flatten()).filter { !it.isRemoved }.map { it.blockHash + ":" + it.logIndex }
-            .filter { synchronized(reported) { reported.add(it) } }
+        val fresh = (escrowEvents + logs.drop(escrowFilters.size).flatten()).filter { !it.isRemoved }
+            .filter { synchronized(reported) { reported.add(it.blockHash + ":" + it.logIndex) } }
         synchronized(reported) { while (reported.size > REPORTED_KEPT) reported.remove(reported.first()) }
+        if (fresh.any { it.address.equals(address, ignoreCase = true) }) keysMoved = true
         return head to fresh.isNotEmpty()
     }
+
+    /** Set when [changedSince] saw an event of the account itself: its keys or a recovery moved. The app reads them, and clears it. */
+    @Volatile var keysMoved = false
 
     /** Events [changedSince] already reported, by block hash and position, so the blocks it reads again do not count them twice. */
     private val reported = LinkedHashSet<String>()
@@ -979,6 +989,246 @@ class KlippelGoClient(
         return answer
     }
 
+    // ---------------------------------------------------------------- the account's keys, and recovery
+
+    /** This phone's key as a code another device or a guardian adds ([KeyCodes]). */
+    val keyCode: String get() = KeyCodes.code(account.key.publicKey)
+
+    /** The fingerprint of this phone's key, which the screen that adds it shows too. */
+    val keyFingerprint: String get() = KeyCodes.fingerprint(account.signer)
+
+    /**
+     * The account's keys, the changes to them waiting for a majority, its guardian, and a recovery if one is
+     * waiting, in up to three batches of reads. A change is listed only when its id, computed here from what the
+     * node says it holds, is the id the account filed it under: approving it then approves what is shown.
+     */
+    fun keys(): AccountKeys {
+        val me = Numeric.toHexString(account.signer)
+        if (!isAccount(address)) {
+            // Before its first operation the account is this key alone. A joined account that is not there is not
+            // one this key belongs to.
+            return AccountKeys(listOf(AccountKey(me, true, KeyKind.Device)), 0, 1, null, emptyList(), null, !account.isJoined, deployed = false)
+        }
+        val first = callAll(
+            listOf(
+                address to fn("getSigners", listOf(Uint64(BigInteger.ZERO), Uint64(MAX_UINT64)), listOf(bytesArrayRef)),
+                address to fn("keysEpoch", emptyList(), listOf(uint64Ref)),
+                address to fn("guardian", emptyList(), listOf(addressRef)),
+                address to fn("recovery", emptyList(), listOf(dynamicBytesRef, uint64Ref, boolRef)),
+            ),
+        )
+        val signers = bytesList(first[0][0])
+        val epoch = uint(first[1][0]).toLong()
+        val guardian = (first[2][0] as Address).value.lowercase().takeIf { Numeric.toBigInt(it).signum() != 0 }
+        val recovery = first[3].takeIf { (it[2] as Bool).value }?.let {
+            PendingRecovery(Numeric.toHexString((it[0] as DynamicBytes).value), uint(it[1]).toLong())
+        }
+        val ids = callAll(signers.map { address to fn("proposedBy", listOf(DynamicBytes(Numeric.hexStringToByteArray(it))), listOf(bytes32Ref)) })
+            .map { (it[0] as Bytes32).value }.filter { id -> id.any { it != 0.toByte() } }
+            .distinctBy { Numeric.toHexString(it) }
+        val read = callAll(
+            ids.flatMap { id ->
+                listOf(
+                    address to fn("keyChange", listOf(Bytes32(id)), listOf(bytesArrayRef, bytesArrayRef, boolRef, addressRef, uint32Ref, boolRef)),
+                    address to fn("approvedBy", listOf(Bytes32(id), DynamicBytes(account.signer)), listOf(boolRef)),
+                )
+            },
+        )
+        val pending = ids.mapIndexedNotNull { i, id ->
+            val c = read[2 * i]
+            if (!(c[5] as Bool).value) return@mapIndexedNotNull null
+            val add = bytesList(c[0])
+            val remove = bytesList(c[1])
+            val sets = (c[2] as Bool).value
+            val named = (c[3] as Address).value.lowercase().takeIf { Numeric.toBigInt(it).signum() != 0 }
+            if (!isFiledAs(id, epoch, add, remove, sets, named)) return@mapIndexedNotNull null
+            KeyChange(Numeric.toHexString(id), add, remove, sets, named, uint(c[4]).toInt(), (read[2 * i + 1][0] as Bool).value)
+        }
+        return AccountKeys(
+            keys = signers.map { s ->
+                val kind = if (s.lowercase().startsWith(deployment.deviceKeyVerifier.lowercase())) KeyKind.Device else KeyKind.Other
+                AccountKey(s, s.equals(me, ignoreCase = true), kind)
+            },
+            epoch = epoch,
+            majority = signers.size / 2 + 1,
+            guardian = guardian,
+            pending = pending,
+            recovery = recovery,
+            thisDeviceIsKey = signers.any { it.equals(me, ignoreCase = true) },
+            deployed = true,
+        )
+    }
+
+    /**
+     * Proposes adding and removing keys and, with `setGuardian`, naming `guardian` (null for none), approved by this
+     * phone's key. Done at once when this key alone is a majority; otherwise it waits for the other devices'
+     * approvals ([approveKeyChange]). Nothing added, removed or named cancels a recovery. Gives the change's id.
+     */
+    fun proposeKeyChange(add: List<ByteArray>, remove: List<ByteArray>, setGuardian: Boolean = false, guardian: String? = null): String {
+        require(setGuardian || guardian == null) { "a change that keeps the guardian names none" }
+        val epoch = unpinned { if (isAccount(address)) uint(call(address, fn("keysEpoch", emptyList(), listOf(uint64Ref)))[0]).toLong() else 0L }
+        val id = keyChangeId(epoch, add, remove, setGuardian, guardian)
+        val approval = account.key.sign(approvalHash(id))
+        send(
+            address,
+            fn(
+                "proposeKeyChange",
+                listOf(bytesArray(add), bytesArray(remove), Bool(setGuardian), Address(guardian ?: ZERO_ADDRESS), DynamicBytes(account.signer), DynamicBytes(approval)),
+                emptyList(),
+            ),
+        )
+        return Numeric.toHexString(id)
+    }
+
+    /** Approves a change another device proposed, as [keys] read it at `epoch`: exactly what it shows. */
+    fun approveKeyChange(epoch: Long, change: KeyChange) {
+        val id = keyChangeId(epoch, change.add.map(Numeric::hexStringToByteArray), change.remove.map(Numeric::hexStringToByteArray), change.setsGuardian, change.guardian)
+        check(Numeric.toHexString(id).equals(change.id, ignoreCase = true)) { "the change is not what its id says" }
+        send(address, fn("approveKeyChange", listOf(Bytes32(id), DynamicBytes(account.signer), DynamicBytes(account.key.sign(approvalHash(id)))), emptyList()))
+    }
+
+    /**
+     * The accounts that named this account their guardian and still do, with the recovery this account started on
+     * each. Found from their `GuardianSet` events, which anyone's contract could emit: only a KlippelGo account
+     * whose guardian is this account counts. Reads the logs back to the data contracts' deployment.
+     */
+    fun guarded(): List<GuardedAccount> {
+        val candidates = accountsAmong(logsAnywhere(listOf(GUARDIAN_SET_TOPIC, topicOf(address))))
+        if (candidates.isEmpty()) return emptyList()
+        val out = callAll(
+            candidates.flatMap {
+                listOf(it to fn("guardian", emptyList(), listOf(addressRef)), it to fn("recovery", emptyList(), listOf(dynamicBytesRef, uint64Ref, boolRef)))
+            },
+        )
+        val now = web3.ethGetBlockByNumber(readBlock(), false).send().block.timestamp.toLong()
+        return candidates.mapIndexedNotNull { i, a ->
+            if (!(out[2 * i][0] as Address).value.equals(address, ignoreCase = true)) return@mapIndexedNotNull null
+            val r = out[2 * i + 1]
+            val recovery = r.takeIf { (it[2] as Bool).value }?.let { PendingRecovery(Numeric.toHexString((it[0] as DynamicBytes).value), uint(it[1]).toLong()) }
+            GuardedAccount(a, recovery, ready = recovery != null && recovery.readyAt <= now)
+        }
+    }
+
+    /** As this account's guardian, asks for `target`'s keys to be replaced by `signer`, a new phone's key. */
+    fun startRecovery(target: String, signer: ByteArray) {
+        check(isAccount(target)) { "$target is no KlippelGo account" }
+        send(target, fn("startRecovery", listOf(DynamicBytes(signer)), emptyList()))
+    }
+
+    /** Finishes a recovery whose delay has passed. Anyone may; the guardian's phone does it for the person. */
+    fun finishRecovery(target: String) {
+        check(isAccount(target)) { "$target is no KlippelGo account" }
+        send(target, fn("finishRecovery", emptyList(), emptyList()))
+    }
+
+    /**
+     * Accounts this phone's key was added to, other than its own: by another device of the person's, or by a
+     * guardian's recovery. Found from the `ERC7913SignerAdded` events naming the key, and kept only when the
+     * account is a KlippelGo account that has the key now. Which one to use is the person's to confirm (A19).
+     */
+    fun accountsWithThisKey(): List<String> {
+        val found = logsAnywhere(listOf(SIGNER_ADDED_TOPIC, Numeric.toHexString(Hash.sha3(account.signer))))
+        return holdingThisKey(found.filterNot { it.equals(account.ownAddress, ignoreCase = true) })
+    }
+
+    /**
+     * Accounts that added this phone's key at block `from` or later, and hold it now: what an account that a device of
+     * the person's just added this phone to looks like. An account that added the key before `from` is not among them,
+     * whoever it is: the key is public on chain once its own account exists, so anyone could have. Reads only the
+     * blocks since `from`, in one batch of log queries.
+     */
+    fun accountsThatAddedThisKeySince(from: Long): List<String> {
+        val head = blockNumber().toLong()
+        if (from > head) return emptyList()
+        val topics = listOf(SIGNER_ADDED_TOPIC, Numeric.toHexString(Hash.sha3(account.signer)))
+        val found = ranges(maxOf(from, deployment.dataStartBlock), head).chunked(BATCH).flatMap { chunk ->
+            batch(
+                chunk.map { r ->
+                    val filter = EthFilter(DefaultBlockParameter.valueOf(BigInteger.valueOf(r.first)), DefaultBlockParameter.valueOf(BigInteger.valueOf(r.last)), emptyList<String>())
+                    topics.forEach { filter.addSingleTopic(it) }
+                    web3.ethGetLogs(filter)
+                },
+            ).flatMap { res ->
+                if (res.hasError()) throw ChainException(res.error.message)
+                res.logs.map { it.get() as EthLog.LogObject }.filterNot { it.isRemoved }.map { it.address.lowercase() }
+            }
+        }.distinct()
+        return holdingThisKey(found.filterNot { it.equals(account.ownAddress, ignoreCase = true) || it.equals(address, ignoreCase = true) })
+    }
+
+    /** Of `candidates`, the KlippelGo accounts that hold this phone's key now, in two batches of reads. */
+    private fun holdingThisKey(candidates: List<String>): List<String> {
+        val accounts = accountsAmong(candidates)
+        if (accounts.isEmpty()) return emptyList()
+        val has = callAll(accounts.map { it to fn("isSigner", listOf(DynamicBytes(account.signer)), listOf(boolRef)) })
+        return accounts.filterIndexed { i, _ -> (has[i][0] as Bool).value }
+    }
+
+    /** Of `addresses`, those that hold a KlippelGo account of this release, read in one batch ([isAccount]). */
+    private fun accountsAmong(addresses: Collection<String>): List<String> {
+        val list = addresses.distinct()
+        if (list.isEmpty()) return emptyList()
+        val code = SmartAccount.cloneCode(deployment.accountImplementation)
+        val answers = batch(list.map { web3.ethGetCode(it, readBlock()) })
+        return list.filterIndexed { i, _ -> answers[i].code.equals(code, ignoreCase = true) }
+    }
+
+    /** The keys of another account, as signer entries in hex: what a phone asked to join shows to compare. */
+    fun signersOf(account: String): List<String> =
+        bytesList(call(account, fn("getSigners", listOf(Uint64(BigInteger.ZERO), Uint64(MAX_UINT64)), listOf(bytesArrayRef)))[0])
+
+    /** Recoveries a guardian started to this phone's key and that are still waiting: the account and when it is ready. */
+    fun recoveriesToThisKey(): List<Pair<String, Long>> {
+        val candidates = accountsAmong(logsAnywhere(listOf(RECOVERY_STARTED_TOPIC, Numeric.toHexString(Hash.sha3(account.signer)))))
+        if (candidates.isEmpty()) return emptyList()
+        val out = callAll(candidates.map { it to fn("recovery", emptyList(), listOf(dynamicBytesRef, uint64Ref, boolRef)) })
+        return candidates.mapIndexedNotNull { i, a ->
+            val r = out[i]
+            if (!(r[2] as Bool).value || !(r[0] as DynamicBytes).value.contentEquals(account.signer)) null else a to uint(r[1]).toLong()
+        }
+    }
+
+    /** Whether `address` holds a KlippelGo account of this release: the clone of its implementation and nothing else. */
+    fun isAccount(address: String): Boolean =
+        web3.ethGetCode(address, readBlock()).send().code.equals(SmartAccount.cloneCode(deployment.accountImplementation), ignoreCase = true)
+
+    /** What a key signs to approve the change `id`: its own domain, the chain and this account. */
+    private fun approvalHash(id: ByteArray): ByteArray =
+        abiHash(Bytes32(KEY_CHANGE_TAG), Uint256(deployment.chainId), Address(address), Bytes32(id))
+
+    /**
+     * The addresses of the contracts that emitted logs matching `topics`, from the data contracts' deployment to now.
+     * What was read is kept per `topics`, so asking again (a joining phone looks every few seconds) reads only the
+     * blocks since, and the last few again in case the chain reorganised. A chain that went backwards is read again.
+     */
+    private fun logsAnywhere(topics: List<String>): Set<String> {
+        val head = blockNumber().toLong()
+        val key = topics.joinToString(",")
+        val (readTo, found) = synchronized(anywhere) { anywhere[key] } ?: (deployment.dataStartBlock - 1 to emptySet())
+        val start = if (readTo > head) deployment.dataStartBlock else maxOf(deployment.dataStartBlock, readTo - REORG_BLOCKS + 1)
+        val seen = if (readTo > head) HashSet() else HashSet(found)
+        ranges(start, head).chunked(BATCH).forEach { chunk ->
+            batch(
+                chunk.map { r ->
+                    val filter = EthFilter(DefaultBlockParameter.valueOf(BigInteger.valueOf(r.first)), DefaultBlockParameter.valueOf(BigInteger.valueOf(r.last)), emptyList<String>())
+                    topics.forEach { filter.addSingleTopic(it) }
+                    web3.ethGetLogs(filter)
+                },
+            ).forEach { res ->
+                if (res.hasError()) throw ChainException(res.error.message)
+                res.logs.map { it.get() as EthLog.LogObject }.filterNot { it.isRemoved }.forEach { seen += it.address.lowercase() }
+            }
+        }
+        synchronized(anywhere) { anywhere[key] = head to seen }
+        return seen
+    }
+
+    /** What [logsAnywhere] has read, per kind of log: up to which block, and the addresses found. */
+    private val anywhere = HashMap<String, Pair<Long, Set<String>>>()
+
+    @Suppress("UNCHECKED_CAST")
+    private fun bytesList(t: Type<*>): List<String> = (t as DynamicArray<DynamicBytes>).value.map { Numeric.toHexString(it.value) }
+
     // ---------------------------------------------------------------- writes
 
     /** Claims roles (1 rider, 2 driver, 4 validator) if this account does not hold them yet. */
@@ -1156,8 +1406,9 @@ class KlippelGoClient(
         var op = UserOperation(
             sender = address,
             nonce = nonce,
-            factory = if (deployed) null else deployment.accountFactory,
-            factoryData = if (deployed) null else account.factoryData,
+            // A joined account was made by another key: this key's factory data would make a different one.
+            factory = if (deployed || account.isJoined) null else deployment.accountFactory,
+            factoryData = if (deployed || account.isJoined) null else account.factoryData,
             callData = SmartAccount.execute(calls),
             maxFeePerGas = maxFee,
             maxPriorityFeePerGas = priority,
@@ -1266,6 +1517,14 @@ class KlippelGoClient(
 
         val RIDE_OPENED_TOPIC: String = Hash.sha3String("RideOpened(uint256,address,address,address,uint256,bytes32)")
         val REGISTERED_TOPIC: String = Hash.sha3String("Registered(address,uint8)")
+        private val GUARDIAN_SET_TOPIC: String = Hash.sha3String("GuardianSet(address)")
+        private val SIGNER_ADDED_TOPIC: String = Hash.sha3String("ERC7913SignerAdded(bytes)")
+        private val RECOVERY_STARTED_TOPIC: String = Hash.sha3String("RecoveryStarted(bytes,uint64)")
+
+        /** The domain tag of what a key signs to approve a change of the account's keys. */
+        private val KEY_CHANGE_TAG: ByteArray = Hash.sha3("KlippelGo key change v1".toByteArray())
+        private const val ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+        private val MAX_UINT64: BigInteger = BigInteger.ONE.shiftLeft(64) - BigInteger.ONE
         private val TRANSFER_TOPIC: String = Hash.sha3String("Transfer(address,address,uint256)")
 
         /** The escrow's events about one ride, which name it first. */
@@ -1320,6 +1579,8 @@ class KlippelGoClient(
         private val bytes32Ref = object : TypeReference<Bytes32>() {}
         private val bytes4Ref = object : TypeReference<Bytes4>() {}
         private val boolRef = object : TypeReference<Bool>() {}
+        private val dynamicBytesRef = object : TypeReference<DynamicBytes>() {}
+        private val bytesArrayRef = object : TypeReference<DynamicArray<DynamicBytes>>() {}
 
         /** Contract errors, so a revert reads as `NotPermitted` rather than raw bytes. */
         private val ERRORS: Map<String, String> = listOf(
@@ -1355,6 +1616,19 @@ class KlippelGoClient(
         private fun topicOf(address: String) = Numeric.toHexStringWithPrefixZeroPadded(Numeric.toBigInt(address), 64)
 
         /** keccak256 of the ABI encoding of fixed-size values, the same as Solidity's `keccak256(abi.encode(...))`. */
+        /** The id an account files a change of keys under: `keccak256(abi.encode(epoch, add, remove, setGuardian, guardian))`. */
+        fun keyChangeId(epoch: Long, add: List<ByteArray>, remove: List<ByteArray>, setGuardian: Boolean, guardian: String?): ByteArray =
+            abiHash(Uint256(epoch), bytesArray(add), bytesArray(remove), Bool(setGuardian), Address(guardian ?: ZERO_ADDRESS))
+
+        /**
+         * Whether a change as a node described it is the change filed under `id`: what [keys] lists, and so what the
+         * screen shows and the phone approves (A19). A node that sends other content for the id gets it dropped.
+         */
+        fun isFiledAs(id: ByteArray, epoch: Long, add: List<String>, remove: List<String>, setGuardian: Boolean, guardian: String?): Boolean =
+            keyChangeId(epoch, add.map(Numeric::hexStringToByteArray), remove.map(Numeric::hexStringToByteArray), setGuardian, guardian).contentEquals(id)
+
+        private fun bytesArray(items: List<ByteArray>) = DynamicArray(DynamicBytes::class.java, items.map(::DynamicBytes))
+
         fun abiHash(vararg values: Type<*>): ByteArray =
             Hash.sha3(Numeric.hexStringToByteArray(FunctionEncoder.encodeConstructor(values.toList())))
 

@@ -19,13 +19,22 @@ data class Call(val to: String, val data: String)
  * A person's account as the phone sees it: a `KlippelGoAccount` owned by a [DeviceKey]. Its address follows from
  * the key alone, worked out here and never asked of the chain node: a node that lied about it could have
  * someone's reais sent to an address they do not own.
+ *
+ * A phone added to an account another device made (or recovered to by a guardian) is `joined` to it instead: that
+ * address was made from the other device's key, and is the one the person confirmed on this phone (apps A19).
  */
-class SmartAccount(val key: DeviceKey, val deployment: Deployment) {
+class SmartAccount(val key: DeviceKey, val deployment: Deployment, joined: String? = null) {
     /** The signer entry the account knows this key by: the verifier's address, then the key. */
     val signer: ByteArray = Numeric.hexStringToByteArray(deployment.deviceKeyVerifier) + key.publicKey
 
-    /** The account's address: an EIP-1167 clone of the implementation, at CREATE2 from the factory. */
-    val address: String = cloneAddress(deployment.accountImplementation, Hash.sha3(signer), deployment.accountFactory)
+    /** The account this key's own first operation would create: an EIP-1167 clone at CREATE2 from the factory. */
+    val ownAddress: String = cloneAddress(deployment.accountImplementation, Hash.sha3(signer), deployment.accountFactory)
+
+    /** The account this phone signs for: its own, or the one it joined. */
+    val address: String = joined?.lowercase() ?: ownAddress
+
+    /** Whether this phone signs for an account another key made, which therefore exists already. */
+    val isJoined: Boolean = !address.equals(ownAddress, ignoreCase = true)
 
     /** What the EntryPoint calls to create the account with its first operation: the factory and its data. */
     val factoryData: String = FunctionEncoder.encode(Function("createAccount", listOf(DynamicBytes(signer)), emptyList()))
@@ -54,6 +63,10 @@ class SmartAccount(val key: DeviceKey, val deployment: Deployment) {
                 ),
             ),
         )
+
+        /** The code every account has: an EIP-1167 clone of `implementation`. Another code is no KlippelGo account. */
+        fun cloneCode(implementation: String): String =
+            "0x363d3d373d3d3d363d73" + Numeric.cleanHexPrefix(implementation).lowercase() + "5af43d82803e903d91602b57fd5bf3"
 
         /** OpenZeppelin's `Clones.predictDeterministicAddress(implementation, salt, deployer)`. */
         fun cloneAddress(implementation: String, salt: ByteArray, deployer: String): String {

@@ -3,8 +3,8 @@
 Status: the accounts are built; Pix is not. Every person's account is a smart account owned by a P-256 key in
 the phone's chip (`KlippelGoAccount`, `AccountFactory`, `DeviceKeyVerifier`, `KeystoreDeviceKey`), every write goes
 through a bundler with gas paid in reais (`BrlPaymaster`), and gossip is signed by session keys the account
-certifies. Recovery by passkey is accepted by the account but has no setup screen (limit P21 in
-[apps security](../apps/docs/security.md)), and the Carteira tab still mints mock coins as a stand-in for Pix: the
+certifies. Several devices and a guardian are built ([Recovery](#recovery)); a passkey is accepted by the account but
+has no setup screen (limit P21 in [apps security](../apps/docs/security.md)), and the Carteira tab still mints mock coins as a stand-in for Pix: the
 relay, the sweeper and the watcher below are still to build. Decisions marked **Default** stand until the project
 decides otherwise (see [Open decisions](#open-decisions)).
 
@@ -35,7 +35,7 @@ that one has no key or password at all, and its beneficiary is changed only by t
 | Where it is made | Android Keystore, in StrongBox when the phone has it, else the TEE | Secure Enclave |
 | Curve | P-256 | P-256 |
 | Exportable | No | No |
-| To sign | Built: no user check, until recovery exists (limit P20 in [apps security](../apps/docs/security.md)). Then biometrics or device credential, set as a key property (`setUserAuthenticationRequired`) | `.biometryAny` or `.devicePasscode` access control |
+| To sign | Built: no user check (limit P20 in [apps security](../apps/docs/security.md)). Next, biometrics or device credential, set as a key property (`setUserAuthenticationRequired`), once the app asks for a second device or a guardian first | `.biometryAny` or `.devicePasscode` access control |
 
 These chips do not do secp256k1, the curve Ethereum accounts use, so the key cannot own a plain account. It owns
 a smart account that checks P-256 signatures with the RIP-7212 precompile at `0x100`, which Polygon PoS has and
@@ -45,7 +45,7 @@ the local testnet's Osaka rules include (see the [README](../README.md)).
 and ERC-7821 batches, so little of it is our own. A signer is a verifier and a key: a raw P-256 signature over
 SHA-256 of the hash (what Keystore and the Secure Enclave produce) through `DeviceKeyVerifier`, and a WebAuthn
 signature (what a synced passkey produces, used for recovery below) through OpenZeppelin's WebAuthn verifier.
-Any one signer acts alone.
+Any one signer acts alone for operations; changing the signers takes a majority of them ([Recovery](#recovery)).
 
 ### The address
 
@@ -79,21 +79,34 @@ What the user sees is the address and a name they choose for themselves. The nam
 
 ### Recovery
 
-The key dies with the phone. The account outlives it because its owner can be changed:
+The key dies with the phone. The account outlives it because its keys can be changed, and how is built into the
+account (`KlippelGoAccount`, invariants C26 and C27 in [contract security](../contracts/docs/security.md)):
 
-| Way back | How | **Default** |
+| Way back | How | State |
 | --- | --- | --- |
-| A synced passkey | At setup the app also creates a passkey (Google Password Manager, iCloud Keychain) and adds it as a second owner. A new phone signs in with it and adds its own chip key | Yes: offered at setup, strongly recommended |
-| Another device | A second phone or a tablet registers its own chip key as an owner | Optional |
-| Guardians | Contacts the user picks can, together and after a delay (e.g. 48 h), replace the owner. The old key can cancel during the delay | Optional, for people without a synced passkey |
+| Other devices | Each of the person's phones or tablets is a key of the account. A new one shows a code (its public key) and a fingerprint; a device already on the account pastes the code, checks the fingerprint, and proposes adding it. The app recommends three | Built |
+| A guardian | A person the keys named, by their KlippelGo account. If every device is lost, the new phone's code goes to the guardian, who starts a recovery to it; two days later anyone finishes it, and the new key is the account's only one | Built. One guardian; none by default |
+| A synced passkey | At setup the app also creates a passkey (Google Password Manager, iCloud Keychain) and adds it as another key. A new phone signs in with it and adds its own chip key | The account accepts WebAuthn keys; no screen yet (apps P21) |
+
+Any one key signs the account's operations, so each device rides and pays on its own. Changing the keys (adding,
+removing, naming the guardian) needs more than half of them, each approving on chain with its own signature over the
+change, so the devices need no channel between them: with three, a phone that is taken is a minority. It can still
+spend until the other two take it off (contracts L34), and it cannot remove them, add keys of its own, or hold a
+recovery off. If it stops the account paying, anyone with gas can send the other two's approvals, as the contract
+takes them from anyone; the app does not do that yet (apps P28). A guardian's recovery is cancelled by any change the keys make in its two days, an empty one included,
+so a guardian who turned, or whose own account was taken, needs the person not to open the app for two days
+(contracts L35). Every phone of the account says so over every screen as soon as it reads the chain.
+
+A new phone finds the account it was added to from the chain's events naming its key, and signs for it once the
+person picks it by the address their other device or guardian shows (apps A19, P26). From then on the account's
+address no longer follows from that phone's own key.
 
 A synced passkey is weaker than a chip key: it lives in a Google or Apple account, and that account's security
-becomes the account's security. It is the trade most people want, and users who do not can skip it and use
-guardians.
+becomes the account's security. Once built, it counts as one key among the devices.
 
-The ride history, credentials and documents on the phone are another matter: they are encrypted under a key in
-the chip, backed up to the user's own cloud backup wrapped by a recovery key (architecture plan, "Recovery").
-Losing them loses no money, only the history and the credentials to have checked again.
+The rides on the phone are another matter: each ride's quote, route and the rider's position key are sealed under a
+key in the chip and deleted 30 days after their last use (apps A12). They are not backed up, and a new phone starts without them.
+Losing them loses no money.
 
 ### Gas
 
@@ -237,15 +250,17 @@ question for the legal review the plan already requires before mainnet. This pag
 
 ## Security
 
-What has to hold. For the accounts these are invariants now: C20 and C21 in
-[contract security](../contracts/docs/security.md), A12 and A15 in [apps security](../apps/docs/security.md),
-with limits L28 to L31 and P18 to P21. The Pix rows become invariants when the relay lands.
+What has to hold. For the accounts these are invariants now: C20, C21, C26 and C27 in
+[contract security](../contracts/docs/security.md), A12, A15 and A19 in [apps security](../apps/docs/security.md),
+with limits L28 to L31, L34 to L37, P18 to P21 and P26 to P28. The Pix rows become invariants when the relay lands.
 
 | Threat | What stops it |
 | --- | --- |
 | The key is copied off the phone | It cannot be: non-exportable, in the chip |
-| Someone with the unlocked phone spends | Not stopped yet: the key asks for no check until recovery exists (P20). Then every signature needs a fresh biometric or PIN check, and the app shows the amount before asking |
-| A lost phone loses the money | Recovery by passkey, second device or guardians; never by Instituto Klippel. The account takes a passkey signer; nothing offers one yet (P21) |
+| Someone with the unlocked phone spends | Not stopped yet: the key asks for no check (P20). The person's other devices take that phone off the account, which stops what it signs next (contracts C26, L34) |
+| A lost phone loses the money | Recovery by the person's other devices or their guardian, built; by passkey, not yet (P21). Never by Instituto Klippel |
+| A taken phone locks the owner out | Changing the keys needs a majority of them (contracts C26); with three devices, one taken is a minority, and the other two take it off |
+| The guardian takes the account | Only after two days in which no change of keys came; every phone of the account shows the recovery and cancels it (contracts C27, L35, apps P27) |
 | A lying node or bundler gets a signature for another operation, or reais sent to another address | The phone computes the account's address and each operation's hash itself, and refuses gas above fixed ceilings (A15) |
 | The relay or a lying RPC gives the app a Pix order paying out to someone else's address | The relay signs nothing and holds nothing; the app checks that the order's payout address is its own, shows the receiver's name from the BR Code, and counts a top-up only from its own balance on chain, never from the relay saying "paid" |
 | A fake QR code takes the Pix | The QR code's receiver (in the BR Code) must be a ramp on a list the app ships, or governance keeps. Shown to the user before they pay |
@@ -280,6 +295,7 @@ The contract guards (payments kept as owed, the balance check, the cap) are buil
 | --- | --- | --- |
 | `apps/android/chain` | `KlippelGoClient` signs UserOperations through a `DeviceKey` instead of holding a private key, and gossip through session keys; `DevAccount` stays only for the local testnet | Built |
 | `apps/android/app` | Key creation in Keystore with StrongBox (`KeystoreDeviceKey`) | Built |
+| `apps/android/app` | The account screen (devices, guardian, recovery), the join screen for a new phone, the notice of a recovery or a change waiting, and the rides' files sealed | Built |
 | `apps/android/app` | The setup screen with the passkey offer, Carteira's Pix QR and the cash-out screen | To build |
 | `contracts/` | `src/account/`: the account, its factory, the P-256 verifier and the paymaster. The escrow needs no change: a smart account is an address like any other. `DeployLocal` deploys them over the protocol, and `testnet/entrypoint.sh` puts the EntryPoint at its canonical address, so the local testnet matches Polygon. The guards against the issuers are built | Built |
 | New: `ramp/` | The ramp relay, small and stateless apart from subaccount ids, and the sweeper job, with their own docs | To build |
@@ -290,7 +306,8 @@ The contract guards (payments kept as owed, the balance check, the cap) are buil
 | Decision | Options | Default |
 | --- | --- | --- |
 | Smart account | Safe, Kernel, Coinbase Smart Wallet, OpenZeppelin's | Decided: OpenZeppelin v5.7's `Account` with `MultiSignerERC7913`, P-256 through `DeviceKeyVerifier` and WebAuthn through OpenZeppelin's verifier |
-| Recovery offered at setup | Passkey, second device, guardians | Passkey offered first; the others in settings |
+| Recovery offered at setup | Passkey, second device, guardian | Other devices and a guardian built, in the account screen and recommended there; asking for one at setup, and the passkey, still open |
+| Guardians | One, several with a threshold | Decided: one guardian, two days, cancelled by any change of the keys |
 | Pix | User's own ramp account, relay, aggregator widget | Relay, with the address always shown for the user's own ramp |
 | Ramps at launch | Avenia (BRLA), Transfero (BRZ), Banco Braza (BBRL) | Avenia first: its API and sandbox are public |
 | Who runs the relay and paymaster | Instituto Klippel, anyone | Instituto Klippel by default, replaceable in settings |

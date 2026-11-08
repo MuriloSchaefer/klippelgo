@@ -78,6 +78,37 @@ abstract class Scenario {
         return rider
     }
 
+    /**
+     * Another device of a person's, played in process: a key of its own, signing for `joined` when given (an account
+     * another device made and added this key to), else for the account this key makes.
+     */
+    fun device(joined: String? = null, key: org.klippelgo.chain.DeviceKey = newKey()): KlippelGoClient =
+        KlippelGoClient(stack.rpc, key, stack.deployment, joined = joined)
+
+    /** A person's account made on the spot by a device of theirs, with R$ 50 in and registered as a rider. */
+    fun personWithAccount(): KlippelGoClient = device().also {
+        it.mint(it.brz, it.brz.toBaseUnits(java.math.BigDecimal("50.00")))
+        it.ensureRegistered(KlippelGoClient.ROLE_RIDER)
+    }
+
+    /** A new P-256 key, as a new phone's chip makes one. */
+    fun newKey(): org.klippelgo.chain.DeviceKey = org.klippelgo.chain.SoftwareDeviceKey(
+        java.math.BigInteger(256, java.security.SecureRandom()).mod(org.klippelgo.chain.P256.N - java.math.BigInteger.ONE) + java.math.BigInteger.ONE,
+    )
+
+    /** The signer entry a device's key code stands for, as the phone that adds it reads the code. */
+    fun signerOf(device: KlippelGoClient): ByteArray =
+        org.klippelgo.chain.KeyCodes.signerOf(device.keyCode, stack.deployment.deviceKeyVerifier)!!
+
+    /**
+     * Moves the local testnet's clock on and mines a block at the new time: what a guardian's two days of waiting
+     * take. Every later test sees the chain that much older, which none of them counts on.
+     */
+    fun passTime(seconds: Long) {
+        stack.script("cast", "rpc", "--rpc-url", stack.rpc, "evm_increaseTime", seconds.toString())
+        stack.script("cast", "rpc", "--rpc-url", stack.rpc, "evm_mine")
+    }
+
     /** The chain's latest block, to count an account's gas from ([gasPaid]). */
     fun mark(): java.math.BigInteger = chain.blockNumber()
 

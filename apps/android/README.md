@@ -92,7 +92,7 @@ Then play a ride:
 3. **Rider**: the offer appears under **Escolha um motorista**, cheapest first. Tap it, check the route, the
    price per km and the breakdown, and tap **Bloquear**. The offered fare and a R$ 2,00 bond are locked in the
    escrow, with the hash of the quote the driver signed. The quote itself, with the exact route, is saved on
-   the rider's phone under `files/rides/`.
+   the rider's phone under `files/rides/`, sealed under a key in the phone's chip and deleted after 30 days.
 4. **Driver**: the screen changes to **O passageiro escolheu você**, with the ride's route on the map once the
    rider's sealed route has arrived and checked out. Tap **Aceitar corrida** (posts a R$ 5,00 bond), then
    **Passageiro embarcou: iniciar**.
@@ -223,7 +223,8 @@ Along the ride the rider is in the car, so the rider's emulator moves with it: t
 rider, found by itself. `RIDER=emulator-5554` names it when several fit.
 
 It is the `drive` command of the test CLI ([tests/README.md](../../tests/README.md)), and reads the app's saved
-route with `run-as`, which only a debug build allows.
+route with `run-as`, which only a debug build allows. The app seals what it saves; a debug build signed in as a
+seeded account also keeps each checked route in the clear under `files/debug-routes/` for this command.
 
 ## Accounts
 
@@ -232,6 +233,20 @@ account: the app makes a P-256 key in the phone's chip (Android Keystore, in Str
 first time, the account's address follows from that key, and its first write creates it on chain. Every write
 goes through the bundler, and its gas is paid in reais, so a new account needs reais first: the Carteira tab
 mints test coins.
+
+An account can have several devices. **Conta e aparelhos** (in the profile, or **Conta** on the driver's home) shows
+the phone's QR code, its code with icons to copy and share it, and its name (editable); on the phone already on the
+account, **Ler QR code** on the same screen reads that QR code with the camera, or the code can be pasted (the code,
+not the fingerprint, which is only for checking). An emulator's camera shows a virtual scene, not the other
+emulator's screen: between emulators, tap **Copiar** under the code on one and **Colar** beside **Ler QR** on the
+other. The emulators share the computer's clipboard, so the code goes across. Adding asks for confirmation, with the device's fingerprint and name. The code shows after **Mostrar QR code e código**. If the
+add comes within 30 minutes of that (or of **Copiar** or **Compartilhar**), the phone added then asks **Entrar nesta
+conta?** over its screen; joining makes both phones list the same
+devices. It also lists that account under **Outras contas com este aparelho**. A phone with no account yet shows its code from the
+create-account screen, under **Já tenho uma conta em outro aparelho**. The same screen names a
+guardian, and lists the accounts that named this one theirs, to recover to a friend's new phone. A recovery waits two
+days on chain; on the local testnet `cast rpc evm_increaseTime 172800 && cast rpc evm_mine` moves the clock on.
+Phones on seeded accounts can add and join devices too: a phone remembers the account it switched to per key.
 
 Phones launched by the emulator scripts use four seeded smart accounts instead, whose device keys are public
 test secrets (`DevAccount`): `RIDER` and `DRIVER` for the phones that start as rider and driver, and `RIDER_2`

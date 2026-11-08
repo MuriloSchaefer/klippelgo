@@ -78,6 +78,25 @@ object Tags {
     const val CREATE_CHECK_RPC = "create-account.check-rpc"
     const val CREATE_CONTINUE = "create-account.continue"
 
+    /** "I already have an account": this phone joins it instead of making one. */
+    const val CREATE_JOIN = "create-account.join"
+
+    /** A new phone joining an account the person has: its code, and the accounts its key was added to. */
+    const val JOIN = "join"
+    const val JOIN_CODE = "join.code"
+    const val JOIN_FINGERPRINT = "join.fingerprint"
+    const val JOIN_COPY = "join.copy"
+    const val JOIN_SHARE = "join.share"
+    const val JOIN_QR = "join.qr"
+    const val JOIN_WAITING = "join.waiting"
+
+    /** One account this phone's key was added to, by its address in lower case, and the button that uses it. */
+    fun joinFound(account: String) = "join.found.${account.lowercase()}"
+    fun joinUse(account: String) = "join.use.${account.lowercase()}"
+
+    /** A guardian's recovery to this phone's key, still waiting, by the account's address in lower case. */
+    fun joinRecovery(account: String) = "join.recovery.${account.lowercase()}"
+
     // ---------------------------------------------------------------- rider
     const val TABS = "tabs"
 
@@ -128,6 +147,7 @@ object Tags {
     fun profileChain(connected: Boolean) = "profile.chain." + if (connected) "connected" else "unreachable"
     fun profileGossip(connected: Boolean) = "profile.gossip." + if (connected) "connected" else "unreachable"
     const val PROFILE_DRIVER_MODE = "profile.driver-mode"
+    const val PROFILE_ACCOUNT = "profile.account"
     const val PROFILE_SIGN_OUT = "profile.sign-out"
 
     /** Asking for a ride: where to and at what price, before the request goes out. */
@@ -209,6 +229,105 @@ object Tags {
     const val ON_TRIP_ARRIVED = "on-trip.arrived"
 
     // ---------------------------------------------------------------- both
+    /**
+     * Above every screen while the account needs the person: a guardian's recovery is waiting (`recovery`), a change
+     * of keys waits for this phone's approval (`approve`), or this phone was taken off the account (`removed`).
+     */
+    const val ACCOUNT_NOTICE = "account-notice"
+    fun accountNoticeStatus(state: String) = "account-notice.status.$state"
+    const val ACCOUNT_NOTICE_RECOVERY = "recovery"
+    const val ACCOUNT_NOTICE_APPROVE = "approve"
+    const val ACCOUNT_NOTICE_REMOVED = "removed"
+    const val ACCOUNT_NOTICE_TEXT = "account-notice.text"
+    const val ACCOUNT_NOTICE_OPEN = "account-notice.open"
+
+    /** The account screen: the devices that sign for the account, changes to them, the guardian, and recovery. */
+    const val ACCOUNT = "account"
+    const val ACCOUNT_ADDRESS = "account.address"
+    const val ACCOUNT_REMOVED = "account.removed"
+    const val ACCOUNT_LEAVE = "account.leave"
+    const val ACCOUNT_RECOVERY = "account.recovery"
+    const val ACCOUNT_RECOVERY_CANCEL = "account.recovery.cancel"
+    const val ACCOUNT_MAJORITY = "account.majority"
+    const val ACCOUNT_RECOMMEND = "account.recommend"
+
+    /** One key of the account, by its fingerprint without spaces; `.this` is on this phone's own. */
+    fun accountKey(fingerprint: String) = "account.key.${fingerprint.replace(" ", "")}"
+    fun accountKeyThis(fingerprint: String) = "account.key.${fingerprint.replace(" ", "")}.this"
+    fun accountKeyRemove(fingerprint: String) = "account.key.${fingerprint.replace(" ", "")}.remove"
+    /** The name this phone knows the key by, when it knows one. */
+    fun accountKeyName(fingerprint: String) = "account.key.${fingerprint.replace(" ", "")}.name"
+
+    /** This phone's own code and fingerprint, to add it to another account of the person's, with copy and share. */
+    const val ACCOUNT_THIS_CODE = "account.this.code"
+    const val ACCOUNT_THIS_FINGERPRINT = "account.this.fingerprint"
+    const val ACCOUNT_THIS_COPY = "account.this.copy"
+    const val ACCOUNT_THIS_SHARE = "account.this.share"
+    const val ACCOUNT_THIS_QR = "account.this.qr"
+    /** Shows this phone's QR code and code, which stay hidden until asked for. */
+    const val ACCOUNT_THIS_SHOW = "account.this.show"
+    /** What this phone calls itself in its code, and saving a new name. */
+    const val ACCOUNT_THIS_NAME = "account.this.name"
+    const val ACCOUNT_THIS_NAME_SAVE = "account.this.name.save"
+
+    /** Opens the camera to read the new device's QR code into the add field; the name its code carries. */
+    const val ACCOUNT_ADD_SCAN = "account.add.scan"
+    /** Pastes what was copied into the add field. */
+    const val ACCOUNT_ADD_PASTE = "account.add.paste"
+
+    /** Asked before adding: the device's name and fingerprint, and adding it or not. */
+    const val ACCOUNT_ADD_CONFIRM = "account.add.confirm"
+    const val ACCOUNT_ADD_CONFIRM_NAME = "account.add.confirm.name"
+    const val ACCOUNT_ADD_CONFIRM_FINGERPRINT = "account.add.confirm.fingerprint"
+    const val ACCOUNT_ADD_CONFIRM_YES = "account.add.confirm.yes"
+    const val ACCOUNT_ADD_CONFIRM_NO = "account.add.confirm.no"
+
+    /**
+     * Over every screen: an account added this phone's key soon after its code went out, and asks it to join. Its
+     * address, its devices by fingerprint without spaces, and joining or not now.
+     */
+    const val JOIN_OFFER = "join-offer"
+    const val JOIN_OFFER_ACCOUNT = "join-offer.account"
+    fun joinOfferKey(fingerprint: String) = "join-offer.key.${fingerprint.replace(" ", "")}"
+    const val JOIN_OFFER_ACCEPT = "join-offer.accept"
+    const val JOIN_OFFER_DECLINE = "join-offer.decline"
+    const val ACCOUNT_ADD_NAME = "account.add.name"
+
+    /** Another account this phone's key was added to, by its address in lower case, and the button that uses it. */
+    fun accountOther(account: String) = "account.other.${account.lowercase()}"
+    fun accountOtherUse(account: String) = "account.other.${account.lowercase()}.use"
+
+    /** Says why what was pasted is not a key code: a fingerprint, or something else. */
+    const val ACCOUNT_ADD_INVALID = "account.add.invalid"
+    const val ACCOUNT_ADD_CODE = "account.add.code"
+    const val ACCOUNT_ADD_FINGERPRINT = "account.add.fingerprint"
+    const val ACCOUNT_ADD = "account.add.submit"
+
+    /** A change of keys waiting for a majority, by its id in hex: what it does, its approvals, and approving it. */
+    fun accountChange(id: String) = "account.change.${id.lowercase()}"
+    fun accountChangeApprovals(id: String) = "account.change.${id.lowercase()}.approvals"
+    fun accountChangeApprove(id: String) = "account.change.${id.lowercase()}.approve"
+    /** `kind` says what one line of the change does: `add`, `remove`, `guardian` or `cancel`. */
+    fun accountChangeLine(id: String, kind: String) = "account.change.${id.lowercase()}.$kind"
+
+    const val ACCOUNT_GUARDIAN = "account.guardian"
+    /** The guardian now: an address shortened as the profile shortens one, or the word for none. */
+    const val ACCOUNT_GUARDIAN_NOW = "account.guardian.now"
+    const val ACCOUNT_GUARDIAN_INPUT = "account.guardian.input"
+    const val ACCOUNT_GUARDIAN_SET = "account.guardian.set"
+    const val ACCOUNT_GUARDIAN_CLEAR = "account.guardian.clear"
+
+    /** An account that named this one its guardian, by its address in lower case. */
+    fun guarded(account: String) = "account.guarded.${account.lowercase()}"
+    fun guardedCode(account: String) = "account.guarded.${account.lowercase()}.code"
+    fun guardedFingerprint(account: String) = "account.guarded.${account.lowercase()}.fingerprint"
+    fun guardedStart(account: String) = "account.guarded.${account.lowercase()}.start"
+    fun guardedScan(account: String) = "account.guarded.${account.lowercase()}.scan"
+    fun guardedPaste(account: String) = "account.guarded.${account.lowercase()}.paste"
+    /** The recovery under way on it: `waiting` until its two days have passed, then `ready`. */
+    fun guardedRecovery(account: String, state: String) = "account.guarded.${account.lowercase()}.recovery.$state"
+    fun guardedFinish(account: String) = "account.guarded.${account.lowercase()}.finish"
+
     const val RIDE_END = "ride-end"
     const val RIDE_END_TITLE = "ride-end.title"
     const val RIDE_END_RIDE = "ride-end.ride"
@@ -230,6 +349,7 @@ object Tags {
     const val GO_ONLINE_TOGGLE = "go-online.toggle"
     fun goOnlineStatus(online: Boolean) = "go-online.status." + if (online) "online" else "offline"
     const val GO_ONLINE_RIDER_MODE = "go-online.rider-mode"
+    const val GO_ONLINE_ACCOUNT = "go-online.account"
     const val GO_ONLINE_TODAY = "go-online.today"
     const val GO_ONLINE_SCORE = "go-online.score"
     const val GO_ONLINE_RIDES = "go-online.rides"

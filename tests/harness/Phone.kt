@@ -321,8 +321,17 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
         }
     }
 
-    /** On screen with enough of it showing to read and to touch. */
-    private fun visible(tag: String): Node? = screen()[tag]?.takeIf { it.height >= 24 }
+    /**
+     * On screen with enough of it showing to read and to touch. A piece whose top shows at the bottom of a scrolling
+     * area and whose middle is below it is not: Android gives its whole bounds, not the part that shows, and a tap at
+     * its middle lands on whatever is under the area's edge (the navigation bar, at the foot of a page).
+     */
+    private fun visible(tag: String): Node? {
+        val screen = screen()
+        val node = screen[tag]?.takeIf { it.height >= 24 } ?: return null
+        val cut = screen.scrollers.any { area -> node.top >= area.top && node.top < area.bottom && node.y > area.bottom - 12 }
+        return node.takeIf { !cut }
+    }
 
     fun tap(tag: String, timeoutMs: Long = TIMEOUT_MS) {
         val deadline = System.currentTimeMillis() + timeoutMs

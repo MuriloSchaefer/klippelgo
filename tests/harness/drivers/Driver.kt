@@ -12,6 +12,9 @@ class GoOnline(phone: Phone) : Component(phone, Tags.GO_ONLINE) {
 
     fun toggle() = phone.tap(Tags.GO_ONLINE_TOGGLE)
 
+    /** Opens the account screen: devices, guardian, recovery. */
+    fun account() = phone.tap(Tags.GO_ONLINE_ACCOUNT)
+
     fun goOnline() {
         if (!online()) toggle()
         phone.awaitTag(Tags.goOnlineStatus(true))

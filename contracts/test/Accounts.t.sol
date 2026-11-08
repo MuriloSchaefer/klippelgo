@@ -194,26 +194,96 @@ contract AccountsTest is Test, ProtocolDeployer {
         entryPoint.handleOps(ops, payable(bundler));
     }
 
+    // ---------------------------------------------------------------- keys: changed by a majority of them
+
+    uint256 constant THIRD_PHONE_KEY = 0xC0FFEE;
+    uint256 constant THIEF_KEY = 0xBAD;
+
+    function _one(uint256 key) internal view returns (bytes[] memory s) {
+        s = new bytes[](1);
+        s[0] = _signer(key);
+    }
+
+    function _none() internal pure returns (bytes[] memory) {
+        return new bytes[](0);
+    }
+
+    /// @dev What a phone does to propose a change: its own approval, signed over the change's approval hash.
+    /// @dev Keeps the guardian.
+    function _propose(address account, uint256 key, bytes[] memory add, bytes[] memory remove)
+        internal
+        returns (bytes32)
+    {
+        return _propose(account, key, add, remove, false, address(0));
+    }
+
+    function _propose(
+        address account,
+        uint256 key,
+        bytes[] memory add,
+        bytes[] memory remove,
+        bool setGuardian,
+        address g
+    ) internal returns (bytes32 id) {
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        id = keccak256(abi.encode(a.keysEpoch(), add, remove, setGuardian, g));
+        bytes memory approval = _deviceSign(key, a.approvalHash(id));
+        // Inside an operation the account signed: the account calls itself.
+        vm.prank(account);
+        assertEq(a.proposeKeyChange(add, remove, setGuardian, g, _signer(key), approval), id);
+    }
+
+    function _approve(address account, uint256 key, bytes32 id) internal {
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        bytes memory approval = _deviceSign(key, a.approvalHash(id));
+        vm.prank(account);
+        a.approveKeyChange(id, _signer(key), approval);
+    }
+
+    /// @dev An account with three phones, as the app recommends.
+    function _threePhones() internal returns (address account) {
+        account = _newAccount(PHONE_KEY);
+        _propose(account, PHONE_KEY, _one(NEW_PHONE_KEY), _none());
+        bytes32 id = _propose(account, PHONE_KEY, _one(THIRD_PHONE_KEY), _none());
+        _approve(account, NEW_PHONE_KEY, id);
+        assertEq(KlippelGoAccount(payable(account)).getSignerCount(), 3);
+    }
+
     function test_ANewPhoneIsAddedByTheOldOneAndTheOldOneRemoved() public {
         address account = _newAccount(PHONE_KEY);
-        bytes[] memory added = new bytes[](1);
-        added[0] = _signer(NEW_PHONE_KEY);
-        _send(
-            _op(account, "", _execute(account, abi.encodeCall(KlippelGoAccount.addSigners, (added))), brz),
-            PHONE_KEY
-        );
-        assertTrue(KlippelGoAccount(payable(account)).isSigner(added[0]));
-
-        // The new phone acts alone, and takes the old one off.
-        bytes[] memory removed = new bytes[](1);
-        removed[0] = _signer(PHONE_KEY);
-        _send(
-            _op(
-                account, "", _execute(account, abi.encodeCall(KlippelGoAccount.removeSigners, (removed))), brz
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        bytes[] memory added = _one(NEW_PHONE_KEY);
+        // Through the EntryPoint, as the phone does: one key is a majority of one, so it is done at once.
+        bytes32 id = keccak256(abi.encode(a.keysEpoch(), added, _none(), false, address(0)));
+        bytes memory approval = _deviceSign(PHONE_KEY, a.approvalHash(id));
+        PackedUserOperation memory change = _op(
+            account,
+            "",
+            _execute(
+                account,
+                abi.encodeCall(
+                    KlippelGoAccount.proposeKeyChange,
+                    (added, _none(), false, address(0), _signer(PHONE_KEY), approval)
+                )
             ),
-            NEW_PHONE_KEY
+            brz
         );
-        assertFalse(KlippelGoAccount(payable(account)).isSigner(removed[0]));
+        // Checking the approval's P-256 signature in Solidity, as forge has no precompile for it, takes more
+        // than the half million of gas `_op` gives a call.
+        change.accountGasLimits = bytes32(uint256(2_000_000) << 128 | uint256(2_000_000));
+        _send(change, PHONE_KEY);
+        assertTrue(a.isSigner(added[0]));
+        assertEq(a.keysEpoch(), 1);
+
+        // Two keys: taking the old one off needs both. The new one alone only proposes.
+        bytes[] memory removed = _one(PHONE_KEY);
+        id = _propose(account, NEW_PHONE_KEY, _none(), removed);
+        assertTrue(a.isSigner(removed[0]));
+        (,,,, uint32 approvals, bool live) = a.keyChange(id);
+        assertEq(approvals, 1);
+        assertTrue(live);
+        _approve(account, PHONE_KEY, id);
+        assertFalse(a.isSigner(removed[0]));
 
         // The old one is refused from then on.
         PackedUserOperation memory op =
@@ -226,10 +296,186 @@ contract AccountsTest is Test, ProtocolDeployer {
             abi.encodeWithSelector(IEntryPointErrors.FailedOp.selector, 0, "AA24 signature error")
         );
         entryPoint.handleOps(ops, payable(bundler));
+    }
 
-        // Nobody else changes the keys: not the paymaster, not a stranger.
+    function test_OneSeizedPhoneOfThreeCannotLockTheOthersOutAndTwoTakeItOff() public {
+        address account = _threePhones();
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        // The thief holds the third phone: alone it proposes taking the other two off and adding a key of its own.
+        bytes[] memory others = new bytes[](2);
+        others[0] = _signer(PHONE_KEY);
+        others[1] = _signer(NEW_PHONE_KEY);
+        bytes32 grab = _propose(account, THIRD_PHONE_KEY, _one(THIEF_KEY), others);
+        assertTrue(a.isSigner(others[0]) && a.isSigner(others[1]));
+        assertFalse(a.isSigner(_signer(THIEF_KEY)));
+        // Its approval counts once, whatever it signs.
+        bytes memory again = _deviceSign(THIRD_PHONE_KEY, a.approvalHash(grab));
+        vm.prank(account);
+        vm.expectRevert(KlippelGoAccount.AlreadyApproved.selector);
+        a.approveKeyChange(grab, _signer(THIRD_PHONE_KEY), again);
+        // Nor can it approve in another key's name: the signature must be that key's.
+        vm.prank(account);
+        vm.expectRevert(KlippelGoAccount.BadApproval.selector);
+        a.approveKeyChange(grab, _signer(PHONE_KEY), again);
+        // And a key the account does not have approves nothing.
+        bytes memory stranger = _deviceSign(THIEF_KEY, a.approvalHash(grab));
+        vm.prank(account);
+        vm.expectRevert(KlippelGoAccount.NotASigner.selector);
+        a.approveKeyChange(grab, _signer(THIEF_KEY), stranger);
+
+        // The owner's two phones take the third off.
+        bytes32 id = _propose(account, PHONE_KEY, _none(), _one(THIRD_PHONE_KEY));
+        _approve(account, NEW_PHONE_KEY, id);
+        assertFalse(a.isSigner(_signer(THIRD_PHONE_KEY)));
+        assertEq(a.getSignerCount(), 2);
+        // The thief's proposal died with the keys it was made under.
+        (,,,,, bool live) = a.keyChange(grab);
+        assertFalse(live);
+        bytes memory late = _deviceSign(PHONE_KEY, a.approvalHash(grab));
+        vm.prank(account);
+        vm.expectRevert(KlippelGoAccount.UnknownKeyChange.selector);
+        a.approveKeyChange(grab, _signer(PHONE_KEY), late);
+    }
+
+    function test_AnApprovalIsForOneChangeOnOneAccount() public {
+        address account = _threePhones();
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        bytes32 id = _propose(account, PHONE_KEY, _none(), _one(THIRD_PHONE_KEY));
+        bytes32 other = _propose(account, NEW_PHONE_KEY, _none(), _one(PHONE_KEY));
+        // The second phone's approval of its own change is not one of the first's.
+        bytes memory signed = _deviceSign(NEW_PHONE_KEY, a.approvalHash(other));
+        vm.prank(account);
+        vm.expectRevert(KlippelGoAccount.BadApproval.selector);
+        a.approveKeyChange(id, _signer(NEW_PHONE_KEY), signed);
+        // Each key's latest proposal is what the phones list.
+        assertEq(a.proposedBy(_signer(PHONE_KEY)), id);
+        assertEq(a.proposedBy(_signer(NEW_PHONE_KEY)), other);
+        assertTrue(a.approvedBy(id, _signer(PHONE_KEY)));
+        assertFalse(a.approvedBy(id, _signer(NEW_PHONE_KEY)));
+    }
+
+    function test_TheLastKeyCannotBeRemoved() public {
+        address account = _newAccount(PHONE_KEY);
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        bytes32 id = keccak256(abi.encode(a.keysEpoch(), _none(), _one(PHONE_KEY), false, address(0)));
+        bytes memory approval = _deviceSign(PHONE_KEY, a.approvalHash(id));
+        vm.prank(account);
         vm.expectRevert();
-        KlippelGoAccount(payable(account)).addSigners(added);
+        a.proposeKeyChange(_none(), _one(PHONE_KEY), false, address(0), _signer(PHONE_KEY), approval);
+        assertTrue(a.isSigner(_signer(PHONE_KEY)));
+    }
+
+    function test_TheAccountIsNeverItsOwnKeyNorItsOwnGuardian() public {
+        address account = _newAccount(PHONE_KEY);
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        bytes[] memory itself = new bytes[](1);
+        itself[0] = abi.encodePacked(account);
+        bytes32 id = keccak256(abi.encode(a.keysEpoch(), itself, _none(), false, address(0)));
+        bytes memory approval = _deviceSign(PHONE_KEY, a.approvalHash(id));
+        vm.prank(account);
+        vm.expectRevert(KlippelGoAccount.SelfAsKey.selector);
+        a.proposeKeyChange(itself, _none(), false, address(0), _signer(PHONE_KEY), approval);
+        id = keccak256(abi.encode(a.keysEpoch(), _none(), _none(), true, account));
+        approval = _deviceSign(PHONE_KEY, a.approvalHash(id));
+        vm.prank(account);
+        vm.expectRevert(KlippelGoAccount.SelfAsKey.selector);
+        a.proposeKeyChange(_none(), _none(), true, account, _signer(PHONE_KEY), approval);
+    }
+
+    // ---------------------------------------------------------------- recovery by a guardian
+
+    function test_TheGuardianReplacesTheKeysAfterTheDelay() public {
+        address account = _threePhones();
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        address friend = makeAddr("friend");
+        // Naming a guardian is a change of keys: two of the three phones.
+        bytes32 id = _propose(account, PHONE_KEY, _none(), _none(), true, friend);
+        assertEq(a.guardian(), address(0));
+        _approve(account, NEW_PHONE_KEY, id);
+        assertEq(a.guardian(), friend);
+
+        // Every phone is lost. The friend starts a recovery to the person's new phone.
+        bytes memory fresh = _signer(THIEF_KEY + 1);
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert(KlippelGoAccount.NotGuardian.selector);
+        a.startRecovery(fresh);
+        vm.prank(friend);
+        a.startRecovery(fresh);
+        (bytes memory pending, uint64 readyAt, bool live) = a.recovery();
+        assertEq(pending, fresh);
+        assertEq(readyAt, block.timestamp + a.RECOVERY_DELAY());
+        assertTrue(live);
+
+        vm.expectRevert(KlippelGoAccount.RecoveryNotReady.selector);
+        a.finishRecovery();
+        vm.warp(readyAt);
+        // Anyone finishes it: the new phone has no key on the account yet to do it with.
+        vm.prank(makeAddr("anyone"));
+        a.finishRecovery();
+        assertEq(a.getSignerCount(), 1);
+        assertTrue(a.isSigner(fresh));
+        assertFalse(a.isSigner(_signer(PHONE_KEY)));
+        assertEq(a.guardian(), friend);
+        (,, live) = a.recovery();
+        assertFalse(live);
+        vm.expectRevert(KlippelGoAccount.NoRecovery.selector);
+        a.finishRecovery();
+    }
+
+    function test_TheKeysCancelARecoveryTheyDidNotWant() public {
+        address account = _threePhones();
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        address friend = makeAddr("friend");
+        _approve(account, NEW_PHONE_KEY, _propose(account, PHONE_KEY, _none(), _none(), true, friend));
+
+        // The guardian turns, or its own account was taken: it starts a recovery to a key of its own.
+        vm.prank(friend);
+        a.startRecovery(_signer(THIEF_KEY));
+        // One phone alone cannot cancel it: a thief holding one of three cannot hold a real recovery off.
+        bytes32 cancel = _propose(account, THIRD_PHONE_KEY, _none(), _none());
+        (,, bool live) = a.recovery();
+        assertTrue(live);
+        // A second phone's approval of the same empty change cancels it. The guardian stays, as the change keeps it.
+        _approve(account, PHONE_KEY, cancel);
+        (,, live) = a.recovery();
+        assertFalse(live);
+        vm.warp(block.timestamp + a.RECOVERY_DELAY());
+        vm.expectRevert(KlippelGoAccount.NoRecovery.selector);
+        a.finishRecovery();
+        assertFalse(a.isSigner(_signer(THIEF_KEY)));
+        assertEq(a.getSignerCount(), 3);
+        assertEq(a.guardian(), friend);
+    }
+
+    function test_AChangeThatKeepsTheGuardianNamesNone() public {
+        address account = _newAccount(PHONE_KEY);
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        address friend = makeAddr("friend");
+        _propose(account, PHONE_KEY, _none(), _none(), true, friend);
+        // Keeping it is written one way only: no guardian named.
+        bytes32 id = keccak256(abi.encode(a.keysEpoch(), _one(NEW_PHONE_KEY), _none(), false, friend));
+        bytes memory approval = _deviceSign(PHONE_KEY, a.approvalHash(id));
+        vm.prank(account);
+        vm.expectRevert(KlippelGoAccount.UnknownKeyChange.selector);
+        a.proposeKeyChange(_one(NEW_PHONE_KEY), _none(), false, friend, _signer(PHONE_KEY), approval);
+        _propose(account, PHONE_KEY, _one(NEW_PHONE_KEY), _none());
+        assertEq(a.guardian(), friend);
+        // Setting it to none takes it away.
+        _approve(account, NEW_PHONE_KEY, _propose(account, PHONE_KEY, _none(), _none(), true, address(0)));
+        assertEq(a.guardian(), address(0));
+    }
+
+    function test_AnAccountWithOnePhoneCancelsARecoveryAlone() public {
+        address account = _newAccount(PHONE_KEY);
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        address friend = makeAddr("friend");
+        _propose(account, PHONE_KEY, _none(), _none(), true, friend);
+        assertEq(a.guardian(), friend);
+        vm.prank(friend);
+        a.startRecovery(_signer(THIEF_KEY));
+        _propose(account, PHONE_KEY, _none(), _none());
+        (,, bool live) = a.recovery();
+        assertFalse(live);
     }
 
     function test_TheAccountSaysWhatItsKeySigned() public {
@@ -313,22 +559,6 @@ contract AccountsTest is Test, ProtocolDeployer {
         KlippelGoAccount(payable(account)).initialize(signers, address(this), new IERC20[](0));
     }
 
-    function test_TheLastKeyCannotBeRemoved() public {
-        address account = _newAccount(PHONE_KEY);
-        bytes[] memory removed = new bytes[](1);
-        removed[0] = _signer(PHONE_KEY);
-        PackedUserOperation memory op = _op(
-            account, "", _execute(account, abi.encodeCall(KlippelGoAccount.removeSigners, (removed))), brz
-        );
-        op.signature = _accountSignature(PHONE_KEY, entryPoint.getUserOpHash(op));
-        PackedUserOperation[] memory ops = new PackedUserOperation[](1);
-        ops[0] = op;
-        // The operation runs, but its call reverts: the key is still there.
-        vm.prank(bundler, bundler);
-        entryPoint.handleOps(ops, payable(bundler));
-        assertTrue(KlippelGoAccount(payable(account)).isSigner(removed[0]));
-    }
-
     function test_AHighSSignatureIsRefused() public {
         address account = _newAccount(PHONE_KEY);
         PackedUserOperation memory op =
@@ -353,19 +583,74 @@ contract AccountsTest is Test, ProtocolDeployer {
     function test_NobodyButTheEntryPointOrTheAccountActsForIt() public {
         address account = _newAccount(PHONE_KEY);
         KlippelGoAccount a = KlippelGoAccount(payable(account));
-        bytes[] memory keys = new bytes[](1);
-        keys[0] = _signer(NEW_PHONE_KEY);
+        bytes[] memory keys = _one(NEW_PHONE_KEY);
+        bytes32 id = keccak256(abi.encode(a.keysEpoch(), keys, _none(), false, address(0)));
         vm.startPrank(makeAddr("stranger"));
-        vm.expectRevert();
-        a.addSigners(keys);
-        vm.expectRevert();
-        a.removeSigners(keys);
+        // A change with no key's approval, or a stranger key's, goes nowhere.
+        bytes memory forged = _deviceSign(NEW_PHONE_KEY, a.approvalHash(id));
+        vm.expectRevert(KlippelGoAccount.NotASigner.selector);
+        a.proposeKeyChange(keys, _none(), false, address(0), _signer(NEW_PHONE_KEY), forged);
+        vm.expectRevert(KlippelGoAccount.BadApproval.selector);
+        a.proposeKeyChange(keys, _none(), false, address(0), _signer(PHONE_KEY), forged);
         vm.expectRevert();
         a.approvePaymaster(brz, makeAddr("stranger"), type(uint256).max);
         (bool ok,) =
             account.call(_execute(address(brz), abi.encodeCall(IERC20.transfer, (makeAddr("stranger"), 1))));
         assertFalse(ok, "a stranger ran the account's execute");
         vm.stopPrank();
+        assertFalse(a.isSigner(keys[0]));
+    }
+
+    function test_AnApprovalIsForThisAccountOnly() public {
+        address first = _threePhones();
+        // A second account with the same three keys, as a person with two accounts on the same phones has.
+        address second = _newAccount(NEW_PHONE_KEY);
+        _propose(second, NEW_PHONE_KEY, _one(PHONE_KEY), _none());
+        bytes32 id2 = _propose(second, NEW_PHONE_KEY, _one(THIRD_PHONE_KEY), _none());
+        _approve(second, PHONE_KEY, id2);
+        // The same change at the same epoch has the same id on both; an approval given on one does not count on the other.
+        bytes32 id = _propose(first, PHONE_KEY, _none(), _one(THIRD_PHONE_KEY));
+        KlippelGoAccount b = KlippelGoAccount(payable(second));
+        assertEq(b.keysEpoch(), KlippelGoAccount(payable(first)).keysEpoch());
+        bytes memory givenOnFirst = _deviceSign(PHONE_KEY, KlippelGoAccount(payable(first)).approvalHash(id));
+        vm.expectRevert(KlippelGoAccount.BadApproval.selector);
+        b.proposeKeyChange(
+            _none(), _one(THIRD_PHONE_KEY), false, address(0), _signer(PHONE_KEY), givenOnFirst
+        );
+    }
+
+    function test_ATakenKeyThatStopsThePaymasterIsStillTakenOff() public {
+        address account = _threePhones();
+        KlippelGoAccount a = KlippelGoAccount(payable(account));
+        // The thief's key revokes the paymaster's allowance in every coin: the account can pay for nothing more.
+        vm.startPrank(account);
+        a.approvePaymaster(brz, address(paymaster), 0);
+        a.approvePaymaster(IERC20(address(brla)), address(paymaster), 0);
+        vm.stopPrank();
+        // The owner's two phones sign their approvals; a friend sends them and pays the gas.
+        bytes[] memory remove = _one(THIRD_PHONE_KEY);
+        bytes32 id = keccak256(abi.encode(a.keysEpoch(), _none(), remove, false, address(0)));
+        bytes memory first = _deviceSign(PHONE_KEY, a.approvalHash(id));
+        bytes memory second = _deviceSign(NEW_PHONE_KEY, a.approvalHash(id));
+        vm.startPrank(makeAddr("friend"));
+        a.proposeKeyChange(_none(), remove, false, address(0), _signer(PHONE_KEY), first);
+        a.approveKeyChange(id, _signer(NEW_PHONE_KEY), second);
+        vm.stopPrank();
+        assertFalse(a.isSigner(_signer(THIRD_PHONE_KEY)));
+        assertEq(a.getSignerCount(), 2);
+    }
+
+    /// @dev The id the account files a change under, at epoch 0: the same bytes as `apps/android/chain`
+    /// `KeyChangeVectorTest`.
+    function test_TheKeyChangeIdVector() public {
+        KlippelGoAccount a = KlippelGoAccount(payable(_newAccount(PHONE_KEY)));
+        bytes[] memory add = new bytes[](1);
+        add[0] = hex"0102";
+        assertEq(a.keysEpoch(), 0);
+        assertEq(
+            a.keyChangeId(add, new bytes[](0), true, address(0x1234)),
+            0x8048e897beb13fafbd8ccc2e2748997a9403b510688b0bf30189fb97e2b7bc92
+        );
     }
 
     function test_CreatingTheSameAccountTwiceGivesTheSameOne() public {

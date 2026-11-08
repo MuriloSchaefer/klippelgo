@@ -23,8 +23,10 @@ import kotlin.math.hypot
  * Moves an emulator's GPS along the route its driver is on, so a ride can be watched without anyone driving:
  * to the pickup while the ride has not started, then along the ride's own route.
  *
- * The route is the one the driver's app checked and saved (`files/rides/<quote hash>.route.json`), drawn on this
- * computer's copy of the same map pack. Nothing is invented: the car goes where the app says the ride goes.
+ * The route is the one the driver's app checked and saved, drawn on this computer's copy of the same map pack.
+ * Nothing is invented: the car goes where the app says the ride goes. The app seals what it saves (`files/rides/`);
+ * a debug build signed in as a seeded account also keeps the checked route in the clear for this command
+ * (`files/debug-routes/<quote hash>.route.json`), as those accounts' keys are public anyway.
  */
 object Drive {
     private val json = ObjectMapper()
@@ -124,7 +126,7 @@ object Drive {
 
     /** The ride's route as the driver's app saved it after checking it, as a line on the map. */
     private fun routeOf(stack: Stack, phone: Phone, ride: Ride): List<Coordinate> {
-        val file = "files/rides/${ride.quoteHash.lowercase()}.route.json"
+        val file = "files/debug-routes/${ride.quoteHash.lowercase()}.route.json"
         val quote = runCatching { phone.shell("run-as ${Phone.APP} cat $file") }.getOrElse {
             throw UsageException("The app on ${phone.serial} has no checked route for ride ${ride.id} yet. It shows \"rota conferida\" once it does.")
         }

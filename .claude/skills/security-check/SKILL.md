@@ -10,9 +10,9 @@ to the reviewer. It adds no rule of its own.
 
 | Area changed | Document | Invariants | Known limits |
 | --- | --- | --- | --- |
-| `contracts/`, `gov/` | `contracts/docs/security.md` | C1 to C25 | L1 to L33 |
+| `contracts/`, `gov/` | `contracts/docs/security.md` | C1 to C27 | L1 to L37 |
 | `core/`, `mappack/` | `core/docs/security.md` | R1 to R12 | K1 to K12 |
-| `apps/` | `apps/docs/security.md` | A1 to A18 | P3 to P25 |
+| `apps/` | `apps/docs/security.md` | A1 to A19 | P3 to P28 |
 
 A change that crosses areas (a new gossip message, a new hash, a new contract call from the app) is checked
 against every area it touches. The flows that cross areas are drawn in `apps/docs/security.md` ("Matching,

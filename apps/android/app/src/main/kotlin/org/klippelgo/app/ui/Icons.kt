@@ -32,6 +32,15 @@ object KIcons {
     val Person = icon("M8 8a4 4 0 1 0 8 0a4 4 0 1 0 -8 0", "M4 21c1.5 -4 4.5 -6 8 -6s6.5 2 8 6")
     val Check = icon("M5 12l5 5L20 7", width = 2.4f)
     val Clock = icon("M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0", "M12 7v5l3 2")
+    val Copy = icon(
+        "M10 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-9a2 2 0 0 1 -2 -2v-9a2 2 0 0 1 2 -2z",
+        "M16 8V5a2 2 0 0 0 -2 -2H5a2 2 0 0 0 -2 2v9a2 2 0 0 0 2 2h3",
+    )
+    val Camera = icon(
+        "M4 8h3l2 -3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1 -1 1H4a1 1 0 0 1 -1 -1V9a1 1 0 0 1 1 -1z",
+        "M9 13.5a3 3 0 1 0 6 0a3 3 0 1 0 -6 0",
+    )
+    val Share = icon("M12 3v13", "M7 8l5 -5 5 5", "M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-6")
     val Star = icon(STAR, width = 1.5f)
     val StarFilled = icon(STAR, width = 1.5f, filled = true)
 }

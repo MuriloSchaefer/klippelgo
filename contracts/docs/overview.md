@@ -26,7 +26,7 @@ Related: [security.md](security.md), [scalability.md](scalability.md), [deployme
 | [`DisputeCourt`](../src/DisputeCourt.sol) | Commit-reveal juror vote that splits a disputed fare | No |
 | [`MapRegistry`](../src/MapRegistry.sol) | Proof roots of the map packs, and the verifier's tolerances | No |
 | [`FareGuide`](../src/FareGuide.sol) | The tariff and the band riders and drivers may price in, and what one native coin is worth in reais: the rate the app shows gas in, and the paymaster charges it at | No |
-| [`KlippelGoAccount`](../src/account/KlippelGoAccount.sol) | A person's account: an ERC-4337 smart account owned by keys the phone keeps in hardware, which runs batches of calls and says what its keys signed (ERC-1271) | The person's coins |
+| [`KlippelGoAccount`](../src/account/KlippelGoAccount.sol) | A person's account: an ERC-4337 smart account owned by keys the person's devices keep in hardware, any one of which runs batches of calls and signs for it (ERC-1271). Its keys change only by a majority of them, or by a guardian they named, two days after asking, unless they cancel (C26, C27) | The person's coins |
 | [`AccountFactory`](../src/account/AccountFactory.sol) | Makes accounts as clones, at an address that follows from the first key alone | No |
 | [`DeviceKeyVerifier`](../src/account/DeviceKeyVerifier.sol) | Checks a phone chip's P-256 signature over SHA-256 of a hash | No |
 | [`BrlPaymaster`](../src/account/BrlPaymaster.sol) | Pays the network for people's operations and charges them the same in a BRL coin, at `FareGuide`'s rate | Its native deposit at the EntryPoint, the reais it collected |

@@ -21,7 +21,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.klippelgo.chain.AccountKeys
 import org.klippelgo.chain.Blocker
+import org.klippelgo.chain.GuardedAccount
+import org.klippelgo.chain.KeyChange
+import org.klippelgo.chain.KeyCodes
 import org.klippelgo.chain.Coin
 import org.klippelgo.chain.Deployment
 import org.klippelgo.chain.ProviderCheck
@@ -58,7 +62,6 @@ import org.klippelgo.core.regionCell
 import org.klippelgo.core.routeHash
 import org.web3j.crypto.Hash
 import org.web3j.utils.Numeric
-import java.io.File
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.net.Inet6Address
@@ -67,6 +70,24 @@ import java.net.URI
 import java.security.SecureRandom
 
 enum class Role { RIDER, DRIVER }
+
+/**
+ * A new phone joining an account the person already has: the code it shows the other device or the guardian, and
+ * what it found so far. `found` are accounts its key was added to; `recoveries` are a guardian's recoveries to its
+ * key still waiting, by account, with when each is ready (Unix seconds).
+ */
+data class JoinState(
+    val code: String,
+    val fingerprint: String,
+    val found: List<String> = emptyList(),
+    val recoveries: List<Pair<String, Long>> = emptyList(),
+)
+
+/**
+ * Another device added this phone's key to its account: the account, and its keys as signer entries, which the
+ * person compares with the adding phone's screen before joining.
+ */
+data class JoinOffer(val account: String, val keys: List<String>)
 
 /**
  * Where a request's trip starts and ends, as far as a driver is told: two regions of about a square kilometre,
@@ -162,6 +183,33 @@ data class UiState(
     val checkRpc: String = "",
     /** What that provider said at the last full read. Null with none set or before the first read. */
     val providers: ProviderCheck? = null,
+    /**
+     * Both roles: the account's keys (this phone and the person's other devices), the changes to them waiting for a
+     * majority, the guardian, and a guardian's recovery if one is waiting. Null until first read.
+     */
+    val keys: AccountKeys? = null,
+    /** Both roles: accounts that named this one their guardian. Read while the account screen is open. */
+    val guarded: List<GuardedAccount> = emptyList(),
+    /** Both roles: other accounts this phone's key was added to, which it can sign for instead. Read with [guarded]. */
+    val otherAccounts: List<String> = emptyList(),
+    /** Both roles: this phone's key code, with its name, and its fingerprint, for adding it to another account. */
+    val keyCode: String = "",
+    val keyFingerprint: String = "",
+    /** What this phone calls itself in its code: its model unless the person named it. Never leaves the phone otherwise. */
+    val deviceName: String = "",
+    /**
+     * Names this phone knows for keys, by signer in lower-case hex: the names the codes it added carried, and its own.
+     * Kept on this phone only; other phones know a key by its fingerprint until they learn its name the same way.
+     */
+    val keyNames: Map<String, String> = emptyMap(),
+    /** Both roles: the account screen (devices, guardian, recovery) is open. */
+    val accountScreen: Boolean = false,
+    /** Before an account: this phone joining one the person already has. Null when not joining. */
+    val join: JoinState? = null,
+    /** Both roles: an account that just added this phone's key, asking the person whether to move to it. */
+    val joinOffer: JoinOffer? = null,
+    /** The device-key verifier this build's accounts use: what a pasted key code is read against. */
+    val deviceKeyVerifier: String = "",
     /** Several full reads in a row could not be checked against it: the person believes one provider again. */
     val providersUnchecked: Boolean = false,
 ) {
@@ -194,7 +242,10 @@ const val DEFAULT_RPC = "http://10.0.2.2:8545"
  */
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     // Brought to this release's shape before anything reads it: an update never needs a fresh install.
-    private val prefs = app.getSharedPreferences("klippelgo", Context.MODE_PRIVATE).also(AppData::migrate)
+    private val prefs = app.getSharedPreferences("klippelgo", Context.MODE_PRIVATE).also { AppData.migrate(it, app.filesDir) }
+
+    /** Each ride's quote, route and rider key, sealed under a key in the chip, and kept for a month (P8). */
+    private val rideFiles = SealedFiles.rides(app.filesDir).also { it.forgetOld() }
     private val deployment: Deployment = loadDeployment(app)
     private val updater = Updater(app)
 
@@ -206,6 +257,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             name = prefs.getString("name", "") ?: "",
             minPerKm = BigDecimal(prefs.getString("minPerKm", "0") ?: "0"),
             maxBelowPercent = prefs.getInt("maxBelowPercent", 10),
+            deviceKeyVerifier = deployment.deviceKeyVerifier,
+            deviceName = prefs.getString("deviceName", null) ?: modelName(),
+            keyNames = readKeyNames(prefs),
         ),
     )
     val state: StateFlow<UiState> = _state
@@ -221,6 +275,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var pending: Pair<MeasuredRoute, ByteArray>? = null
 
     private var client: KlippelGoClient? = null
+
+    /** Whether this phone signs as one of the local testnet's seeded accounts (debug builds only), not a key of its own. */
+    @Volatile private var seeded = false
     @Volatile private var match: Matchmaker? = null
     private val matchLock = Any()
     private var session = 0
@@ -270,7 +327,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             KeystoreDeviceKey.forThisPhone(getApplication()) to DEVICE_ACCOUNT
         }
         prefs.edit().putString("role", role.name).putString("rpc", rpcUrl).putString("account", name).apply()
-        val c = KlippelGoClient(rpcUrl.trim(), key, deployment)
+        seeded = dev
+        stopJoin()
+        // A phone added to an account another device made signs for that account. Kept per key, so a debug build
+        // that changes seeded account does not carry one key's choice to another.
+        val joined = prefs.getString(joinedKey(key), null)
+        val c = KlippelGoClient(rpcUrl.trim(), key, deployment, joined = joined)
+        keysReadAt = 0L
         restoreSession(c)
         c.restoreScans(prefs.getString(scansKey(c), "") ?: "")
         savedScans = null
@@ -279,7 +342,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         client = c
         _state.value = _state.value.let {
             // Where the phone is does not change with the role: it is told again only when it moves.
-            UiState(role = role, rpcUrl = rpcUrl, checkRpc = it.checkRpc, address = c.address, name = it.name, minPerKm = it.minPerKm, maxBelowPercent = it.maxBelowPercent, location = it.location, online = it.online && it.role == role)
+            UiState(
+                role = role, rpcUrl = rpcUrl, checkRpc = it.checkRpc, address = c.address, name = it.name, minPerKm = it.minPerKm,
+                maxBelowPercent = it.maxBelowPercent, location = it.location, online = it.online && it.role == role,
+                deviceKeyVerifier = it.deviceKeyVerifier, keyCode = KeyCodes.code(key.publicKey, it.deviceName), keyFingerprint = c.keyFingerprint,
+                deviceName = it.deviceName, keyNames = it.keyNames,
+            )
         }
         pinByHand = false
         leaveGossip()
@@ -345,6 +413,263 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun fundingDone() = _state.update { it.copy(showFunding = false) }
 
+    // ---------------------------------------------------------------- joining an account the person has
+
+    private var joinJob: Job? = null
+
+    /**
+     * Starts showing this phone's code, for a device already on the person's account to add it, or for their
+     * guardian to recover the account to it, and looks every few seconds for an account its key was added to. Reads
+     * the chain at `rpcUrl` as the person typed it on the create-account screen.
+     */
+    fun startJoin(rpcUrl: String) {
+        stopJoin()
+        val c = KlippelGoClient(rpcUrl.trim(), KeystoreDeviceKey.forThisPhone(getApplication()), deployment)
+        _state.update { it.copy(join = JoinState(KeyCodes.code(c.account.key.publicKey, it.deviceName), c.keyFingerprint)) }
+        joinJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                runCatching {
+                    val found = c.accountsWithThisKey()
+                    val recoveries = c.recoveriesToThisKey()
+                    _state.update { s -> s.join?.let { s.copy(join = it.copy(found = found, recoveries = recoveries)) } ?: s }
+                }.onFailure { trace("looking for this phone's account failed: ${it.message}") }
+                delay(JOIN_LOOK_EVERY_MS)
+            }
+        }
+    }
+
+    fun stopJoin() {
+        joinJob?.cancel()
+        joinJob = null
+        _state.update { it.copy(join = null) }
+    }
+
+    /**
+     * Uses an account this phone's key was added to, which the person confirmed by its address. From here on the
+     * phone signs for it with its own key, and the address no longer follows from that key (A19).
+     */
+    fun useJoined(account: String, name: String, role: Role, rpcUrl: String, checkRpc: String = _state.value.checkRpc) {
+        val join = _state.value.join ?: return
+        if (join.found.none { it.equals(account, ignoreCase = true) }) return
+        prefs.edit().putString(joinedKey(KeystoreDeviceKey.forThisPhone(getApplication())), account.lowercase()).apply()
+        createAccount(name, role, rpcUrl, checkRpc)
+        _state.update { it.copy(showFunding = false) }
+    }
+
+    /**
+     * Leaves an account this phone was taken off, or no longer wants to sign for: it goes back to the account its
+     * own key makes, which is empty until money is put in.
+     */
+    fun leaveJoined() {
+        val c = client ?: return
+        prefs.edit().remove(joinedKey(c.account.key)).apply()
+        _state.value.role?.let { connect(it, _state.value.rpcUrl) }
+        openAccount(true)
+    }
+
+    /**
+     * Signs for another account this phone's key was added to, from the account screen: a phone that already had an
+     * account of its own, added to the person's other one. Only an account the last read found holding this key.
+     */
+    fun switchAccount(account: String) {
+        val c = client ?: return
+        if (_state.value.otherAccounts.none { it.equals(account, ignoreCase = true) }) return
+        if (busyWithARide(_state.value)) {
+            _state.update { it.copy(error = getApplication<Application>().getString(R.string.keys_switch_after_ride)) }
+            return
+        }
+        moveTo(c, account)
+    }
+
+    /** Signs for `account` from now on: an account the client found holding this key, or the key's own. */
+    private fun moveTo(c: KlippelGoClient, account: String) {
+        if (account.equals(c.account.ownAddress, ignoreCase = true)) prefs.edit().remove(joinedKey(c.account.key)).apply()
+        else prefs.edit().putString(joinedKey(c.account.key), account.lowercase()).apply()
+        _state.value.role?.let { connect(it, _state.value.rpcUrl) }
+        // The person stays on the account screen, now about the account they picked.
+        openAccount(true)
+    }
+
+    // ---------------------------------------------------------------- an account asking this phone to join
+
+    /** When this phone last showed, copied or shared its code, on a clock nobody sets, and the chain's block then. */
+    @Volatile private var codeShownAt = 0L
+    @Volatile private var codeShownBlock = Long.MAX_VALUE
+
+    /**
+     * This phone's code was shown, copied or shared. For a while after, an account that adds this key from then on
+     * asks the person to join it. One that added it before is never asked about: this phone's key is public on chain
+     * once its own account exists, so anyone could have added it, at any time. The block is the last full read's,
+     * a little before now, so an add made while the code was on screen is never missed.
+     */
+    fun codeShown() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        codeShownAt = now
+        // Only a block read moments ago says when the code went out. Otherwise (the app just came back, or the chain
+        // has not been read) the newest block is asked for, and nothing is offered until it answers.
+        if (readBlock > 0 && now - readBlockAt <= FRESH_BLOCK_MS) {
+            codeShownBlock = readBlock
+            return
+        }
+        codeShownBlock = Long.MAX_VALUE
+        val c = client ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { c.blockNumber().toLong() }.onSuccess { head -> if (codeShownAt == now && client === c) codeShownBlock = head }
+        }
+    }
+
+    /** Accounts already offered to join, so each asks once; they stay under "other accounts" either way. */
+    private val offered: MutableSet<String> = java.util.Collections.synchronizedSet(LinkedHashSet(prefs.getStringSet("offered", emptySet()).orEmpty()))
+
+    private fun keepOffered(account: String) {
+        synchronized(offered) {
+            offered += account.lowercase()
+            while (offered.size > MAX_KEY_NAMES) offered.remove(offered.first())
+            prefs.edit().putStringSet("offered", HashSet(offered)).apply()
+        }
+    }
+
+    /** Whether a ride or a request of this phone is under way: no moving to another account then. */
+    private fun busyWithARide(s: UiState) = s.rides.any { it.status.isActive } || s.request != null || s.myOffers.isNotEmpty()
+
+    /**
+     * Looks, at a full read soon after this phone's code went out, for an account that added this key and was not
+     * offered yet, and asks the person whether to join it (A19).
+     */
+    private fun offerJoin(c: KlippelGoClient) {
+        if (codeShownAt == 0L || android.os.SystemClock.elapsedRealtime() - codeShownAt > OFFER_WINDOW_MS) return
+        if (_state.value.joinOffer != null || busyWithARide(_state.value)) return
+        val since = c.accountsThatAddedThisKeySince(codeShownBlock).filter { it.lowercase() !in offered }
+        // More than one at once is no device of the person's adding this phone: none is asked about. They are all
+        // under "other accounts", for the person to pick by address.
+        val account = since.singleOrNull() ?: return
+        val keys = c.signersOf(account)
+        _state.update { if (client !== c) it else it.copy(joinOffer = JoinOffer(account, keys), otherAccounts = (it.otherAccounts + account).distinct()) }
+    }
+
+    /** The person confirmed: this phone signs for the account that added it, and shows its devices. */
+    fun acceptJoinOffer() {
+        val c = client ?: return
+        val offer = _state.value.joinOffer ?: return
+        keepOffered(offer.account)
+        _state.update { it.copy(joinOffer = null) }
+        // A ride that began while the question was up finishes on this account; the person switches after it.
+        if (busyWithARide(_state.value)) {
+            _state.update { it.copy(error = getApplication<Application>().getString(R.string.keys_switch_after_ride)) }
+            return
+        }
+        moveTo(c, offer.account)
+    }
+
+    /** Not now: the account stays under "other accounts", and does not ask again. */
+    fun declineJoinOffer() {
+        _state.value.joinOffer?.let { keepOffered(it.account) }
+        _state.update { it.copy(joinOffer = null) }
+    }
+
+    /** Names this phone in the code it shows. Blank goes back to the phone's model. */
+    fun setDeviceName(name: String) {
+        val value = KeyCodes.label(name) ?: modelName()
+        prefs.edit().putString("deviceName", value).apply()
+        val key = client?.account?.key
+        _state.update { s ->
+            s.copy(
+                deviceName = value,
+                keyCode = key?.let { KeyCodes.code(it.publicKey, value) } ?: s.keyCode,
+                join = s.join?.let { j -> j.copy(code = KeyCodes.code(Numeric.hexStringToByteArray(j.code.substringBefore('#').substringAfter(':')), value)) },
+            )
+        }
+    }
+
+    /** Remembers what this phone calls a key, from the code that added it. The newest [MAX_KEY_NAMES] are kept. */
+    private fun nameKey(signer: String, name: String) {
+        val names = LinkedHashMap(_state.value.keyNames).apply { remove(signer.lowercase()); put(signer.lowercase(), name) }
+        while (names.size > MAX_KEY_NAMES) names.remove(names.keys.first())
+        prefs.edit().putString("keyNames", org.json.JSONObject(names as Map<*, *>).toString()).apply()
+        _state.update { it.copy(keyNames = names) }
+    }
+
+    /** Where the account a key joined is kept: by the address that key's own account has. */
+    private fun joinedKey(key: DeviceKey) = "joined." + org.klippelgo.chain.SmartAccount(key, deployment).ownAddress.lowercase()
+
+    // ---------------------------------------------------------------- the account's keys, and recovery
+
+    /** When the keys were last read: each full read reads them again after [KEYS_EVERY_MS], or always while the screen is open. */
+    @Volatile private var keysReadAt = 0L
+
+    fun openAccount(on: Boolean) {
+        keysReadAt = 0L
+        _state.update { it.copy(accountScreen = on) }
+        if (on) client?.let { c -> viewModelScope.launch(Dispatchers.IO) { runCatching { readKeys(c) } } }
+    }
+
+    /**
+     * Adds the device whose code the person pasted or scanned. Done at once with one device; otherwise it waits for a
+     * majority. The name the code carries is remembered on this phone, to list the device by.
+     */
+    fun addDevice(code: String) = act {
+        val signer = KeyCodes.signerOf(code, deployment.deviceKeyVerifier) ?: throw IllegalStateException(getApplication<Application>().getString(R.string.keys_bad_code))
+        val hex = Numeric.toHexString(signer)
+        // A key the account has already is not added again, and does not get its name from a code anyone could make.
+        if (_state.value.keys?.keys?.any { k -> k.signer.equals(hex, ignoreCase = true) } == true) {
+            throw IllegalStateException(getApplication<Application>().getString(R.string.keys_already_key))
+        }
+        keysReadAt = 0L
+        it.proposeKeyChange(add = listOf(signer), remove = emptyList())
+        // Only once the proposal went through, and never over a name this phone already has for the key.
+        KeyCodes.nameOf(code)?.let { name -> if (hex.lowercase() !in _state.value.keyNames) nameKey(hex, name) }
+    }
+
+    /** Proposes taking a key off the account: a lost or taken phone. Needs a majority of the keys. */
+    fun removeDevice(signer: String) = act {
+        keysReadAt = 0L
+        it.proposeKeyChange(add = emptyList(), remove = listOf(Numeric.hexStringToByteArray(signer)))
+    }
+
+    /** Approves a change another device of the person's proposed, as the screen shows it. */
+    fun approveChange(change: KeyChange) = act {
+        val keys = _state.value.keys ?: return@act
+        keysReadAt = 0L
+        it.approveKeyChange(keys.epoch, change)
+    }
+
+    /** Names the account's guardian (blank for none): another person's KlippelGo account. Needs a majority of the keys. */
+    fun setGuardian(address: String) = act {
+        val g = address.trim().lowercase().takeIf { a -> a.isNotEmpty() }
+        if (g != null && (!g.matches(Regex("0x[0-9a-f]{40}")) || g == it.address)) {
+            throw IllegalStateException(getApplication<Application>().getString(R.string.keys_bad_guardian))
+        }
+        keysReadAt = 0L
+        it.proposeKeyChange(add = emptyList(), remove = emptyList(), setGuardian = true, guardian = g)
+    }
+
+    /** Cancels a guardian's recovery with a change that changes nothing else. Needs a majority of the keys. */
+    fun cancelRecovery() = act {
+        keysReadAt = 0L
+        it.proposeKeyChange(add = emptyList(), remove = emptyList())
+    }
+
+    /** As the guardian of `account`, starts replacing its keys with the new phone's whose code the person pasted. */
+    fun startRecovery(account: String, code: String) = act {
+        val signer = KeyCodes.signerOf(code, deployment.deviceKeyVerifier) ?: throw IllegalStateException(getApplication<Application>().getString(R.string.keys_bad_code))
+        it.startRecovery(account, signer)
+    }
+
+    /** Finishes a recovery whose two days have passed. */
+    fun finishRecovery(account: String) = act { it.finishRecovery(account) }
+
+    /** Reads the keys, and the accounts this one guards while the account screen is open. */
+    private fun readKeys(c: KlippelGoClient) {
+        val keys = c.keys()
+        val screen = _state.value.accountScreen
+        val guarded = if (screen) c.guarded() else _state.value.guarded
+        // A phone on a joined account can go back to its own key's account too.
+        val others = if (!screen) _state.value.otherAccounts
+            else c.accountsWithThisKey().filterNot { it.equals(c.address, ignoreCase = true) } + listOfNotNull(c.account.ownAddress.takeIf { c.account.isJoined })
+        keysReadAt = android.os.SystemClock.elapsedRealtime()
+        _state.update { if (client !== c) it else it.copy(keys = keys, guarded = guarded, otherAccounts = others) }
+    }
+
     /**
      * Whether the app is on screen. Off screen it reads nothing from the chain unless a ride is under way, which
      * still needs its state confirmed for the driver's position to go out (A10), or the driver is online, for a
@@ -375,11 +700,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Back to the welcome screen. */
     fun signOut() {
         stopLocation()
+        stopJoin()
         leaveGossip()
         mapJob?.cancel()
         client = null
         prefs.edit().remove("role").apply()
-        _state.update { UiState(rpcUrl = it.rpcUrl, checkRpc = it.checkRpc, name = it.name) }
+        _state.update { UiState(rpcUrl = it.rpcUrl, checkRpc = it.checkRpc, name = it.name, deviceKeyVerifier = it.deviceKeyVerifier, deviceName = it.deviceName, keyNames = it.keyNames) }
     }
 
     fun dismissError() = _state.update { it.copy(error = null) }
@@ -480,7 +806,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val quote = quoteJson(id, route, salt, terms)
         // The chosen driver gets the route sealed to the key in their offer; nobody else in the cell can read it.
         val rideId = match?.acceptOffer(request, offer, quote) ?: return@act
-        File(getApplication<Application>().filesDir, "rides").apply { mkdirs() }.resolve("$rideId.quote.json").writeText(quote)
+        rideFiles.writeText("$rideId.quote.json", quote)
     }
 
     /**
@@ -774,8 +1100,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         (getApplication<Application>().getSystemService(Context.LOCATION_SERVICE) as LocationManager).removeUpdates(locationListener)
     }
 
-    private fun quoteFile(quoteHash: String) =
-        File(getApplication<Application>().filesDir, "rides").apply { mkdirs() }.resolve("${quoteHash.lowercase()}.route.json")
+    private fun routeFile(quoteHash: String) = "${quoteHash.lowercase()}.route.json"
 
     /**
      * Driver: the route of each ride this phone was chosen for. The rider seals it to the key in the driver's
@@ -789,14 +1114,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val known = _state.value.rideRoutes
         return rides.filter { it.status.isActive }.mapNotNull { ride ->
             known[ride.id]?.let { return@mapNotNull ride.id to it }
-            val file = quoteFile(ride.quoteHash)
-            val quote = m?.revealedQuote(ride.quoteHash) ?: file.takeIf { it.exists() }?.readText() ?: return@mapNotNull null
+            val file = routeFile(ride.quoteHash)
+            val quote = m?.revealedQuote(ride.quoteHash) ?: rideFiles.readText(file) ?: return@mapNotNull null
             val checked = runCatching { open.checkQuote(escrow, quote) }.getOrNull() ?: return@mapNotNull null
             if (!checked.quoteHash.contentEquals(Numeric.hexStringToByteArray(ride.quoteHash))) return@mapNotNull null
             // The hash is public once quoted, and the escrow keeps whatever hash a ride is opened with. The route
             // is this ride's only if the ride has the quote's own fare, coin, rider and driver; else it copied it.
             if (!sameTerms(checked, ride)) return@mapNotNull null
-            if (!file.exists()) file.writeText(quote)
+            if (!rideFiles.exists(file)) rideFiles.writeText(file, quote)
+            // `klippelgo drive` moves a test emulator along this route, and cannot open the sealed copy. Only a debug
+            // build on one of the local testnet's seeded accounts, whose keys everyone has, keeps one in the clear.
+            if (BuildConfig.DEBUG && seeded) java.io.File(getApplication<Application>().filesDir, "debug-routes").apply { mkdirs() }.resolve(file).writeText(quote)
             ride.id to checked
         }.toMap()
     }
@@ -817,8 +1145,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val known = _state.value.rideRoutes
         return rides.filter { it.status.isActive }.mapNotNull { ride ->
             known[ride.id]?.let { return@mapNotNull ride.id to it }
-            val file = File(getApplication<Application>().filesDir, "rides/${ride.id}.quote.json").takeIf { it.exists() } ?: return@mapNotNull null
-            val checked = runCatching { open.checkQuote(escrow, file.readText()) }.getOrNull() ?: return@mapNotNull null
+            val quote = rideFiles.readText("${ride.id}.quote.json") ?: return@mapNotNull null
+            val checked = runCatching { open.checkQuote(escrow, quote) }.getOrNull() ?: return@mapNotNull null
             ride.id to checked
         }.toMap()
     }
@@ -835,9 +1163,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (s.role != Role.DRIVER || match !== m) return
         val here = s.location ?: return
         current ?: return
-        val file = File(getApplication<Application>().filesDir, "rides").apply { mkdirs() }.resolve("${current.quoteHash.lowercase()}.riderkey")
-        val key = m?.riderKey(current.quoteHash)?.also { if (!file.exists()) file.writeBytes(it) }
-            ?: file.takeIf { it.exists() }?.readBytes() ?: return
+        val file = "${current.quoteHash.lowercase()}.riderkey"
+        val key = m?.riderKey(current.quoteHash)?.also { if (!rideFiles.exists(file)) rideFiles.write(file, it) }
+            ?: rideFiles.read(file) ?: return
         runCatching { m?.sharePosition(current.quoteHash, key, here.latE7, here.lonE7, onTheRide = current.status == RideStatus.Started) }
     }
 
@@ -858,6 +1186,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     @Volatile private var changeSeenAt = 0L
     @Volatile private var readBlock = 0L
+    /** When [readBlock] was read, on a clock nobody sets. */
+    @Volatile private var readBlockAt = 0L
 
     /** A block well below [changeSeenAt], and its hash, to tell a chain that went backwards from a node behind. */
     @Volatile private var changeAnchor: Pair<Long, String>? = null
@@ -1356,6 +1686,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 sharingFor = underWay.firstOrNull()
                 fixesFor(role == Role.DRIVER && underWay.any { it.status == RideStatus.Started })
                 readBlock = head
+                readBlockAt = android.os.SystemClock.elapsedRealtime()
                 if (readIsCurrent()) rideConfirmedAt = readAt
                 watchingQuote = mine?.takeIf { ridesAhead == 0 }?.quoteHash
             }
@@ -1382,6 +1713,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             savedScans = it
         }
         val links = if (role == Role.DRIVER) links(rides, rideRoutes) else emptyList()
+        // The account's keys: a recovery, a change waiting for this phone, or this phone taken off. Not every read,
+        // but whenever the account's own events moved, always while their screen is open, and every few minutes.
+        // The change check sees the account's own events, so a change by another device or the guardian is read at once.
+        val keysDue = c.keysMoved || _state.value.accountScreen || android.os.SystemClock.elapsedRealtime() - keysReadAt > KEYS_EVERY_MS
+        if (keysDue) {
+            c.keysMoved = false
+            runCatching { readKeys(c) }.onFailure { trace("reading the account's keys failed: ${it.message}") }
+        }
+        runCatching { offerJoin(c) }.onFailure { trace("looking for an account that added this phone failed: ${it.message}") }
         // Read with every full read, which a release event in the change check also starts.
         val release = c.releaseCheck()
         val leftOnPrevious = c.leftOnPreviousReleases()
@@ -1478,6 +1818,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         /** What the preferences call the account owned by this phone's own key, as against a seeded test account. */
         private const val DEVICE_ACCOUNT = "device"
+
+        /** How often a full read reads the account's keys again, while their screen is closed. */
+        private const val KEYS_EVERY_MS = 5 * 60_000L
+
+        /** Names of keys kept on the phone: far more than one person's devices. */
+        private const val MAX_KEY_NAMES = 64
+
+        /** What a phone is called until the person names it: its maker and model, as Android gives them. */
+        private fun modelName(): String {
+            val maker = android.os.Build.MANUFACTURER.orEmpty().replaceFirstChar { it.uppercase() }
+            val model = android.os.Build.MODEL.orEmpty()
+            return KeyCodes.label(if (model.startsWith(maker, ignoreCase = true)) model else "$maker $model") ?: "Android"
+        }
+
+        private fun readKeyNames(prefs: android.content.SharedPreferences): Map<String, String> = runCatching {
+            val o = org.json.JSONObject(prefs.getString("keyNames", "{}") ?: "{}")
+            o.keys().asSequence().mapNotNull { k -> KeyCodes.label(o.optString(k))?.let { k.lowercase() to it } }.toMap(LinkedHashMap())
+        }.getOrDefault(emptyMap())
+
+        /** How old a full read's block may be to stand for "now" when this phone's code goes out. */
+        private const val FRESH_BLOCK_MS = 35_000L
+
+        /** How long after this phone's code went out an account that adds it asks to be joined. */
+        private const val OFFER_WINDOW_MS = 30 * 60_000L
+
+        /** How often a phone joining an account looks for it. */
+        private const val JOIN_LOOK_EVERY_MS = 5_000L
 
         /** How often the network's gas price is asked for again. */
         private const val GAS_PRICE_EVERY_MS = 30_000L

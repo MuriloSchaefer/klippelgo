@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.res.stringResource
@@ -75,18 +76,30 @@ fun KlippelGoApp(vm: AppViewModel) {
     Surface(Modifier.fillMaxSize().testable(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.safeDrawingPadding().imePadding()) {
             if (state.role != null) {
+                AccountNotice(state) { vm.openAccount(true) }
                 ReleaseNotice(state, vm::update)
                 ProvidersNotice(state)
                 PreviousRelease(state, vm::withdrawPrevious)
             }
             Box(Modifier.weight(1f)) {
-                when (state.role) {
-                    null -> Onboarding(state, vm)
-                    Role.RIDER -> RiderApp(state, vm)
-                    Role.DRIVER -> DriverApp(state, vm)
+                // The account screen goes over the role's screen rather than in its place: what that screen
+                // remembers (the tab, a driver being online) stays. Underneath, it is out of reach of touch and of
+                // screen readers, and of the tests, which go by what a person can reach.
+                val covered = state.role != null && state.accountScreen
+                Box(Modifier.fillMaxSize().then(if (covered) Modifier.clearAndSetSemantics {} else Modifier)) {
+                    when (state.role) {
+                        null -> Onboarding(state, vm)
+                        Role.RIDER -> RiderApp(state, vm)
+                        Role.DRIVER -> DriverApp(state, vm)
+                    }
+                }
+                if (covered) {
+                    BackHandler { vm.openAccount(false) }
+                    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { AccountScreen(state, vm) }
                 }
             }
         }
+        if (state.role != null) JoinOfferDialog(state, vm)
         state.error?.let { msg ->
             AlertDialog(
                 onDismissRequest = vm::dismissError,
@@ -106,11 +119,34 @@ fun KlippelGoApp(vm: AppViewModel) {
 @Composable
 private fun Onboarding(state: UiState, vm: AppViewModel) {
     var step by rememberSaveable { mutableIntStateOf(0) }
-    if (step == 0) {
-        Welcome(onStart = { step = 1 })
-    } else {
-        BackHandler { step = 0 }
-        CreateAccount(state, onBack = { step = 0 }, onContinue = vm::createAccount)
+    // What the create-account screen was given, for the account this phone joins instead of making one.
+    var name by rememberSaveable { mutableStateOf("") }
+    var role by rememberSaveable { mutableStateOf(Role.RIDER) }
+    var rpc by rememberSaveable { mutableStateOf("") }
+    var checkRpc by rememberSaveable { mutableStateOf("") }
+    when (step) {
+        0 -> Welcome(onStart = { step = 1 })
+        1 -> {
+            BackHandler { step = 0 }
+            CreateAccount(
+                state,
+                onBack = { step = 0 },
+                onContinue = vm::createAccount,
+                onJoin = { n, r, url, check ->
+                    name = n; role = r; rpc = url; checkRpc = check
+                    vm.startJoin(url)
+                    step = 2
+                },
+            )
+        }
+        else -> {
+            val back = {
+                vm.stopJoin()
+                step = 1
+            }
+            BackHandler(onBack = back)
+            JoinScreen(state.join, onBack = back, onUse = { account -> vm.useJoined(account, name, role, rpc, checkRpc) })
+        }
     }
 }
 
@@ -181,7 +217,12 @@ fun IconTile(icon: ImageVector) {
  * signs with the seeded test accounts, so this screen picks which one to be and where the test network is.
  */
 @Composable
-private fun CreateAccount(state: UiState, onBack: () -> Unit, onContinue: (String, Role, String, String) -> Unit) {
+private fun CreateAccount(
+    state: UiState,
+    onBack: () -> Unit,
+    onContinue: (String, Role, String, String) -> Unit,
+    onJoin: (String, Role, String, String) -> Unit,
+) {
     var name by rememberSaveable { mutableStateOf(state.name) }
     var role by rememberSaveable { mutableStateOf(Role.RIDER) }
     var rpc by rememberSaveable { mutableStateOf(state.rpcUrl.ifBlank { DEFAULT_RPC }) }
@@ -245,13 +286,21 @@ private fun CreateAccount(state: UiState, onBack: () -> Unit, onContinue: (Strin
             }
         }
         Spacer(Modifier.weight(1f))
+        // A second node that cannot be one would check nothing without anyone knowing.
+        val valid = rpc.isNotBlank() && (checkRpc.isBlank() || checkRpc.trim().let { it.startsWith("https://") || it.startsWith("http://") })
         PrimaryButton(
             stringResource(R.string.continue_label),
             onClick = { onContinue(name, role, rpc, checkRpc) },
-            // A second node that cannot be one would check nothing without anyone knowing.
-            enabled = rpc.isNotBlank() && (checkRpc.isBlank() || checkRpc.trim().let { it.startsWith("https://") || it.startsWith("http://") }),
-            modifier = Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 32.dp).testTag(Tags.CREATE_CONTINUE),
+            enabled = valid,
+            modifier = Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp).testTag(Tags.CREATE_CONTINUE),
         )
+        TextButton(
+            onClick = { onJoin(name, role, rpc, checkRpc) },
+            enabled = valid,
+            modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp, bottom = 24.dp).testTag(Tags.CREATE_JOIN),
+        ) {
+            Text(stringResource(R.string.create_join))
+        }
     }
 }
 

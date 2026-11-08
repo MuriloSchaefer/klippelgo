@@ -16,6 +16,10 @@ class App(val phone: Phone) {
 
     val welcome = Welcome(phone)
     val createAccount = CreateAccount(phone)
+    val join = Join(phone)
+    val account = AccountScreen(phone)
+    val accountNotice = AccountNotice(phone)
+    val joinOffer = JoinOffer(phone)
     val rideEnd = RideEnd(phone)
 
     val tabs = Tabs(phone)
@@ -36,7 +40,7 @@ class App(val phone: Phone) {
     val driverRide = DriverRide(phone)
 
     val components: Map<String, Component> = linkedMapOf(
-        "welcome" to welcome, "create-account" to createAccount, "funding" to funding,
+        "welcome" to welcome, "create-account" to createAccount, "join" to join, "funding" to funding,
         "tabs" to tabs, "where-to" to whereTo, "wallet" to wallet, "rules" to rules, "profile" to profile,
         "ask" to ask, "offers" to offers, "confirm" to confirm, "on-the-way" to onTheWay, "on-trip" to onTrip,
         "ride-end" to rideEnd,
@@ -44,5 +48,6 @@ class App(val phone: Phone) {
         "map" to map, "map-notice" to mapNotice, "language" to language, "back" to back,
         "network-notice" to networkNotice, "error" to error,
         "release-notice" to releaseNotice, "providers-notice" to providersNotice, "previous-release" to previousRelease,
+        "account" to account, "account-notice" to accountNotice, "join-offer" to joinOffer,
     )
 }

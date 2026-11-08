@@ -1,7 +1,7 @@
 # Contracts: security
 
 What the contracts protect, who may do what, the rules that must always hold, and where the protection ends
-today. The numbered invariants (`C1` to `C25`) are what the
+today. The numbered invariants (`C1` to `C27`) are what the
 [security reviewer](../../.claude/agents/security-reviewer.md) checks a change against.
 
 Related: [overview.md](overview.md), [core security](../../core/docs/security.md),
@@ -69,7 +69,10 @@ individually.
 | `TeamCouncil.setMemberRole`, `setSuspended`, `createRole`, `grant`, `grantPlaybook`, `revokePermission`, `setApprovalsAndDelay`      | The council itself, executing an action                                                                                             | `NotSelf`, `Protected`, `WouldLockOut`                           |
 | `KlippelGoAccount.validateUserOp`                                                                                                                | The EntryPoint, for an operation one of the account's keys signed                                                                   | `onlyEntryPoint`, the signers' check                                 |
 | `KlippelGoAccount.execute` (ERC-7821 batch)                                                                                                      | The EntryPoint (after `validateUserOp`), or the account itself                                                                    | `AccountUnauthorized`                                                |
-| `KlippelGoAccount.addSigners`, `removeSigners`, `approvePaymaster`                                                                           | The EntryPoint or the account itself: so only an operation the account signed                                                       | `_checkEntryPointOrSelf`                                             |
+| `KlippelGoAccount.approvePaymaster`                                                                                                          | The EntryPoint or the account itself: so only an operation the account signed                                                       | `_checkEntryPointOrSelf`                                             |
+| `KlippelGoAccount.proposeKeyChange`, `approveKeyChange`                                                                                      | Anyone, carrying the approval of one of the account's keys, signed by that key over the change, so a friend or the guardian can pay for it when the account cannot. The change applies when more than half of the keys approved it| `NotASigner`, `BadApproval`, `AlreadyApproved`, `UnknownKeyChange`                          |
+| `KlippelGoAccount.startRecovery`                                                                                                             | The guardian the keys named, for one new key                                                                                        | `NotGuardian`                                                        |
+| `KlippelGoAccount.finishRecovery`                                                                                                            | Anyone, once `RECOVERY_DELAY` (2 days) has passed and no change of keys came since it started                                       | `NoRecovery`, `RecoveryNotReady`                                     |
 | `KlippelGoAccount.initialize`                                                                                                                    | Once per clone, by the factory in the same transaction that makes it; never on the implementation                                   | `initializer`, `_disableInitializers`                              |
 | `KlippelGoAccount.isValidSignature`                                                                                                              | Anyone (a view): whether the account's keys signed a hash                                                                           | none needed                                                            |
 | `AccountFactory.createAccount`                                                                                                                   | Anyone: an account belongs to whoever holds its key, whoever creates it                                                             | none needed                                                            |
@@ -274,7 +277,7 @@ A change that breaks one of these is a security bug, whatever the tests say.
   whose actions only its members cancel.
 - **C20. Only an account's own keys act for it.** An account runs calls only for the EntryPoint, after its
   `validateUserOp` found the operation signed by one of its signers over the EntryPoint's hash of that operation
-  (or for itself, inside such an operation); keys are added and removed only that way. A phone's key signs
+  (or for itself, inside such an operation). A phone's key signs
   P-256 over SHA-256 of the hash, checked by `DeviceKeyVerifier` with `s` in the lower half. An account's address
   is fixed by its first signer alone (a clone at `CREATE2` from the factory), so it can receive money before it
   exists, and the factory cannot put another first signer at that address. The implementation has a signer no
@@ -303,6 +306,20 @@ A change that breaks one of these is a security bug, whatever the tests say.
   hashes, and these never change. `latest` is the highest version published, so a backport never becomes the update newer apps are offered. Its status moves Active → Deprecated → Revoked; only `reinstate` brings it
   back to Active. Only the governor moves it. What it binds is honest apps (L33): an escrow is closed for
   everyone by its policies, not by the registry.
+- **C26. An account's keys change only by a majority of them, or by its guardian after a delay they let pass.**
+  A change (keys to add, keys to remove, and whether to name a guardian and whom) applies once more than half of
+  the account's keys approved it, each with its own signature over `approvalHash(id)`, which names the domain
+  `KlippelGo key change v1`, the chain, the account and the change's id; an approval counts once per key, and only
+  from a key the account has. The id is `keccak256(abi.encode(keysEpoch, add, remove, setGuardian, guardian))`:
+  every applied change and finished recovery raises `keysEpoch`, which voids every other change and approval made
+  before it, and any recovery waiting. Keeping the guardian names none. The account is never its own key nor
+  its own guardian, and the last key is never removed. Who sends a change or an approval does not matter: anyone
+  may, as what counts is the key's signature, so a key that stopped the account paying (revoked the paymaster's
+  allowance, spent the coins) does not stop the others taking it off. One key alone still signs every operation
+  and certificate (threshold 1, C20); what it cannot do alone, once the account has two keys, is change them.
+- **C27. A guardian's recovery replaces every key with one, and only if the keys let it.** Only the guardian
+  starts it, naming the new key; anyone finishes it from `RECOVERY_DELAY` (2 days) later, when it adds that key
+  and removes every other. Any change of keys in between, an empty one included, cancels it.
 
 ## Known limits
 
@@ -340,6 +357,10 @@ These are real today. A change that touches one should either close it or leave 
 | L31 | On the local testnet the EntryPoint at the canonical address is a copy put there with `anvil_setCode` (`testnet/entrypoint.sh`), not the released bytecode                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Bundlers simulate against that address; the released bytes cannot be reproduced here                          | Local only. On Polygon the EntryPoint is the released one. The local copy is built from the same tagged sources (eth-infinitism v0.9.0)                                                                                                                                         |
 | L32 | A rider who does not act holds up the driver's next ride (C22). One who does not show at the pickup keeps the driver's place until the driver cancels, which pays that rider the driver's bond. One who never confirms arrival keeps the driver's next pickup waiting until the driver's receipt has stood for the ride's `completionTimeout`, or a dispute frees it. A completion timeout set near 2^64 (L19) would hold that place for good                                                                                                                                                                                                                                        | One rider in the car at a time, and the escrow cannot tell a no-show from a late rider                        | A pickup timeout after which the driver may cancel an accepted ride and keep the bond; until then, the driver's choice is to cancel or to wait                                                                                                                                  |
 | L33 | The release registry binds only apps that obey it. A modified app ignores a `Revoked` status, and one Segurança member revokes a release at once (`revoke`, or the `revoke-release-<version>` playbook), which stops honest apps on it from starting rides until the board puts it back (`reinstate`, two directors) | A check in the app is all an app can carry; a revoke after a vulnerability cannot wait | Close the release's escrow too, which binds every app: the release's `revoke-release-<version>` playbook does both in one action. The board stores one per release it publishes, since it names that release's escrow, and new `stop-rides`/`resume-rides` for that escrow: the launch ones name the launch escrow. A plain `revoke` run first makes that playbook revert (the release is revoked already), and then `stop-rides` closes the escrow |
+| L34 | One of an account's keys signs every operation alone, money included: a taken phone can spend the account's coins, or revoke the paymaster's allowance so the account pays for nothing, until a majority of the keys takes it off | The keys are for riding, from one phone at a time, without asking the others | The phone's own lock on its key (apps P20). Removal stops what the key does next, not what it already sent. Removal itself can be paid by anyone (C26), but the app does not yet send it from another account (apps P28) |
+| L35 | A guardian can replace every key of an account whose devices do not cancel within two days, and a guardian whose own account was taken can be made to | The delay is the only check on the guardian; the phones say so when they next read the account | Name someone trusted, or none. The app reads the account's own events at each change check and shows the recovery on every screen (apps A19) |
+| L36 | Whoever holds a majority of an account's keys, the only phone of a one-phone account included, can cancel any recovery and change the keys at will | The contract cannot tell the owner from a thief holding the same keys | More devices: with three, one taken phone is a minority |
+| L37 | `finishRecovery` and `_apply` loop over the account's keys | Only a majority of those keys, or the guardian with one key, grows them, at most 16 a change | Pattern 7 concerns state strangers grow; this is the account's own |
 
 L6 (voting weight without a snapshot), L13 (a collector that cannot receive blocks a settlement) and L18 (a
 block took a vote and a timelock) were closed: there is no voting, a failed payment is kept as owed and anyone
@@ -355,7 +376,13 @@ council with the launch numbers through `TeamDeployer` and covers approvals, del
 suspension, the separation and lockout rules, the floor and ceiling on delays, the playbooks, recovery and
 handing the seat on. `test/Accounts.t.sol` runs accounts through a real EntryPoint v0.9: an account made by its
 first operation and paying in BRZ, a wrong key, a wrong hash and a high-`s` signature refused, a new key added
-and the old one removed, the last key never removed, nobody but the EntryPoint or the account running its calls,
+and the old one removed by both keys, one taken phone of three unable to take the others off or approve twice or in
+another key's name and the other two taking it off, an approval good for one change only, the last key never
+removed, the account never its own key or guardian, a guardian's recovery finished after the delay and cancelled by
+a majority (and by the only key of a one-key account), a change that keeps the guardian naming none, an approval given on one account
+refused on another with the same keys, the other two removing a taken key that revoked the paymaster with a friend
+sending and paying, the id's encoding pinned by a vector the phones share, nobody but the EntryPoint or the account
+running its calls,
 the same account created twice being the same one, `isValidSignature`, the paymaster refusing an unlisted coin
 and a zero price, only the governor taking what it holds, the implementation unusable. [`gov/test.sh`](../../gov/test.sh) runs the governance
 tool against a local chain: licences issued and revoked by the council, a block, a setting, the playbooks, a

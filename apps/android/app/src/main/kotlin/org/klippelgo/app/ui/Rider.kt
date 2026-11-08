@@ -804,6 +804,7 @@ private fun Profile(state: UiState, vm: AppViewModel) {
                 Spacer(Modifier.weight(1f))
                 LanguagePills(currentLanguage(), ::setAppLanguage)
             }
+            SecondaryButton(stringResource(R.string.keys_title), { vm.openAccount(true) }, Modifier.fillMaxWidth().testTag(Tags.PROFILE_ACCOUNT))
             SecondaryButton(stringResource(R.string.driver_mode), { vm.connect(Role.DRIVER, state.rpcUrl) }, Modifier.fillMaxWidth().testTag(Tags.PROFILE_DRIVER_MODE))
             TextButton(onClick = vm::signOut, Modifier.align(Alignment.CenterHorizontally).testTag(Tags.PROFILE_SIGN_OUT)) {
                 Muted(stringResource(R.string.sign_out))

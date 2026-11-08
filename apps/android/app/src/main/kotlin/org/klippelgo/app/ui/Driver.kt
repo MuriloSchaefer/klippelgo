@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -264,6 +265,10 @@ private fun GoOnline(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OnlinePill(online)
                         Spacer(Modifier.weight(1f))
+                        Pill(Modifier.testTag(Tags.GO_ONLINE_ACCOUNT), onClick = { vm.openAccount(true) }) {
+                            Text(stringResource(R.string.keys_short), fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        }
+                        Spacer(Modifier.width(8.dp))
                         Pill(Modifier.testTag(Tags.GO_ONLINE_RIDER_MODE), onClick = onRiderMode) {
                             Text(stringResource(R.string.rider_mode), fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         }
