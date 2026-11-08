@@ -499,8 +499,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * This phone's code was shown, copied or shared. For a while after, an account that adds this key from then on
      * asks the person to join it. One that added it before is never asked about: this phone's key is public on chain
-     * once its own account exists, so anyone could have added it, at any time. The block is the last full read's,
-     * a little before now, so an add made while the code was on screen is never missed.
+     * once its own account exists, so anyone could have added it, at any time. The block is the last full read's
+     * when that read is moments old, a little before now, so an add made while the code was on screen is never missed;
+     * otherwise the newest block, read for it.
      */
     fun codeShown() {
         val now = android.os.SystemClock.elapsedRealtime()

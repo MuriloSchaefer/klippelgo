@@ -311,7 +311,7 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
                     val x = area.left + 24
                     ask("op" to "swipe", "x1" to x, "y1" to from, "x2" to x, "y2" to to, "steps" to 30)
                     Thread.sleep(250)
-                    visible(tag)?.let { return it }
+                    visible(tag)?.let { return settled(tag, it) }
                 }
             }
             if (System.currentTimeMillis() > deadline) {
@@ -319,6 +319,21 @@ class Phone(private val stack: Stack, val serial: String) : AutoCloseable {
             }
             Thread.sleep(POLL_MS)
         }
+    }
+
+    /**
+     * The piece once the page has stopped moving under it. A swipe can leave the page gliding, and a tap that lands
+     * while it does only stops it, as it would for a person, so where the piece was a moment ago is no place to tap.
+     */
+    private fun settled(tag: String, first: Node): Node {
+        var last = first
+        repeat(12) {
+            Thread.sleep(150)
+            val now = visible(tag) ?: return last
+            if (now.top == last.top && now.bottom == last.bottom) return now
+            last = now
+        }
+        return last
     }
 
     /**

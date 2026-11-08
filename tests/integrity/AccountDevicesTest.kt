@@ -53,9 +53,13 @@ class AccountDevicesTest : Scenario() {
         assertEquals("Celular da Clara", app.account.keyName(app.account.thisDevice()!!))
         // Copy and Paste carry a code without the camera: this phone's own, pasted back, is the same code, and a key the
         // account has already, which it refuses to add.
-        app.account.copyCode()
         val code = app.account.thisCode()
-        waitUntil("the pasted code to be the one copied", 15_000) { true.takeIf { app.account.pasteCode().trim() == code } }
+        // The emulator shares its clipboard with the computer it runs on, which can put something else there: copied and
+        // pasted again until the round trip carries the code, as a person would.
+        waitUntil("the pasted code to be the one copied", 60_000) {
+            app.account.copyCode()
+            true.takeIf { app.account.pasteCode().trim() == code }
+        }
         // The phone shows its own code, whose fingerprint is the one its key is listed under.
         assertEquals(app.account.thisDevice(), app.account.thisFingerprint())
         assertEquals(app.account.thisFingerprint(), KeyCodes.fingerprint(assertNotNull(KeyCodes.signerOf(app.account.thisCode(), stack.deployment.deviceKeyVerifier))).replace(" ", ""))
